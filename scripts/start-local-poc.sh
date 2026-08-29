@@ -4,11 +4,27 @@ set -euo pipefail
 repo_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$repo_dir"
 
+cli_gemini_key="${GEMINI_API_KEY:-}"
+cli_gemini_model="${GEMINI_MODEL:-}"
+cli_openrouter_key="${OPENROUTER_API_KEY:-}"
+cli_openrouter_model="${OPENROUTER_MODEL:-}"
+
 if [[ -f .env ]]; then
   set -a
   source .env
   set +a
 fi
+
+if [[ -n "$cli_gemini_key" ]]; then export GEMINI_API_KEY="$cli_gemini_key"; fi
+if [[ -n "$cli_gemini_model" ]]; then export GEMINI_MODEL="$cli_gemini_model"; fi
+if [[ -n "$cli_openrouter_key" ]]; then export OPENROUTER_API_KEY="$cli_openrouter_key"; fi
+if [[ -n "$cli_openrouter_model" ]]; then export OPENROUTER_MODEL="$cli_openrouter_model"; fi
+
+if [[ -n "${GEMINI_API_KEY:-}" ]]; then
+  export OPENROUTER_API_KEY="${OPENROUTER_API_KEY:-$GEMINI_API_KEY}"
+  export OPENROUTER_MODEL="${OPENROUTER_MODEL:-${GEMINI_MODEL:-gemini-2.5-flash}}"
+fi
+
 
 runtime_image="${CONTAINER_RUNTIME_IMAGE:-volc-agent-runtime:local}"
 runtime_base_image="${CONTAINER_RUNTIME_BASE_IMAGE:-node:22-bookworm-slim}"
@@ -70,10 +86,12 @@ detect_engine() {
 }
 
 if [[ -z "${OPENROUTER_API_KEY:-${ARK_API_KEY:-}}" || -z "${OPENROUTER_MODEL:-${ARK_MODEL:-}}" ]]; then
-  log "OPENROUTER_API_KEY and OPENROUTER_MODEL are required."
-  log "Example: OPENROUTER_API_KEY=key OPENROUTER_MODEL=openai/gpt-4o-mini ./scripts/start-local-poc.sh"
+  log "GEMINI_API_KEY or (OPENROUTER_API_KEY and OPENROUTER_MODEL) is required."
+  log "Example with Gemini:     GEMINI_API_KEY=your-gemini-key npm run poc"
+  log "Example with OpenRouter: OPENROUTER_API_KEY=your-key OPENROUTER_MODEL=openai/gpt-4o-mini npm run poc"
   exit 2
 fi
+
 
 command -v node >/dev/null 2>&1 || {
   log "Node.js 22+ is required to run the local control plane."
