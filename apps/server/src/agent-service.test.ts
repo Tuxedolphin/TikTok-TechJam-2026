@@ -47,9 +47,10 @@ async function makeService(runner: AgentRunner = new FakeRunner()): Promise<Agen
     OPENROUTER_API_KEY: "test-key",
     OPENROUTER_MODEL: "openrouter/test-model",
     GUARDRAIL_CANARY_TOKEN: "c4nary",
-    RUN_BUDGET_MAX_TOTAL_TOKENS: 100,
-    RUN_BUDGET_MAX_DURATION_MS: 60_000,
+    RUN_BUDGET_MAX_TOTAL_TOKENS: "100",
+    RUN_BUDGET_MAX_DURATION_MS: "60000",
   });
+
   const service = new AgentService(
     config,
     new JsonStore(path.join(root, "data", "db.json")),

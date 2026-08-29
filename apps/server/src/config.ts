@@ -59,7 +59,8 @@ const envSchema = z.object({
 
 export type AppConfig = ReturnType<typeof loadConfig>;
 
-export function loadConfig(environment: NodeJS.ProcessEnv = process.env) {
+export function loadConfig(environment: Record<string, unknown> = process.env) {
+
   const env = envSchema.parse(environment);
   const authToken = env.APP_AUTH_TOKEN?.trim() ?? "";
   const geminiApiKey = env.GEMINI_API_KEY?.trim() ?? "";
