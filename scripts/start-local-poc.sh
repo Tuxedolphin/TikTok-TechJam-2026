@@ -4,6 +4,12 @@ set -euo pipefail
 repo_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$repo_dir"
 
+if [[ -f .env ]]; then
+  set -a
+  source .env
+  set +a
+fi
+
 runtime_image="${CONTAINER_RUNTIME_IMAGE:-volc-agent-runtime:local}"
 runtime_base_image="${CONTAINER_RUNTIME_BASE_IMAGE:-node:22-bookworm-slim}"
 runtime_apt_mirror="${CONTAINER_APT_MIRROR:-}"
@@ -63,9 +69,9 @@ detect_engine() {
   return 1
 }
 
-if [[ -z "${ARK_API_KEY:-}" || -z "${ARK_MODEL:-}" ]]; then
-  log "ARK_API_KEY and ARK_MODEL are required."
-  log "Example: ARK_API_KEY=key ARK_MODEL=ep-id ./scripts/start-local-poc.sh"
+if [[ -z "${OPENROUTER_API_KEY:-${ARK_API_KEY:-}}" || -z "${OPENROUTER_MODEL:-${ARK_MODEL:-}}" ]]; then
+  log "OPENROUTER_API_KEY and OPENROUTER_MODEL are required."
+  log "Example: OPENROUTER_API_KEY=key OPENROUTER_MODEL=openai/gpt-4o-mini ./scripts/start-local-poc.sh"
   exit 2
 fi
 
@@ -95,6 +101,9 @@ if [[ -n "${LOCAL_POC_DATA_ROOT:-}" ]]; then
   export CODEX_HOME="$local_state_root/codex-home"
 elif [[ "$(uname -s)" == "Darwin" ]]; then
   local_state_root="${HOME}/.volc-agent-launchpad"
+  if [[ "${APP_DATA_DIR:-}" == /app* ]]; then unset APP_DATA_DIR; fi
+  if [[ "${AGENT_WORKSPACE_ROOT:-}" == /app* ]]; then unset AGENT_WORKSPACE_ROOT; fi
+  if [[ "${CODEX_HOME:-}" == /app* ]]; then unset CODEX_HOME; fi
   export APP_DATA_DIR="${APP_DATA_DIR:-$local_state_root/data}"
   export AGENT_WORKSPACE_ROOT="${AGENT_WORKSPACE_ROOT:-$local_state_root/workspaces}"
   export CODEX_HOME="${CODEX_HOME:-$local_state_root/codex-home}"
