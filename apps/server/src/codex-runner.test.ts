@@ -70,4 +70,31 @@ describe("Codex runner protocol", () => {
     expect(parsed.messages).toEqual(["Done."]);
     expect(parsed.usage).toEqual({ inputTokens: 10, outputTokens: 4 });
   });
+
+  it("emits onStep events for commands and tools", () => {
+    const steps: unknown[] = [];
+    const parsed = {
+      messages: [] as string[],
+      threadId: null as string | null,
+      usage: null,
+      errors: [] as string[],
+    };
+    parseCodexEventLine(
+      JSON.stringify({
+        type: "item.completed",
+        item: { type: "command_execution", command: "npm test", exit_code: 0 },
+      }),
+      parsed,
+      (step) => steps.push(step),
+    );
+    expect(steps).toEqual([
+      {
+        type: "command",
+        title: "Executed shell command",
+        detail: "npm test (exit 0)",
+        rawPayload: { type: "command_execution", command: "npm test", exit_code: 0 },
+      },
+    ]);
+  });
 });
+

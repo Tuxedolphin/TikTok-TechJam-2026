@@ -45,4 +45,30 @@ describe("HTTP boundary", () => {
     expect(oversized.statusCode).toBe(413);
     await app.close();
   });
+
+  it("exposes run trace events", async () => {
+    const runId = "11111111-1111-4111-8111-111111111111";
+    const agentId = "22222222-2222-4222-8222-222222222222";
+    const service = {
+      listAgents: () => [],
+      systemInfo: async () => ({}),
+      getRunEvents: () => [
+        {
+          id: "event-1",
+          runId,
+          agentId,
+          type: "run.created",
+          severity: "info",
+          title: "Run queued",
+          detail: "Queued prompt preview: hello",
+          createdAt: new Date().toISOString(),
+        },
+      ],
+    } as unknown as AgentService;
+    const app = await createApp(loadConfig({ NODE_ENV: "test" }), service);
+    const response = await app.inject({ method: "GET", url: "/api/runs/" + runId + "/events" });
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({ events: [{ type: "run.created" }] });
+    await app.close();
+  });
 });
