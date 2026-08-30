@@ -31,6 +31,76 @@ function formatTime(value: string): string {
   }).format(new Date(value));
 }
 
+function InlineMarkdown({ content }: { content: string }) {
+  return (
+    <>
+      {content.split(/(`[^`]+`|\*\*[^*]+\*\*)/g).map((part, index) => {
+        if (part.startsWith("**") && part.endsWith("**")) {
+          return <strong key={index}>{part.slice(2, -2)}</strong>;
+        }
+        if (part.startsWith("`") && part.endsWith("`")) {
+          return <code key={index}>{part.slice(1, -1)}</code>;
+        }
+        return part;
+      })}
+    </>
+  );
+}
+
+function MarkdownMessage({ content }: { content: string }) {
+  // Agents commonly put a heading immediately before a list. Treat that heading
+  // as its own block so it is rendered instead of falling back to plain text.
+  const blocks = content
+    .trim()
+    .replace(/^(#{1,6}\s+.+)$/gm, "$1\n\n")
+    .split(/\n{2,}/);
+  return (
+    <div className="message-markdown">
+      {blocks.map((block, index) => {
+        const lines = block.split("\n");
+        const heading = lines.length === 1 ? lines[0]!.trim().match(/^#{1,6}\s+(.+)$/) : null;
+        if (heading) {
+          return <h4 key={index}><InlineMarkdown content={heading[1]!} /></h4>;
+        }
+        if (block.startsWith("```") && block.endsWith("```")) {
+          return <pre key={index}><code>{block.replace(/^```[^\n]*\n?/, "").replace(/\n?```$/, "")}</code></pre>;
+        }
+        if (lines.some((line) => /^\d+\.\s+/.test(line.trimStart())) && lines.every((line) => /^\d+\.\s+/.test(line.trimStart()) || /^[-*]\s+/.test(line.trimStart()))) {
+          const items: Array<{ title: string; details: string[] }> = [];
+          for (const line of lines) {
+            const item = line.trimStart().match(/^\d+\.\s+(.+)$/);
+            if (item) {
+              items.push({ title: item[1]!, details: [] });
+              continue;
+            }
+            const detail = line.trimStart().match(/^[-*]\s+(.+)$/);
+            if (detail && items.length > 0) items[items.length - 1]!.details.push(detail[1]!);
+          }
+          return (
+            <ol key={index}>
+              {items.map((item, itemIndex) => (
+                <li key={itemIndex}>
+                  <InlineMarkdown content={item.title} />
+                  {item.details.length > 0 && (
+                    <ul>{item.details.map((detail, detailIndex) => <li key={detailIndex}><InlineMarkdown content={detail} /></li>)}</ul>
+                  )}
+                </li>
+              ))}
+            </ol>
+          );
+        }
+        if (lines.every((line) => /^\d+\.\s+/.test(line.trimStart()))) {
+          return <ol key={index}>{lines.map((line, itemIndex) => <li key={itemIndex}><InlineMarkdown content={line.trimStart().replace(/^\d+\.\s+/, "")} /></li>)}</ol>;
+        }
+        if (lines.every((line) => /^[-*]\s+/.test(line.trimStart()))) {
+          return <ul key={index}>{lines.map((line, itemIndex) => <li key={itemIndex}><InlineMarkdown content={line.trimStart().replace(/^[-*]\s+/, "")} /></li>)}</ul>;
+        }
+        return <p key={index}>{lines.map((line, lineIndex) => <span key={lineIndex}><InlineMarkdown content={line} />{lineIndex < lines.length - 1 && <br />}</span>)}</p>;
+      })}
+    </div>
+  );
+}
+
 function StatusPill({ status }: { status: Agent["status"] }) {
   const label = status === "waiting_approval" ? "Approval Required" : status;
   return (
@@ -232,8 +302,11 @@ export default function App() {
   }, [selected]);
 
   useEffect(() => {
+    const approvalPending =
+      selected?.status === "waiting_approval" || pendingApprovals.length > 0;
+    if (approvalPending) return;
     messageEnd.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages, activeRun]);
+  }, [messages, activeRun, pendingApprovals.length, selected?.status]);
 
   useEffect(() => {
     if (!activeRun) {
@@ -735,7 +808,13 @@ export default function App() {
                         <strong>{message.role === "user" ? "You" : selected.name}</strong>
                         <span>{formatTime(message.createdAt)}</span>
                       </div>
-                      <div className="message-body">{message.content}</div>
+                      <div className="message-body">
+                        {message.role !== "user" ? (
+                          <MarkdownMessage content={message.content} />
+                        ) : (
+                          message.content
+                        )}
+                      </div>
                     </article>
                   ))
                 )}

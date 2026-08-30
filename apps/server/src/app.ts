@@ -204,7 +204,9 @@ export async function createApp(
     await handleGeminiResponsesAdapter(request, reply, config);
   });
 
-  if (config.nodeEnv === "production") {
+  // Docker Compose development still serves the built UI; only authentication
+  // behavior differs from production.
+  if (config.nodeEnv !== "test") {
     const webRoot = fileURLToPath(new URL("../../web/dist", import.meta.url));
     await app.register(fastifyStatic, {
       root: webRoot,
