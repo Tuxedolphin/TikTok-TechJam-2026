@@ -27,6 +27,7 @@ export const PROXY_CONTAINER = "launchpad-egress-proxy";
  */
 export class EgressNetworkManager {
   private ready = false;
+  private pending: Promise<void> | null = null;
 
   constructor(private readonly config: AppConfig) {}
 
@@ -65,6 +66,16 @@ export class EgressNetworkManager {
    * up. Safe to call before every run; it is a no-op once established.
    */
   async ensure(): Promise<void> {
+    // Concurrent runs must not both try to create the sidecar; the loser would
+    // fail on the container-name conflict and surface a spurious start error.
+    if (this.pending) return this.pending;
+    this.pending = this.provision().finally(() => {
+      this.pending = null;
+    });
+    return this.pending;
+  }
+
+  private async provision(): Promise<void> {
     if (this.ready && (await this.containerRunning(PROXY_CONTAINER))) return;
 
     if (!(await this.networkExists(INTERNAL_NETWORK))) {

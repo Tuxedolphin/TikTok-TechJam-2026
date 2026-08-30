@@ -76,6 +76,12 @@ export class EgressAuthorizer {
     return this.strikesByAgent.get(agentId) ?? 0;
   }
 
+  /**
+   * Clears an agent's blocked-attempt history. Called when an operator starts a
+   * quarantined agent again: without it the stale count sits at the threshold
+   * and the next single denial re-quarantines the agent immediately, making the
+   * operator's intervention look like it did nothing.
+   */
   resetStrikes(agentId: string): void {
     this.strikesByAgent.delete(agentId);
   }

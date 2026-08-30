@@ -51,6 +51,10 @@ const egressAuthorizer = config.egressEnforcement
     })
   : undefined;
 
+if (egressAuthorizer) {
+  service.onAgentStarted = (agentId) => egressAuthorizer.resetStrikes(agentId);
+}
+
 const app = await createApp(config, service, identity, egressAuthorizer);
 
 const shutdown = async (signal: string) => {

@@ -318,8 +318,15 @@ export class AgentService {
   }
 
   async startAgent(id: string): Promise<Agent> {
+    // Starting a quarantined agent is the operator clearing the incident, so
+    // its blocked-attempt history goes with it; otherwise the stale count sits
+    // at the threshold and the next single denial re-quarantines it at once.
+    this.onAgentStarted?.(id);
     return this.setStatus(id, "ready");
   }
+
+  /** Set by the composition root when egress enforcement is active. */
+  onAgentStarted?: (agentId: string) => void;
 
   async stopAgent(id: string): Promise<Agent> {
     this.getAgent(id);

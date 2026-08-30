@@ -1,7 +1,12 @@
 import { createServer, request as httpRequest, type Server } from "node:http";
 import { once } from "node:events";
 import { afterEach, describe, expect, it } from "vitest";
-import { createEgressProxy, parseAuthority, principalFromProxyAuth } from "./egress-proxy.js";
+import {
+  createEgressProxy,
+  isPrivateAddress,
+  parseAuthority,
+  principalFromProxyAuth,
+} from "./egress-proxy.js";
 import type { EgressVerdict } from "./egress-proxy.js";
 
 const servers: Server[] = [];
@@ -89,10 +94,66 @@ describe("principalFromProxyAuth", () => {
   });
 });
 
+describe("isPrivateAddress", () => {
+  it("flags loopback, private ranges, and cloud metadata", () => {
+    for (const address of ["127.0.0.1", "10.1.2.3", "192.168.1.1", "172.16.0.1", "169.254.169.254", "::1"]) {
+      expect(isPrivateAddress(address), address).toBe(true);
+    }
+  });
+  it("permits public addresses", () => {
+    for (const address of ["93.184.216.34", "8.8.8.8", "172.32.0.1"]) {
+      expect(isPrivateAddress(address), address).toBe(false);
+    }
+  });
+});
+
 describe("egress proxy", () => {
+  it("refuses a granted host that resolves to a private address", async () => {
+    // Authorization says yes; the address guard still refuses, which is what
+    // stops a granted domain being re-pointed at an internal service.
+    const proxyPort = await listen(createEgressProxy({ authorize: async () => allow }));
+    const result = await proxyFetch(proxyPort, "http://127.0.0.1:9/", "agent-1");
+    expect(result.status).toBe(403);
+    expect(JSON.parse(result.body).ruleId).toBe("NET-EGRESS-PRIVATE-024");
+  });
+
+  it("preserves the request path for origin-form requests", async () => {
+    const paths: string[] = [];
+    const upstream = createServer((request, response) => {
+      paths.push(request.url ?? "");
+      response.writeHead(200);
+      response.end("ok");
+    });
+    const upstreamPort = await listen(upstream);
+    const proxyPort = await listen(
+      createEgressProxy({ allowPrivateAddresses: true, authorize: async () => allow }),
+    );
+    await new Promise<void>((resolve, reject) => {
+      const proxied = httpRequest(
+        {
+          host: "127.0.0.1",
+          port: proxyPort,
+          method: "GET",
+          path: "/deep/path?q=1",
+          headers: {
+            host: `127.0.0.1:${upstreamPort}`,
+            "proxy-authorization": "Basic " + Buffer.from("agent-1:token").toString("base64"),
+          },
+        },
+        (response) => {
+          response.resume();
+          response.on("end", () => resolve());
+        },
+      );
+      proxied.on("error", reject);
+      proxied.end();
+    });
+    expect(paths).toEqual(["/deep/path?q=1"]);
+  });
+
   it("forwards a request the authorizer allows", async () => {
     const upstreamPort = await startUpstream();
-    const proxyPort = await listen(createEgressProxy({ authorize: async () => allow }));
+    const proxyPort = await listen(createEgressProxy({ allowPrivateAddresses: true, authorize: async () => allow }));
     const result = await proxyFetch(
       proxyPort,
       `http://127.0.0.1:${upstreamPort}/data`,
@@ -104,7 +165,7 @@ describe("egress proxy", () => {
 
   it("blocks a request the authorizer denies and explains why", async () => {
     const upstreamPort = await startUpstream();
-    const proxyPort = await listen(createEgressProxy({ authorize: async () => deny }));
+    const proxyPort = await listen(createEgressProxy({ allowPrivateAddresses: true, authorize: async () => deny }));
     const result = await proxyFetch(
       proxyPort,
       `http://127.0.0.1:${upstreamPort}/data`,
@@ -123,6 +184,7 @@ describe("egress proxy", () => {
     let authorizeCalls = 0;
     const proxyPort = await listen(
       createEgressProxy({
+        allowPrivateAddresses: true,
         authorize: async () => {
           authorizeCalls += 1;
           return allow;
@@ -141,6 +203,7 @@ describe("egress proxy", () => {
     const upstreamPort = await startUpstream();
     const proxyPort = await listen(
       createEgressProxy({
+        allowPrivateAddresses: true,
         authorize: async () => {
           throw new Error("grants store unreachable");
         },
@@ -159,7 +222,7 @@ describe("egress proxy", () => {
     const upstreamPort = await startUpstream();
     let granted = true;
     const proxyPort = await listen(
-      createEgressProxy({ authorize: async () => (granted ? allow : deny) }),
+      createEgressProxy({ allowPrivateAddresses: true, authorize: async () => (granted ? allow : deny) }),
     );
     const before = await proxyFetch(proxyPort, `http://127.0.0.1:${upstreamPort}/`, "agent-1");
     expect(before.status).toBe(200);
@@ -174,6 +237,7 @@ describe("egress proxy", () => {
     const seen: string[] = [];
     const proxyPort = await listen(
       createEgressProxy({
+        allowPrivateAddresses: true,
         authorize: async ({ host }) => {
           seen.push(host);
           return host === "127.0.0.1" ? allow : deny;

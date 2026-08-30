@@ -5,7 +5,8 @@ import {
   type Server,
   type ServerResponse,
 } from "node:http";
-import { connect, type Socket } from "node:net";
+import { connect, isIP, type Socket } from "node:net";
+import { lookup as dnsLookup } from "node:dns/promises";
 
 /**
  * Verdict returned by the authorizer for one outbound connection attempt.
@@ -30,6 +31,10 @@ export interface EgressProxyOptions {
   authorize: EgressAuthorizer;
   /** Called for every verdict so the caller can log; must never throw. */
   onVerdict?: (input: { agentPrincipalId: string; host: string; verdict: EgressVerdict }) => void;
+  /** Idle/connect timeout for upstream connections. */
+  connectTimeoutMs?: number;
+  /** Test-only escape hatch: upstreams on loopback are otherwise refused. */
+  allowPrivateAddresses?: boolean;
 }
 
 /**
@@ -67,6 +72,36 @@ export function principalFromProxyAuth(
   return username.length > 0 ? { principalId: decodeURIComponent(username), secret } : null;
 }
 
+/**
+ * Addresses an agent must never reach even with a grant: loopback, link-local
+ * (which covers cloud metadata at 169.254.169.254), and private ranges. A
+ * granted hostname could otherwise be re-pointed at an internal service after
+ * the grant was issued, so the check is on the resolved address, not the name.
+ */
+export function isPrivateAddress(address: string): boolean {
+  if (isIP(address) === 6) {
+    const normalized = address.toLowerCase();
+    return (
+      normalized === "::1" ||
+      normalized === "::" ||
+      normalized.startsWith("fe80:") ||
+      normalized.startsWith("fc") ||
+      normalized.startsWith("fd") ||
+      normalized.startsWith("::ffff:127.") ||
+      normalized.startsWith("::ffff:10.") ||
+      normalized.startsWith("::ffff:192.168.")
+    );
+  }
+  const parts = address.split(".").map(Number);
+  if (parts.length !== 4 || parts.some((p) => !Number.isInteger(p))) return false;
+  const [a = 0, b = 0] = parts;
+  if (a === 127 || a === 0 || a === 10) return true;
+  if (a === 169 && b === 254) return true;
+  if (a === 172 && b >= 16 && b <= 31) return true;
+  if (a === 192 && b === 168) return true;
+  return false;
+}
+
 const DENIED_BODY = (verdict: EgressVerdict, host: string): string =>
   JSON.stringify(
     {
@@ -86,6 +121,22 @@ const DENIED_BODY = (verdict: EgressVerdict, host: string): string =>
  */
 export function createEgressProxy(options: EgressProxyOptions): Server {
   const server = createServer();
+  const connectTimeoutMs = options.connectTimeoutMs ?? 30_000;
+
+  /**
+   * Resolves a host once and refuses private targets, then hands back the
+   * literal address so the later connect() cannot land somewhere else.
+   */
+  const resolveTarget = async (host: string): Promise<string | null> => {
+    if (options.allowPrivateAddresses) return host;
+    if (isIP(host)) return isPrivateAddress(host) ? null : host;
+    try {
+      const { address } = await dnsLookup(host);
+      return isPrivateAddress(address) ? null : address;
+    } catch {
+      return null;
+    }
+  };
 
   const decide = async (
     caller: { principalId: string; secret: string } | null,
@@ -125,9 +176,13 @@ export function createEgressProxy(options: EgressProxyOptions): Server {
   // Plain HTTP: the absolute-form request URI carries the target.
   server.on("request", (request: IncomingMessage, response: ServerResponse) => {
     void (async () => {
-      const target = new URL(
-        request.url?.startsWith("http") ? request.url : `http://${request.headers.host ?? ""}`,
-      );
+      // Absolute-form (`GET http://host/path`) is what a proxy normally sees,
+      // but origin-form (`GET /path` + Host header) is legal too; joining the
+      // two keeps the path instead of silently rewriting every request to "/".
+      const rawUrl = request.url ?? "/";
+      const target = rawUrl.startsWith("http")
+        ? new URL(rawUrl)
+        : new URL(rawUrl, `http://${request.headers.host ?? ""}`);
       const port = target.port ? Number(target.port) : 80;
       const principal = principalFromProxyAuth(request.headers["proxy-authorization"]);
       const verdict = await decide(principal, target.hostname, port, request.method ?? "GET");
@@ -144,13 +199,41 @@ export function createEgressProxy(options: EgressProxyOptions): Server {
         return;
       }
 
+      const resolved = await resolveTarget(target.hostname);
+      if (!resolved) {
+        response.writeHead(403, { "content-type": "application/json" });
+        response.end(
+          DENIED_BODY(
+            {
+              allowed: false,
+              ruleId: "NET-EGRESS-PRIVATE-024",
+              reason: `${target.hostname} resolves to a private or loopback address.`,
+            },
+            target.hostname,
+          ),
+        );
+        return;
+      }
+
       const headers = { ...request.headers };
-      delete headers["proxy-authorization"];
-      delete headers["proxy-connection"];
+      // Hop-by-hop headers are meaningful only on the agent->proxy leg.
+      for (const hop of [
+        "proxy-authorization",
+        "proxy-connection",
+        "connection",
+        "keep-alive",
+        "te",
+        "trailer",
+        "transfer-encoding",
+        "upgrade",
+      ]) {
+        delete headers[hop];
+      }
+      headers.host = target.host;
 
       const upstream = httpRequest(
         {
-          host: target.hostname,
+          host: resolved,
           port,
           method: request.method ?? "GET",
           path: target.pathname + target.search,
@@ -161,10 +244,13 @@ export function createEgressProxy(options: EgressProxyOptions): Server {
           upstreamResponse.pipe(response);
         },
       );
+      upstream.setTimeout(connectTimeoutMs, () => upstream.destroy());
       upstream.on("error", () => {
         if (!response.headersSent) response.writeHead(502, { "content-type": "text/plain" });
         response.end("upstream error\n");
       });
+      // A client that vanishes mid-body must not strand the upstream socket.
+      request.on("error", () => upstream.destroy());
       request.pipe(upstream);
     })();
   });
@@ -190,7 +276,30 @@ export function createEgressProxy(options: EgressProxyOptions): Server {
         return;
       }
 
-      const upstream = connect(port, host, () => {
+      const resolved = await resolveTarget(host);
+      if (!resolved) {
+        const body = DENIED_BODY(
+          {
+            allowed: false,
+            ruleId: "NET-EGRESS-PRIVATE-024",
+            reason: `${host} resolves to a private or loopback address.`,
+          },
+          host,
+        );
+        clientSocket.write(
+          "HTTP/1.1 403 Forbidden\r\n" +
+            "content-type: application/json\r\n" +
+            `content-length: ${Buffer.byteLength(body)}\r\n` +
+            "\r\n" +
+            body,
+        );
+        clientSocket.end();
+        return;
+      }
+
+      const upstream = connect(port, resolved, () => {
+        upstream.setTimeout(connectTimeoutMs, () => upstream.destroy());
+        clientSocket.setTimeout(connectTimeoutMs, () => clientSocket.destroy());
         clientSocket.write("HTTP/1.1 200 Connection Established\r\n\r\n");
         if (head.length > 0) upstream.write(head);
         upstream.pipe(clientSocket);
