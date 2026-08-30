@@ -23,6 +23,7 @@ export type EgressAuthorizer = (input: {
   host: string;
   port: number;
   method: string;
+  secret: string;
 }) => Promise<EgressVerdict>;
 
 export interface EgressProxyOptions {
@@ -53,14 +54,17 @@ export function parseAuthority(authority: string, defaultPort: number): { host: 
  * proxy-auth credentials so one proxy can serve every agent container: the
  * username is the agent's principal id.
  */
-export function principalFromProxyAuth(header: string | undefined): string | null {
+export function principalFromProxyAuth(
+  header: string | undefined,
+): { principalId: string; secret: string } | null {
   if (!header) return null;
   const match = /^Basic\s+(.+)$/i.exec(header.trim());
   if (!match?.[1]) return null;
   const decoded = Buffer.from(match[1], "base64").toString("utf8");
   const separator = decoded.indexOf(":");
   const username = separator === -1 ? decoded : decoded.slice(0, separator);
-  return username.length > 0 ? username : null;
+  const secret = separator === -1 ? "" : decoded.slice(separator + 1);
+  return username.length > 0 ? { principalId: decodeURIComponent(username), secret } : null;
 }
 
 const DENIED_BODY = (verdict: EgressVerdict, host: string): string =>
@@ -84,12 +88,12 @@ export function createEgressProxy(options: EgressProxyOptions): Server {
   const server = createServer();
 
   const decide = async (
-    agentPrincipalId: string | null,
+    caller: { principalId: string; secret: string } | null,
     host: string,
     port: number,
     method: string,
   ): Promise<EgressVerdict> => {
-    if (!agentPrincipalId) {
+    if (!caller) {
       return {
         allowed: false,
         ruleId: "NET-EGRESS-NOAUTH-022",
@@ -97,8 +101,14 @@ export function createEgressProxy(options: EgressProxyOptions): Server {
       };
     }
     try {
-      const verdict = await options.authorize({ agentPrincipalId, host, port, method });
-      options.onVerdict?.({ agentPrincipalId, host, verdict });
+      const verdict = await options.authorize({
+        agentPrincipalId: caller.principalId,
+        host,
+        port,
+        method,
+        secret: caller.secret,
+      });
+      options.onVerdict?.({ agentPrincipalId: caller.principalId, host, verdict });
       return verdict;
     } catch (error) {
       // An authorizer that cannot answer must fail closed, never open.

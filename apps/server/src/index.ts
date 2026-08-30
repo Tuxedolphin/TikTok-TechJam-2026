@@ -41,6 +41,7 @@ const egressAuthorizer = config.egressEnforcement
       // The platform's own endpoints must stay reachable or the agent cannot
       // think; they are explicit and auditable rather than an implicit hole.
       standingAllowHosts: platformHosts(config),
+      serverKey: config.authToken,
       quarantineThreshold: config.egressQuarantineThreshold,
       recordDecision: (runId, agentId, decision) =>
         service.recordPolicyDecision(runId, agentId, decision),

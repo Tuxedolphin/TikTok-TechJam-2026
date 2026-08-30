@@ -75,11 +75,15 @@ describe("parseAuthority", () => {
 });
 
 describe("principalFromProxyAuth", () => {
-  it("reads the principal from the basic-auth username", () => {
-    const header = "Basic " + Buffer.from("agent-42:secret").toString("base64");
-    expect(principalFromProxyAuth(header)).toBe("agent-42");
+  it("reads the principal and its secret from basic auth", () => {
+    const header = "Basic " + Buffer.from("agent-42:s3cret").toString("base64");
+    expect(principalFromProxyAuth(header)).toEqual({ principalId: "agent-42", secret: "s3cret" });
   });
-  it("returns null when the header is absent or empty", () => {
+  it("url-decodes the principal so encoded ids survive the round trip", () => {
+    const header = "Basic " + Buffer.from("agent%2D7:s3cret").toString("base64");
+    expect(principalFromProxyAuth(header)?.principalId).toBe("agent-7");
+  });
+  it("returns null when the header is absent or carries no principal", () => {
     expect(principalFromProxyAuth(undefined)).toBeNull();
     expect(principalFromProxyAuth("Basic " + Buffer.from(":secret").toString("base64"))).toBeNull();
   });

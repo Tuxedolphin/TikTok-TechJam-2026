@@ -1,6 +1,7 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import type { AppConfig } from "./config.js";
+import { egressProxySecret } from "./egress-authorizer.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -110,8 +111,12 @@ export class EgressNetworkManager {
 
   /** Proxy URL as seen from inside an agent container on the internal network. */
   proxyUrlFor(agentPrincipalId: string): string {
-    // Identity travels as proxy-auth credentials: one proxy, many agents.
-    return `http://${encodeURIComponent(agentPrincipalId)}:agent@${PROXY_CONTAINER}:${this.config.egressProxyPort}`;
+    // Identity travels as proxy-auth credentials: one proxy, many agents. The
+    // password is a per-agent secret derived from the server key, so a
+    // container cannot borrow another agent's grants by simply claiming its
+    // principal -- it would have to forge a secret it never sees.
+    const secret = egressProxySecret(agentPrincipalId, this.config.authToken);
+    return `http://${encodeURIComponent(agentPrincipalId)}:${secret}@${PROXY_CONTAINER}:${this.config.egressProxyPort}`;
   }
 
   private async removeProxy(): Promise<void> {

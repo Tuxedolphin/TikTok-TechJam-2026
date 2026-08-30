@@ -20,14 +20,14 @@ if (!authorizeUrl) {
 }
 
 const server = createEgressProxy({
-  authorize: async ({ agentPrincipalId, host, port: targetPort, method }): Promise<EgressVerdict> => {
+  authorize: async ({ agentPrincipalId, host, port: targetPort, method, secret }): Promise<EgressVerdict> => {
     const response = await fetch(authorizeUrl, {
       method: "POST",
       headers: {
         "content-type": "application/json",
         ...(authorizeToken ? { authorization: `Bearer ${authorizeToken}` } : {}),
       },
-      body: JSON.stringify({ agentPrincipalId, host, port: targetPort, method }),
+      body: JSON.stringify({ agentPrincipalId, host, port: targetPort, method, secret }),
     });
     if (!response.ok) {
       throw new Error(`authorizer responded ${response.status}`);

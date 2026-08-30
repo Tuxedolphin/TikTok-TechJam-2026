@@ -2,7 +2,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { EgressAuthorizer } from "./egress-authorizer.js";
+import { EgressAuthorizer, egressProxySecret } from "./egress-authorizer.js";
 import { JsonStore } from "./store.js";
 import type { Grant } from "./types.js";
 
@@ -134,6 +134,30 @@ describe("EgressAuthorizer", () => {
       });
     }
     expect(authorizer.strikesFor(AGENT_ID)).toBe(0);
+  });
+
+  it("refuses a principal presented without its secret", async () => {
+    const authorizer = new EgressAuthorizer(await makeStore([grant()]), {
+      ...baseOptions,
+      serverKey: "server-key",
+    });
+    const result = await authorizer.authorize({
+      agentPrincipalId: PRINCIPAL, host: "registry.npmjs.org", port: 443, method: "CONNECT",
+      secret: "guessed",
+    });
+    expect(result).toMatchObject({ allowed: false, ruleId: "NET-EGRESS-IMPERSONATION-023" });
+  });
+
+  it("allows the same principal when it presents the derived secret", async () => {
+    const authorizer = new EgressAuthorizer(await makeStore([grant()]), {
+      ...baseOptions,
+      serverKey: "server-key",
+    });
+    const result = await authorizer.authorize({
+      agentPrincipalId: PRINCIPAL, host: "registry.npmjs.org", port: 443, method: "CONNECT",
+      secret: egressProxySecret(PRINCIPAL, "server-key"),
+    });
+    expect(result.allowed).toBe(true);
   });
 
   it("denies an unknown principal", async () => {

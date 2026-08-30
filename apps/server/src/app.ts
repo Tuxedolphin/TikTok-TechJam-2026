@@ -56,6 +56,7 @@ const egressAuthorizeBody = z.object({
   host: z.string().min(1).max(253),
   port: z.coerce.number().int().min(1).max(65535),
   method: z.string().min(1).max(16),
+  secret: z.string().max(256).optional(),
 });
 const resourceIdParams = z.object({ id: z.string().min(1).max(128) });
 

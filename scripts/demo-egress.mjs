@@ -62,6 +62,7 @@ const identity = new IdentityService(
 );
 const authorizer = new EgressAuthorizer(store, {
   standingAllowHosts: ["host.docker.internal"],
+  serverKey: config.authToken,
   quarantineThreshold: 3,
   recordDecision: (runId, agentId, decision) =>
     service.recordPolicyDecision(runId, agentId, decision),
@@ -126,7 +127,21 @@ try {
   const status = service.getAgent(agent.id).status;
   log(`   -> agent status: ${status}   (stopped = contained)`);
 
-  log("\n5. Can the agent bypass the proxy entirely? (direct, no proxy env)");
+  log("\n5. Can one agent borrow another's grants by claiming its principal?");
+  const impersonated = await execFileAsync(
+    config.containerEngine,
+    [
+      "run", "--rm", "--network", INTERNAL_NETWORK,
+      "curlimages/curl:latest", "-s", "-o", "/dev/null", "-w", "%{http_code}",
+      "--max-time", "10",
+      "--proxy", `http://${agent.principalId}:guessed-secret@${PROXY_CONTAINER}:8888`,
+      `http://${TARGET}/`,
+    ],
+    { timeout: 60_000 },
+  ).then((r) => r.stdout.trim()).catch((e) => `error(${e.code})`);
+  log(`   -> HTTP ${impersonated}   (403 = secret did not verify)`);
+
+  log("\n6. Can the agent bypass the proxy entirely? (direct, no proxy env)");
   const direct = await execFileAsync(
     config.containerEngine,
     [
@@ -138,7 +153,7 @@ try {
   log(`   -> ${direct}   (no route off-box: the network itself denies it)`);
 
   const events = store.snapshot().runEvents;
-  log("\n6. Trace receipts");
+  log("\n7. Trace receipts");
   for (const event of events.filter((e) => e.type === "egress.blocked" || e.type === "policy.decision")) {
     log(`   [${event.severity.padEnd(7)}] ${event.type.padEnd(16)} ${event.title}`);
   }
