@@ -1,6 +1,28 @@
+import { existsSync } from "node:fs";
 import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { z } from "zod";
+
+function resolveServerDistPath(): string {
+  const currentDir = path.dirname(fileURLToPath(import.meta.url));
+  if (existsSync(path.join(currentDir, "egress-proxy-main.js"))) {
+    return currentDir;
+  }
+  const siblingDist = path.resolve(currentDir, "../dist");
+  if (existsSync(path.join(siblingDist, "egress-proxy-main.js"))) {
+    return siblingDist;
+  }
+  const cwdDist = path.resolve(process.cwd(), "dist");
+  if (existsSync(path.join(cwdDist, "egress-proxy-main.js"))) {
+    return cwdDist;
+  }
+  const rootDist = path.resolve(process.cwd(), "apps/server/dist");
+  if (existsSync(path.join(rootDist, "egress-proxy-main.js"))) {
+    return rootDist;
+  }
+  return siblingDist;
+}
 
 const envSchema = z.object({
   HOST: z.string().default("0.0.0.0"),
@@ -125,7 +147,7 @@ export function loadConfig(environment: Record<string, unknown> = process.env) {
     egressProxyImage: env.EGRESS_PROXY_IMAGE,
     egressQuarantineThreshold: env.EGRESS_QUARANTINE_THRESHOLD,
     egressProbeImage: env.EGRESS_PROBE_IMAGE,
-    serverDistPath: path.resolve("apps/server/dist"),
+    serverDistPath: resolveServerDistPath(),
     authToken,
     geminiApiKey,
     openRouterApiKey,
