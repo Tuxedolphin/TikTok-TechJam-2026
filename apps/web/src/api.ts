@@ -1,4 +1,12 @@
-import type { Agent, AgentRun, AgentSession, Message, RunEvent, SystemInfo } from "./types";
+import type {
+  Agent,
+  AgentRun,
+  AgentSession,
+  ApprovalRequest,
+  Message,
+  RunEvent,
+  SystemInfo,
+} from "./types";
 
 export class ApiError extends Error {
   constructor(
@@ -90,5 +98,23 @@ export const api = {
     ),
   run: (id: string) => request<{ run: AgentRun }>("/api/runs/" + id),
   runEvents: (id: string) => request<{ events: RunEvent[] }>("/api/runs/" + id + "/events"),
+  listApprovals: (agentId?: string, status?: string) => {
+    const params = new URLSearchParams();
+    if (agentId) params.set("agentId", agentId);
+    if (status) params.set("status", status);
+    const qs = params.toString();
+    return request<{ approvals: ApprovalRequest[] }>("/api/approvals" + (qs ? "?" + qs : ""));
+  },
+  getApproval: (id: string) => request<{ approval: ApprovalRequest }>("/api/approvals/" + id),
+  approve: (id: string, operatorName = "Human Operator") =>
+    request<{ approval: ApprovalRequest }>("/api/approvals/" + id + "/approve", {
+      method: "POST",
+      body: JSON.stringify({ operatorName }),
+    }),
+  deny: (id: string, operatorName = "Human Operator") =>
+    request<{ approval: ApprovalRequest }>("/api/approvals/" + id + "/deny", {
+      method: "POST",
+      body: JSON.stringify({ operatorName }),
+    }),
 };
 

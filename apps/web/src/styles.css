@@ -220,6 +220,27 @@ textarea {
   background: var(--status-blocked);
 }
 
+.status-waiting_approval .status-dot {
+  background: #f59e0b;
+  box-shadow: 0 0 0 0 rgba(245, 158, 11, 0.7);
+  animation: pulse-amber 1.8s infinite;
+}
+
+@keyframes pulse-amber {
+  0% {
+    transform: scale(0.95);
+    box-shadow: 0 0 0 0 rgba(245, 158, 11, 0.7);
+  }
+  70% {
+    transform: scale(1.05);
+    box-shadow: 0 0 0 5px rgba(245, 158, 11, 0);
+  }
+  100% {
+    transform: scale(0.95);
+    box-shadow: 0 0 0 0 rgba(245, 158, 11, 0);
+  }
+}
+
 /* ==========================================================================
    Layout Shell
    ========================================================================== */
@@ -1484,4 +1505,246 @@ textarea:focus {
   .prompt-grid {
     grid-template-columns: 1fr;
   }
+}
+
+/* ==========================================================================
+   Human-in-the-Loop (HITL) Action Approval & Safety Styles
+   ========================================================================== */
+
+.hitl-approval-banner {
+  background: #fffbeb;
+  border: 1px solid #fde68a;
+  border-left: 4px solid #f59e0b;
+  border-radius: var(--radius);
+  padding: 16px 18px;
+  margin: 12px 0 16px;
+  box-shadow: 0 4px 16px rgba(245, 158, 11, 0.12);
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  animation: hitl-slide-in 200ms ease-out;
+}
+
+@keyframes hitl-slide-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.hitl-banner-top {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+}
+
+.hitl-shield-icon {
+  font-size: 24px;
+  line-height: 1;
+}
+
+.hitl-title-area {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.hitl-title-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.hitl-heading {
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  color: #92400e;
+}
+
+.risk-badge {
+  display: inline-flex;
+  align-items: center;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  padding: 2px 8px;
+  border-radius: 9999px;
+  text-transform: uppercase;
+}
+
+.risk-badge.risk-critical {
+  background: #fee2e2;
+  color: #b91c1c;
+  border: 1px solid #fca5a5;
+}
+
+.risk-badge.risk-high {
+  background: #ffedd5;
+  color: #c2410c;
+  border: 1px solid #fdba74;
+}
+
+.risk-badge.risk-medium {
+  background: #fef3c7;
+  color: #b45309;
+  border: 1px solid #fcd34d;
+}
+
+.risk-badge.risk-low {
+  background: #ecfdf5;
+  color: #047857;
+  border: 1px solid #a7f3d0;
+}
+
+.hitl-rule-id {
+  font-size: 11px;
+  color: #78350f;
+}
+
+.hitl-rule-id code {
+  font-family: var(--font-mono);
+  background: rgba(245, 158, 11, 0.15);
+  padding: 1px 6px;
+  border-radius: 3px;
+  font-size: 11px;
+}
+
+.hitl-reason-text {
+  font-size: 13px;
+  color: #451a03;
+  line-height: 1.45;
+}
+
+.hitl-command-card {
+  background: #18181b;
+  border-radius: var(--radius-sm);
+  padding: 10px 14px;
+  border: 1px solid #27272a;
+}
+
+.hitl-command-header {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: #a1a1aa;
+  margin-bottom: 5px;
+  font-weight: 600;
+}
+
+.hitl-command-code {
+  margin: 0;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: #fbbf24;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+.hitl-actions-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
+  padding-top: 4px;
+}
+
+.hitl-note {
+  font-size: 11px;
+  color: #92400e;
+  font-style: italic;
+}
+
+.hitl-buttons {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.btn-hitl-approve {
+  background: #16a34a;
+  color: #ffffff;
+  border: none;
+  padding: 8px 16px;
+  font-size: 12px;
+  font-weight: 600;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  transition: background 150ms ease, transform 100ms ease, box-shadow 150ms ease;
+  box-shadow: 0 1px 3px rgba(22, 163, 74, 0.3);
+}
+
+.btn-hitl-approve:hover:not(:disabled) {
+  background: #15803d;
+  transform: translateY(-1px);
+  box-shadow: 0 3px 8px rgba(22, 163, 74, 0.4);
+}
+
+.btn-hitl-deny {
+  background: #dc2626;
+  color: #ffffff;
+  border: none;
+  padding: 8px 16px;
+  font-size: 12px;
+  font-weight: 600;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  transition: background 150ms ease, transform 100ms ease, box-shadow 150ms ease;
+  box-shadow: 0 1px 3px rgba(220, 38, 38, 0.3);
+}
+
+.btn-hitl-deny:hover:not(:disabled) {
+  background: #b91c1c;
+  transform: translateY(-1px);
+  box-shadow: 0 3px 8px rgba(220, 38, 38, 0.4);
+}
+
+/* Trace event enhancements */
+.trace-title-box {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.trace-type-icon {
+  font-size: 13px;
+  line-height: 1;
+}
+
+.trace-hitl-requested {
+  border-left: 3px solid #f59e0b;
+  background: #fffdf5;
+}
+
+.trace-hitl-granted {
+  border-left: 3px solid #16a34a;
+  background: #f0fdf4;
+}
+
+.trace-hitl-denied {
+  border-left: 3px solid #dc2626;
+  background: #fef2f2;
+}
+
+.trace-hitl-auto {
+  border-left: 3px solid #3b82f6;
+  background: #eff6ff;
+}
+
+.telemetry-hitl-alert {
+  color: #b45309;
+  font-weight: 600;
 }

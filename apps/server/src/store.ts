@@ -10,9 +10,10 @@ const emptyDatabase = (): Database => ({
   messages: [],
   runs: [],
   runEvents: [],
+  approvals: [],
 });
 
-function migrateDatabase(parsed: Partial<Database> & { version?: number; sessions?: unknown[] }): Database {
+function migrateDatabase(parsed: Partial<Database> & { version?: number; sessions?: unknown[]; approvals?: unknown[] }): Database {
   if (parsed.version === 3) {
     return {
       version: 3,
@@ -21,6 +22,7 @@ function migrateDatabase(parsed: Partial<Database> & { version?: number; session
       messages: Array.isArray(parsed.messages) ? parsed.messages : [],
       runs: Array.isArray(parsed.runs) ? parsed.runs : [],
       runEvents: Array.isArray(parsed.runEvents) ? parsed.runEvents : [],
+      approvals: Array.isArray(parsed.approvals) ? parsed.approvals : [],
     };
   }
   if (parsed.version === 2 || parsed.version === 1) {
@@ -29,6 +31,7 @@ function migrateDatabase(parsed: Partial<Database> & { version?: number; session
     const rawMessages = Array.isArray(parsed.messages) ? parsed.messages : [];
     const rawRuns = Array.isArray(parsed.runs) ? parsed.runs : [];
     const rawRunEvents = Array.isArray(parsed.runEvents) ? parsed.runEvents : [];
+    const rawApprovals = Array.isArray(parsed.approvals) ? parsed.approvals : [];
 
     const sessions = [...rawSessions];
     const agents = rawAgents.map((a) => {
@@ -70,6 +73,7 @@ function migrateDatabase(parsed: Partial<Database> & { version?: number; session
       messages,
       runs,
       runEvents: rawRunEvents,
+      approvals: rawApprovals,
     };
   }
   throw new Error("Unsupported database format");

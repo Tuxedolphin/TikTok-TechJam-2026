@@ -46,7 +46,7 @@ export function buildCodexArgs(
 export function parseCodexEventLine(
   line: string,
   parsed: ParsedEvents,
-  onStep?: (step: RunnerStepEvent) => void,
+  onStep?: (step: RunnerStepEvent) => Promise<void> | void,
 ): void {
   let event: Record<string, unknown>;
   try {

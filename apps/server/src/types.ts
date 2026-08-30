@@ -1,4 +1,4 @@
-export type AgentStatus = "ready" | "busy" | "stopped" | "error";
+export type AgentStatus = "ready" | "busy" | "waiting_approval" | "stopped" | "error";
 export type RunStatus = "queued" | "running" | "completed" | "failed" | "cancelled";
 export type MessageRole = "user" | "assistant";
 
@@ -53,7 +53,11 @@ export type RunEventType =
   | "step.command"
   | "step.tool_call"
   | "step.file_change"
-  | "step.message";
+  | "step.message"
+  | "step.auto_approved"
+  | "step.approval_requested"
+  | "step.approval_granted"
+  | "step.approval_denied";
 
 export interface RunEvent {
   id: string;
@@ -64,6 +68,24 @@ export interface RunEvent {
   title: string;
   detail: string;
   createdAt: string;
+}
+
+export type ApprovalStatus = "pending" | "approved" | "denied";
+export type ActionRiskLevel = "low" | "medium" | "high" | "critical";
+
+export interface ApprovalRequest {
+  id: string;
+  runId: string;
+  agentId: string;
+  actionType: "command" | "tool_call" | "file_change";
+  actionDetail: string;
+  ruleId: string;
+  reason: string;
+  riskLevel: ActionRiskLevel;
+  status: ApprovalStatus;
+  createdAt: string;
+  resolvedAt: string | null;
+  resolvedBy: string | null;
 }
 
 export interface AgentRun {
@@ -87,8 +109,8 @@ export interface Database {
   messages: Message[];
   runs: AgentRun[];
   runEvents: RunEvent[];
+  approvals: ApprovalRequest[];
 }
-
 
 export interface CreateAgentInput {
   name: string;
@@ -121,10 +143,8 @@ export interface RunnerRequest {
   workspacePath: string;
   prompt: string;
   threadId: string | null;
-  onStep?: ((step: RunnerStepEvent) => void) | undefined;
+  onStep?: ((step: RunnerStepEvent) => Promise<void> | void) | undefined;
 }
-
-
 
 export interface AgentRunner {
   run(request: RunnerRequest): Promise<RunnerResult>;
