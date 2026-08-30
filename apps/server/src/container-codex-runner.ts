@@ -1,4 +1,5 @@
 import { execFile, spawn, type ChildProcess } from "node:child_process";
+import { createInterface } from "node:readline";
 import { promisify } from "node:util";
 import type { AppConfig } from "./config.js";
 import { buildCodexArgs, parseCodexEventLine } from "./codex-runner.js";
@@ -23,7 +24,6 @@ interface ActiveContainer {
   settled: Promise<void>;
   termination: Promise<void> | null;
 }
-
 
 interface ParsedEvents {
   messages: string[];
@@ -131,6 +131,46 @@ export class ContainerCodexRunner implements AgentRunner {
     return true;
   }
 
+  async pause(agentId: string): Promise<boolean> {
+    const active = this.active.get(agentId);
+    if (!active || active.cancelled) return false;
+    try {
+      await execFileAsync(
+        this.config.containerEngine,
+        ["pause", active.containerName],
+        { timeout: 5_000, env: this.childEnvironment() },
+      );
+      return true;
+    } catch {
+      try {
+        active.child.kill("SIGSTOP");
+        return true;
+      } catch {
+        return false;
+      }
+    }
+  }
+
+  async resume(agentId: string): Promise<boolean> {
+    const active = this.active.get(agentId);
+    if (!active || active.cancelled) return false;
+    try {
+      await execFileAsync(
+        this.config.containerEngine,
+        ["unpause", active.containerName],
+        { timeout: 5_000, env: this.childEnvironment() },
+      );
+      return true;
+    } catch {
+      try {
+        active.child.kill("SIGCONT");
+        return true;
+      } catch {
+        return false;
+      }
+    }
+  }
+
   private removeContainer(active: ActiveContainer): Promise<void> {
     if (!active.termination) {
       active.termination = execFileAsync(
@@ -192,30 +232,39 @@ export class ContainerCodexRunner implements AgentRunner {
       usage: null,
       errors: [],
     };
-    let stdout = "";
     let stderr = "";
     let totalBytes = 0;
 
-    const consume = (chunk: Buffer, target: "stdout" | "stderr") => {
-      totalBytes += chunk.byteLength;
-      if (totalBytes > this.config.codexMaxOutputBytes) {
-        active.outputExceeded = true;
-        void this.removeContainer(active);
-        return;
-      }
-      if (target === "stdout") {
-        stdout += chunk.toString("utf8");
-        const lines = stdout.split(/\r?\n/);
-        stdout = lines.pop() ?? "";
-        for (const line of lines) parseCodexEventLine(line, parsed, request.onStep);
-      } else {
-        stderr += chunk.toString("utf8");
-        if (stderr.length > 16_384) stderr = stderr.slice(-16_384);
-      }
-    };
+    const rl = createInterface({
+      input: child.stdout!,
+      crlfDelay: Infinity,
+    });
 
-    child.stdout.on("data", (chunk: Buffer) => consume(chunk, "stdout"));
-    child.stderr.on("data", (chunk: Buffer) => consume(chunk, "stderr"));
+    let stdoutError: Error | null = null;
+    const stdoutPromise = (async () => {
+      try {
+        for await (const line of rl) {
+          totalBytes += Buffer.byteLength(line, "utf8") + 1;
+          if (totalBytes > this.config.codexMaxOutputBytes) {
+            active.outputExceeded = true;
+            void this.removeContainer(active);
+            break;
+          }
+          if (line.trim()) {
+            await parseCodexEventLine(line.trim(), parsed, request.onStep);
+          }
+        }
+      } catch (err) {
+        stdoutError = err instanceof Error ? err : new Error(String(err));
+        active.cancelled = true;
+        void this.removeContainer(active);
+      }
+    })();
+
+    child.stderr!.on("data", (chunk: Buffer) => {
+      stderr += chunk.toString("utf8");
+      if (stderr.length > 16_384) stderr = stderr.slice(-16_384);
+    });
 
     const timeout = setTimeout(() => {
       active.timedOut = true;
@@ -229,7 +278,8 @@ export class ContainerCodexRunner implements AgentRunner {
         child.once("error", reject);
         child.once("close", (code) => resolve(code ?? 1));
       });
-      if (stdout.trim()) parseCodexEventLine(stdout.trim(), parsed, request.onStep);
+      await stdoutPromise;
+      if (stdoutError) throw stdoutError;
       if (active.cancelled) throw new RunCancelledError();
       if (active.timedOut) {
         if (active.budgetExceeded) {

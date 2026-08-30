@@ -1512,23 +1512,22 @@ textarea:focus {
    ========================================================================== */
 
 .hitl-approval-banner {
-  background: #fffbeb;
-  border: 1px solid #fde68a;
-  border-left: 4px solid #f59e0b;
+  background: #ffffff;
+  border: 1px solid var(--border);
   border-radius: var(--radius);
   padding: 16px 18px;
-  margin: 12px 0 16px;
-  box-shadow: 0 4px 16px rgba(245, 158, 11, 0.12);
+  margin: 16px 0;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.05), 0 4px 12px rgba(0, 0, 0, 0.03);
   display: flex;
   flex-direction: column;
   gap: 12px;
-  animation: hitl-slide-in 200ms ease-out;
+  animation: hitl-fade-in 150ms ease-out;
 }
 
-@keyframes hitl-slide-in {
+@keyframes hitl-fade-in {
   from {
     opacity: 0;
-    transform: translateY(6px);
+    transform: translateY(4px);
   }
   to {
     opacity: 1;
@@ -1539,12 +1538,6 @@ textarea:focus {
 .hitl-banner-top {
   display: flex;
   align-items: flex-start;
-  gap: 12px;
-}
-
-.hitl-shield-icon {
-  font-size: 24px;
-  line-height: 1;
 }
 
 .hitl-title-area {
@@ -1557,92 +1550,110 @@ textarea:focus {
 .hitl-title-row {
   display: flex;
   align-items: center;
+  justify-content: space-between;
   gap: 10px;
-  flex-wrap: wrap;
+}
+
+.hitl-heading-group {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.hitl-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #f59e0b;
+  display: inline-block;
+  box-shadow: 0 0 0 3px rgba(245, 158, 11, 0.15);
 }
 
 .hitl-heading {
   font-size: 13px;
-  font-weight: 700;
-  letter-spacing: 0.04em;
-  color: #92400e;
+  font-weight: 600;
+  color: var(--ink);
+  letter-spacing: -0.01em;
 }
 
 .risk-badge {
   display: inline-flex;
   align-items: center;
   font-size: 10px;
-  font-weight: 700;
-  letter-spacing: 0.05em;
-  padding: 2px 8px;
-  border-radius: 9999px;
+  font-weight: 500;
+  font-family: var(--font-mono);
   text-transform: uppercase;
+  padding: 2px 7px;
+  border-radius: var(--radius-sm);
 }
 
 .risk-badge.risk-critical {
-  background: #fee2e2;
-  color: #b91c1c;
-  border: 1px solid #fca5a5;
+  background: #fef2f2;
+  color: #991b1b;
+  border: 1px solid #fecaca;
 }
 
 .risk-badge.risk-high {
-  background: #ffedd5;
-  color: #c2410c;
-  border: 1px solid #fdba74;
+  background: #fff7ed;
+  color: #9a3412;
+  border: 1px solid #fed7aa;
 }
 
 .risk-badge.risk-medium {
-  background: #fef3c7;
-  color: #b45309;
-  border: 1px solid #fcd34d;
+  background: #fefce8;
+  color: #854d0e;
+  border: 1px solid #fef08a;
 }
 
 .risk-badge.risk-low {
-  background: #ecfdf5;
-  color: #047857;
-  border: 1px solid #a7f3d0;
+  background: #f0fdf4;
+  color: #166534;
+  border: 1px solid #bbf7d0;
 }
 
 .hitl-rule-id {
   font-size: 11px;
-  color: #78350f;
+  color: var(--muted);
 }
 
 .hitl-rule-id code {
   font-family: var(--font-mono);
-  background: rgba(245, 158, 11, 0.15);
-  padding: 1px 6px;
-  border-radius: 3px;
   font-size: 11px;
+  color: var(--ink-secondary);
+  background: var(--surface);
+  padding: 1px 5px;
+  border-radius: 3px;
+  border: 1px solid var(--border);
 }
 
 .hitl-reason-text {
-  font-size: 13px;
-  color: #451a03;
-  line-height: 1.45;
+  margin: 0;
+  font-size: 12px;
+  color: var(--ink-secondary);
+  line-height: 1.5;
 }
 
 .hitl-command-card {
   background: #18181b;
-  border-radius: var(--radius-sm);
-  padding: 10px 14px;
   border: 1px solid #27272a;
+  border-radius: var(--radius-sm);
+  padding: 10px 12px;
 }
 
 .hitl-command-header {
   font-size: 10px;
+  font-weight: 500;
   text-transform: uppercase;
-  letter-spacing: 0.05em;
-  color: #a1a1aa;
+  letter-spacing: 0.04em;
+  color: #71717a;
   margin-bottom: 5px;
-  font-weight: 600;
 }
 
 .hitl-command-code {
   margin: 0;
   font-family: var(--font-mono);
   font-size: 12px;
-  color: #fbbf24;
+  color: #f4f4f5;
   white-space: pre-wrap;
   word-break: break-all;
 }
@@ -1651,65 +1662,73 @@ textarea:focus {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 16px;
+  gap: 12px;
   flex-wrap: wrap;
-  padding-top: 4px;
+  padding-top: 8px;
+  border-top: 1px solid var(--border-subtle);
 }
 
 .hitl-note {
   font-size: 11px;
-  color: #92400e;
-  font-style: italic;
+  color: var(--muted);
 }
 
 .hitl-buttons {
   display: flex;
   align-items: center;
-  gap: 10px;
-}
-
-.btn-hitl-approve {
-  background: #16a34a;
-  color: #ffffff;
-  border: none;
-  padding: 8px 16px;
-  font-size: 12px;
-  font-weight: 600;
-  border-radius: var(--radius-sm);
-  cursor: pointer;
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  transition: background 150ms ease, transform 100ms ease, box-shadow 150ms ease;
-  box-shadow: 0 1px 3px rgba(22, 163, 74, 0.3);
-}
-
-.btn-hitl-approve:hover:not(:disabled) {
-  background: #15803d;
-  transform: translateY(-1px);
-  box-shadow: 0 3px 8px rgba(22, 163, 74, 0.4);
+  gap: 8px;
 }
 
 .btn-hitl-deny {
-  background: #dc2626;
-  color: #ffffff;
-  border: none;
-  padding: 8px 16px;
+  height: 28px;
+  padding: 0 12px;
   font-size: 12px;
-  font-weight: 600;
+  font-weight: 500;
+  color: #dc2626;
+  background: #ffffff;
+  border: 1px solid #fecaca;
   border-radius: var(--radius-sm);
   cursor: pointer;
   display: inline-flex;
   align-items: center;
-  gap: 6px;
-  transition: background 150ms ease, transform 100ms ease, box-shadow 150ms ease;
-  box-shadow: 0 1px 3px rgba(220, 38, 38, 0.3);
+  justify-content: center;
+  transition: all 120ms ease;
 }
 
 .btn-hitl-deny:hover:not(:disabled) {
-  background: #b91c1c;
-  transform: translateY(-1px);
-  box-shadow: 0 3px 8px rgba(220, 38, 38, 0.4);
+  background: #fef2f2;
+  border-color: #fca5a5;
+}
+
+.btn-hitl-deny:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.btn-hitl-approve {
+  height: 28px;
+  padding: 0 14px;
+  font-size: 12px;
+  font-weight: 500;
+  color: #ffffff;
+  background: #18181b;
+  border: 1px solid #18181b;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 120ms ease;
+}
+
+.btn-hitl-approve:hover:not(:disabled) {
+  background: #27272a;
+  border-color: #27272a;
+}
+
+.btn-hitl-approve:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
 }
 
 /* Trace event enhancements */
@@ -1720,31 +1739,27 @@ textarea:focus {
 }
 
 .trace-type-icon {
-  font-size: 13px;
+  font-size: 11px;
   line-height: 1;
 }
 
 .trace-hitl-requested {
-  border-left: 3px solid #f59e0b;
-  background: #fffdf5;
+  border-left: 2px solid #f59e0b;
 }
 
 .trace-hitl-granted {
-  border-left: 3px solid #16a34a;
-  background: #f0fdf4;
+  border-left: 2px solid #10b981;
 }
 
 .trace-hitl-denied {
-  border-left: 3px solid #dc2626;
-  background: #fef2f2;
+  border-left: 2px solid #ef4444;
 }
 
 .trace-hitl-auto {
-  border-left: 3px solid #3b82f6;
-  background: #eff6ff;
+  border-left: 2px solid #3b82f6;
 }
 
 .telemetry-hitl-alert {
-  color: #b45309;
-  font-weight: 600;
+  color: #d97706;
+  font-weight: 500;
 }

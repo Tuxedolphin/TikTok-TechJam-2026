@@ -553,6 +553,8 @@ export class AgentService {
             });
           });
 
+          await this.runner.pause?.(agentAtStart.id);
+
           const approved = await new Promise<boolean>((resolve) => {
             const timeout = setTimeout(() => {
               void this.resolveApproval(approvalId, "denied", "System (Approval timed out)");
@@ -569,6 +571,8 @@ export class AgentService {
             void this.runner.cancel(agentAtStart.id);
             throw stepViolation;
           }
+
+          await this.runner.resume?.(agentAtStart.id);
         } else if (step.type === "command" || step.type === "tool_call") {
           await this.store.mutate((database) => {
             this.appendRunEvent(database, {

@@ -149,6 +149,8 @@ export interface RunnerRequest {
 export interface AgentRunner {
   run(request: RunnerRequest): Promise<RunnerResult>;
   cancel(agentId: string): Promise<boolean>;
+  pause?(agentId: string): Promise<boolean>;
+  resume?(agentId: string): Promise<boolean>;
   isAvailable(): Promise<boolean>;
 }
 

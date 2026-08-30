@@ -10,10 +10,14 @@ Requirements:
 
 - Node.js 22+
 - Docker, Colima, or Podman
-- An OpenRouter API key and model slug such as `openai/gpt-4o-mini`
+- A Google Gemini API key (recommended) or an OpenRouter-compatible API key
 
 ```bash
-OPENROUTER_API_KEY=your-openrouter-api-key OPENROUTER_MODEL=openai/gpt-4o-mini npm run poc
+# With Gemini:
+GEMINI_API_KEY=your-gemini-key npm run poc
+
+# Or with OpenRouter fallback:
+# OPENROUTER_API_KEY=your-key OPENROUTER_MODEL=openai/gpt-4o-mini npm run poc
 ```
 
 Open <http://localhost:3000>. Press `Ctrl+C` to stop the server and remove this
@@ -87,8 +91,7 @@ podman run --rm docker.io/library/alpine:3.20 echo PODMAN_OK
 
 ```bash
 CONTAINER_ENGINE=podman \
-OPENROUTER_API_KEY=your-openrouter-api-key \
-OPENROUTER_MODEL=openai/gpt-4o-mini \
+GEMINI_API_KEY=your-gemini-api-key \
 npm run poc
 ```
 
@@ -99,9 +102,8 @@ build.
 ## Common options
 
 ```bash
-CONTAINER_RUNTIME_APT_PACKAGES='ca-certificates git ripgrep python3 build-essential' \
-OPENROUTER_API_KEY=your-openrouter-api-key \
-OPENROUTER_MODEL=openai/gpt-4o-mini \
+CONTAINER_RUNTIME_APT_PACKAGES='ca-certificates git ripgrep curl python3 build-essential' \
+GEMINI_API_KEY=your-gemini-api-key \
 npm run poc
 ```
 
