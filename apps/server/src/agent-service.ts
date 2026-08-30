@@ -112,6 +112,8 @@ export class AgentService {
       name: input.name.trim(),
       description: input.description?.trim() ?? "",
       instructions: input.instructions?.trim() ?? "",
+      ownerId: "user-a",
+      principalId: `agent-${id}`,
       status: "ready",
       workspacePath: this.workspaces.workspacePath(id),
       codexThreadId: null,

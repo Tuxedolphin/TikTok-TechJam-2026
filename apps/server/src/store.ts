@@ -1,21 +1,102 @@
 import { randomUUID } from "node:crypto";
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import path from "node:path";
-import type { Database } from "./types.js";
+import type {
+  Agent,
+  AgentRun,
+  AgentSession,
+  ApprovalRequest,
+  Database,
+  Message,
+  MockResource,
+  Principal,
+  RunEvent,
+} from "./types.js";
+
+const SEED_HUMANS: Principal[] = [
+  { id: "user-a", kind: "human", name: "User A", createdAt: "2026-08-30T00:00:00.000Z" },
+  { id: "user-b", kind: "human", name: "User B", createdAt: "2026-08-30T00:00:00.000Z" },
+];
+const SEED_RESOURCES: MockResource[] = [
+  { id: "res-a", ownerId: "user-a", name: "User A customer list", content: "alpha,beta,gamma" },
+  { id: "res-b", ownerId: "user-b", name: "User B payroll", content: "confidential-b" },
+];
 
 const emptyDatabase = (): Database => ({
-  version: 3,
+  version: 4,
   agents: [],
   sessions: [],
   messages: [],
   runs: [],
   runEvents: [],
   approvals: [],
+  principals: [...SEED_HUMANS],
+  grants: [],
+  resources: [...SEED_RESOURCES],
+  evalCases: [],
+  fleetTopics: [],
+  fleetTurns: [],
 });
 
+type AgentV3 = Omit<Agent, "ownerId" | "principalId">;
+
+interface Database3Shape {
+  version: 3;
+  agents: AgentV3[];
+  sessions: AgentSession[];
+  messages: Message[];
+  runs: AgentRun[];
+  runEvents: RunEvent[];
+  approvals: ApprovalRequest[];
+}
+
+function migrateV3ToV4(v3: Database3Shape): Database {
+  const principals: Principal[] = [
+    ...SEED_HUMANS,
+    ...v3.agents.map((a) => ({
+      id: `agent-${a.id}`,
+      kind: "agent" as const,
+      name: a.name,
+      createdAt: a.createdAt,
+    })),
+  ];
+  return {
+    version: 4,
+    agents: v3.agents.map((a) => ({ ...a, ownerId: "user-a", principalId: `agent-${a.id}` })),
+    sessions: v3.sessions,
+    messages: v3.messages,
+    runs: v3.runs,
+    runEvents: v3.runEvents,
+    approvals: v3.approvals,
+    principals,
+    grants: [],
+    resources: SEED_RESOURCES,
+    evalCases: [],
+    fleetTopics: [],
+    fleetTurns: [],
+  };
+}
+
 function migrateDatabase(parsed: Partial<Database> & { version?: number; sessions?: unknown[]; approvals?: unknown[] }): Database {
-  if (parsed.version === 3) {
+  if (parsed.version === 4) {
     return {
+      version: 4,
+      agents: Array.isArray(parsed.agents) ? parsed.agents : [],
+      sessions: Array.isArray(parsed.sessions) ? parsed.sessions : [],
+      messages: Array.isArray(parsed.messages) ? parsed.messages : [],
+      runs: Array.isArray(parsed.runs) ? parsed.runs : [],
+      runEvents: Array.isArray(parsed.runEvents) ? parsed.runEvents : [],
+      approvals: Array.isArray(parsed.approvals) ? parsed.approvals : [],
+      principals: Array.isArray(parsed.principals) ? parsed.principals : [],
+      grants: Array.isArray(parsed.grants) ? parsed.grants : [],
+      resources: Array.isArray(parsed.resources) ? parsed.resources : [],
+      evalCases: Array.isArray(parsed.evalCases) ? parsed.evalCases : [],
+      fleetTopics: Array.isArray(parsed.fleetTopics) ? parsed.fleetTopics : [],
+      fleetTurns: Array.isArray(parsed.fleetTurns) ? parsed.fleetTurns : [],
+    };
+  }
+  if (parsed.version === 3) {
+    return migrateV3ToV4({
       version: 3,
       agents: Array.isArray(parsed.agents) ? parsed.agents : [],
       sessions: Array.isArray(parsed.sessions) ? parsed.sessions : [],
@@ -23,7 +104,7 @@ function migrateDatabase(parsed: Partial<Database> & { version?: number; session
       runs: Array.isArray(parsed.runs) ? parsed.runs : [],
       runEvents: Array.isArray(parsed.runEvents) ? parsed.runEvents : [],
       approvals: Array.isArray(parsed.approvals) ? parsed.approvals : [],
-    };
+    } as Database3Shape);
   }
   if (parsed.version === 2 || parsed.version === 1) {
     const rawAgents = Array.isArray(parsed.agents) ? parsed.agents : [];
@@ -66,7 +147,7 @@ function migrateDatabase(parsed: Partial<Database> & { version?: number; session
       return { ...r, sessionId: session?.id ?? null };
     });
 
-    return {
+    return migrateV3ToV4({
       version: 3,
       agents,
       sessions,
@@ -74,7 +155,7 @@ function migrateDatabase(parsed: Partial<Database> & { version?: number; session
       runs,
       runEvents: rawRunEvents,
       approvals: rawApprovals,
-    };
+    } as Database3Shape);
   }
   throw new Error("Unsupported database format");
 }

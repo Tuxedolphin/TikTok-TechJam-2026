@@ -16,6 +16,8 @@ export interface Agent {
   name: string;
   description: string;
   instructions: string;
+  ownerId: string;
+  principalId: string;
   status: AgentStatus;
   workspacePath: string;
   codexThreadId: string | null;
@@ -57,7 +59,18 @@ export type RunEventType =
   | "step.auto_approved"
   | "step.approval_requested"
   | "step.approval_granted"
-  | "step.approval_denied";
+  | "step.approval_denied"
+  | "policy.decision"
+  | "grant.created"
+  | "grant.revoked"
+  | "grant.expired"
+  | "egress.blocked"
+  | "eval.captured"
+  | "eval.replayed"
+  | "budget.anomaly"
+  | "budget.degraded"
+  | "fleet.turn"
+  | "fleet.timeout";
 
 export interface RunEvent {
   id: string;
@@ -102,14 +115,89 @@ export interface AgentRun {
   createdAt: string;
 }
 
+export type PrincipalKind = "human" | "agent";
+
+export interface Principal {
+  id: string;              // "user-a", "user-b", "agent-<agentId>"
+  kind: PrincipalKind;
+  name: string;
+  createdAt: string;
+}
+
+export type GrantScope = "resource:read" | "resource:write" | "network:egress";
+
+export interface Grant {
+  id: string;
+  principalId: string;     // agent principal receiving the grant
+  grantedBy: string;       // human principal id
+  scope: GrantScope;
+  target: string;          // resourceId for resource:*, hostname for network:egress
+  expiresAt: string | null; // ISO; null = no expiry
+  revokedAt: string | null;
+  createdAt: string;
+}
+
+export interface MockResource {
+  id: string;
+  ownerId: string;         // human principal id
+  name: string;
+  content: string;
+}
+
+export interface PolicyDecision {
+  allowed: boolean;
+  ruleId: string;          // e.g. "AUTHZ-OWNER-010", "AUTHZ-GRANT-011", "NET-EGRESS-020"
+  reason: string;
+  principalId: string | null;
+  grantId: string | null;
+}
+
+export interface EvalCase {                 // WS-D
+  id: string;
+  sourceRunId: string;
+  agentId: string;
+  prompt: string;
+  failureReason: string;
+  expectation: "completes" | "blocked" | "denied";
+  createdAt: string;
+  lastReplayRunId: string | null;
+  lastReplayStatus: "pending" | "passed" | "failed" | null;
+}
+
+export interface FleetTopic {               // WS-E
+  id: string;
+  name: string;
+  participantAgentIds: string[];
+  state: Record<string, unknown>;           // e.g. { current: 10, target: 1 }
+  turnAgentId: string | null;
+  status: "active" | "completed" | "failed";
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface FleetTurn {
+  id: string;
+  topicId: string;
+  agentId: string;
+  runId: string | null;
+  value: string;                            // payload published this turn
+  createdAt: string;
+}
+
 export interface Database {
-  version: 3;
+  version: 4;
   agents: Agent[];
   sessions: AgentSession[];
   messages: Message[];
   runs: AgentRun[];
   runEvents: RunEvent[];
   approvals: ApprovalRequest[];
+  principals: Principal[];
+  grants: Grant[];
+  resources: MockResource[];
+  evalCases: EvalCase[];
+  fleetTopics: FleetTopic[];
+  fleetTurns: FleetTurn[];
 }
 
 export interface CreateAgentInput {
