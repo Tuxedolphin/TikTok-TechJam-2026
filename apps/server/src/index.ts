@@ -16,9 +16,9 @@ const runner = createRunner(config);
 const service = new AgentService(config, store, workspaces, runner);
 await service.initialize();
 
-// TODO(Task 4): AgentService.recordPolicyDecision does not exist yet; once it lands,
-// pass it as IdentityService's recorder so every policy decision is written to the trace.
-const identity = new IdentityService(store);
+const identity = new IdentityService(store, (runId, agentId, decision) =>
+  service.recordPolicyDecision(runId, agentId, decision),
+);
 const app = await createApp(config, service, identity);
 
 const shutdown = async (signal: string) => {

@@ -109,7 +109,8 @@ export async function createApp(
 
   app.post("/api/agents", async (request, reply) => {
     const body = createAgentBody.parse(request.body);
-    const agent = await service.createAgent(body);
+    const actor = (request.headers["x-principal-id"] as string | undefined) ?? "user-a";
+    const agent = await service.createAgent(body, actor);
     return reply.code(201).send({ agent });
   });
 

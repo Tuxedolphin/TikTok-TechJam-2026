@@ -12,6 +12,7 @@ import type {
   ApprovalStatus,
   CreateAgentInput,
   Message,
+  PolicyDecision,
   RunEvent,
   RunEventSeverity,
   RunEventType,
@@ -95,10 +96,11 @@ export class AgentService {
     return agent;
   }
 
-  async createAgent(input: CreateAgentInput): Promise<Agent> {
+  async createAgent(input: CreateAgentInput, actorPrincipalId = "user-a"): Promise<Agent> {
     const timestamp = now();
     const id = randomUUID();
     const initialSessionId = randomUUID();
+    const principalId = `agent-${id}`;
     const initialSession: AgentSession = {
       id: initialSessionId,
       agentId: id,
@@ -112,8 +114,8 @@ export class AgentService {
       name: input.name.trim(),
       description: input.description?.trim() ?? "",
       instructions: input.instructions?.trim() ?? "",
-      ownerId: "user-a",
-      principalId: `agent-${id}`,
+      ownerId: actorPrincipalId,
+      principalId,
       status: "ready",
       workspacePath: this.workspaces.workspacePath(id),
       codexThreadId: null,
@@ -126,8 +128,32 @@ export class AgentService {
     await this.store.mutate((database) => {
       database.agents.push(agent);
       database.sessions.push(initialSession);
+      database.principals.push({
+        id: principalId,
+        kind: "agent",
+        name: input.name.trim(),
+        createdAt: timestamp,
+      });
     });
     return agent;
+  }
+
+  async recordPolicyDecision(
+    runId: string,
+    agentId: string,
+    decision: PolicyDecision,
+  ): Promise<void> {
+    await this.store.mutate((database) => {
+      this.appendRunEvent(database, {
+        runId,
+        agentId,
+        type: "policy.decision",
+        severity: decision.allowed ? "info" : "warning",
+        title: decision.ruleId,
+        detail: JSON.stringify(decision),
+        createdAt: now(),
+      });
+    });
   }
 
   async updateAgent(id: string, input: UpdateAgentInput): Promise<Agent> {
