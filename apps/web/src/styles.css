@@ -733,14 +733,14 @@ textarea:focus {
   font-size: 10px;
   font-weight: 500;
   cursor: pointer;
-  transition: all 120ms ease;
+  user-select: none;
+  transition: background-color 120ms ease, border-color 120ms ease, color 120ms ease;
   white-space: nowrap;
 }
 
 .telemetry-chip:hover {
   background: #ebe9e2;
   border-color: #cac6bc;
-  transform: translateY(-1px);
 }
 
 .telemetry-chip.active {
@@ -760,6 +760,10 @@ textarea:focus {
 }
 
 .telemetry-expand-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 94px;
   border: 1px solid #dcd9d1;
   background: #fff;
   border-radius: 8px;
@@ -768,7 +772,8 @@ textarea:focus {
   font-weight: 600;
   color: #494a44;
   cursor: pointer;
-  transition: all 120ms ease;
+  user-select: none;
+  transition: background-color 120ms ease, border-color 120ms ease;
 }
 
 .telemetry-expand-btn:hover {
@@ -776,16 +781,21 @@ textarea:focus {
   border-color: #b8b5ac;
 }
 
-/* Telemetry Drawer */
+/* Telemetry Drawer (Positioned absolute so it never shifts the bar or buttons) */
 .telemetry-drawer {
-  background: rgba(255, 255, 255, 0.97);
-  backdrop-filter: blur(16px);
+  position: absolute;
+  bottom: calc(100% + 8px);
+  left: 0;
+  right: 0;
+  z-index: 50;
+  background: rgba(255, 255, 255, 0.98);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
   border: 1px solid #dcd9d0;
   border-radius: 14px;
   padding: 12px 14px;
-  margin-bottom: 8px;
-  box-shadow: 0 8px 30px rgba(0, 0, 0, 0.08);
-  animation: slideUp 160ms ease;
+  box-shadow: 0 12px 36px rgba(0, 0, 0, 0.12), 0 2px 6px rgba(0, 0, 0, 0.04);
+  animation: slideUp 160ms cubic-bezier(0.16, 1, 0.3, 1);
 }
 
 @keyframes slideUp {
@@ -820,10 +830,11 @@ textarea:focus {
   border-radius: 8px;
   padding: 5px 10px;
   font-size: 11px;
-  font-weight: 500;
+  font-weight: 600;
   color: #676861;
   cursor: pointer;
-  transition: all 120ms ease;
+  user-select: none;
+  transition: background-color 120ms ease, color 120ms ease, border-color 120ms ease;
 }
 
 .drawer-tab:hover {
@@ -847,6 +858,7 @@ textarea:focus {
   cursor: pointer;
   padding: 2px 7px;
   border-radius: 6px;
+  user-select: none;
 }
 
 .drawer-close-btn:hover {
@@ -858,6 +870,7 @@ textarea:focus {
   max-height: 250px;
   overflow-y: auto;
 }
+
 
 /* Metrics Grid inside Drawer */
 .metrics-grid {

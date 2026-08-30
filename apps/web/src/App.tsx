@@ -54,12 +54,28 @@ export default function App() {
   const [authRequired, setAuthRequired] = useState<boolean | null>(null);
   const [authInput, setAuthInput] = useState("");
   const messageEnd = useRef<HTMLDivElement>(null);
+  const telemetryRef = useRef<HTMLDivElement>(null);
   const selectedIdRef = useRef<string | null>(null);
   const mountedRef = useRef(true);
   const pollingRunIds = useRef(new Set<string>());
   selectedIdRef.current = selectedId;
 
+  useEffect(() => {
+    const handleClickOutside = (event: MouseEvent) => {
+      if (
+        drawerOpen &&
+        telemetryRef.current &&
+        !telemetryRef.current.contains(event.target as Node)
+      ) {
+        setDrawerOpen(false);
+      }
+    };
+    document.addEventListener("mousedown", handleClickOutside);
+    return () => document.removeEventListener("mousedown", handleClickOutside);
+  }, [drawerOpen]);
+
   const latestStep = useMemo(() => {
+
     return traceEvents.length > 0 ? traceEvents[traceEvents.length - 1] : null;
   }, [traceEvents]);
 
@@ -603,7 +619,7 @@ export default function App() {
 
               <form className="composer" onSubmit={sendMessage}>
                 {runs.length > 0 && activeRun && (
-                  <div className="telemetry-bar-wrapper">
+                  <div className="telemetry-bar-wrapper" ref={telemetryRef}>
                     {drawerOpen && (
                       <div className="telemetry-drawer">
                         <div className="telemetry-drawer-header">
