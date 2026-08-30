@@ -60,6 +60,7 @@ export type RunEventType =
   | "run.failed"
   | "run.blocked"
   | "run.cancelled"
+  | "run.memory_injected"
   | "step.command"
   | "step.tool_call"
   | "step.file_change"
