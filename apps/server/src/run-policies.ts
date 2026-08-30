@@ -1,8 +1,16 @@
 import type { AppConfig } from "./config.js";
 import { HttpError } from "./errors.js";
-import type { ActionRiskLevel, RunnerStepEvent, RunUsage } from "./types.js";
+import type {
+  ActionRiskLevel,
+  Grant,
+  GrantScope,
+  MockResource,
+  PolicyDecision,
+  RunnerStepEvent,
+  RunUsage,
+} from "./types.js";
 
-export type RunPolicyKind = "canary" | "budget" | "approval";
+export type RunPolicyKind = "canary" | "budget" | "approval" | "authz" | "egress" | "anomaly";
 
 export interface ActionRiskAssessment {
   riskLevel: ActionRiskLevel;
@@ -204,5 +212,64 @@ export function summarizeRunPolicies(config: AppConfig): Record<string, unknown>
     runBudgetMaxOutputTokens: config.runBudgetMaxOutputTokens,
     runBudgetMaxTotalTokens: config.runBudgetMaxTotalTokens,
     runBudgetMaxDurationMs: config.runBudgetMaxDurationMs,
+  };
+}
+
+function activeGrant(
+  grants: Grant[], principalId: string, scope: GrantScope, target: string, nowIso: string,
+): { grant: Grant | null; ruleId: string } {
+  const matching = grants.filter(
+    (g) => g.principalId === principalId && g.scope === scope && g.target === target,
+  );
+  if (matching.length === 0) return { grant: null, ruleId: scope === "network:egress" ? "NET-EGRESS-020" : "AUTHZ-GRANT-011" };
+  const revoked = matching.every((g) => g.revokedAt !== null);
+  const live = matching.find(
+    (g) => g.revokedAt === null && (g.expiresAt === null || g.expiresAt > nowIso),
+  );
+  if (live) return { grant: live, ruleId: scope === "network:egress" ? "NET-EGRESS-020" : "AUTHZ-GRANT-011" };
+  return { grant: null, ruleId: revoked ? "AUTHZ-REVOKED-013" : "AUTHZ-EXPIRED-012" };
+}
+
+export function evaluateResourceAccess(
+  agentPrincipalId: string, agentOwnerId: string,
+  resource: MockResource, grants: Grant[], nowIso: string,
+): PolicyDecision {
+  if (resource.ownerId !== agentOwnerId) {
+    return {
+      allowed: false, ruleId: "AUTHZ-OWNER-010",
+      reason: `Agent owned by ${agentOwnerId} may never access ${resource.ownerId}'s resource.`,
+      principalId: agentPrincipalId, grantId: null,
+    };
+  }
+  const { grant, ruleId } = activeGrant(grants, agentPrincipalId, "resource:read", resource.id, nowIso);
+  if (grant) {
+    return {
+      allowed: true, ruleId: "AUTHZ-GRANT-011",
+      reason: `Active grant ${grant.id} authorizes resource:read on ${resource.id}.`,
+      principalId: agentPrincipalId, grantId: grant.id,
+    };
+  }
+  return {
+    allowed: false, ruleId,
+    reason: `No active resource:read grant for ${resource.id}.`,
+    principalId: agentPrincipalId, grantId: null,
+  };
+}
+
+export function evaluateEgress(
+  agentPrincipalId: string, host: string, grants: Grant[], nowIso: string,
+): PolicyDecision {
+  const { grant } = activeGrant(grants, agentPrincipalId, "network:egress", host, nowIso);
+  if (grant) {
+    return {
+      allowed: true, ruleId: "NET-EGRESS-020",
+      reason: `Active grant ${grant.id} authorizes egress to ${host}.`,
+      principalId: agentPrincipalId, grantId: grant.id,
+    };
+  }
+  return {
+    allowed: false, ruleId: "NET-EGRESS-020",
+    reason: `Default-deny egress: no active network:egress grant for ${host}.`,
+    principalId: agentPrincipalId, grantId: null,
   };
 }
