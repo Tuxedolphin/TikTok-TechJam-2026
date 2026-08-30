@@ -18,8 +18,8 @@ const envSchema = z.object({
   RUNTIME_PROVIDER: z.enum(["local-process", "container"]).default("local-process"),
   EGRESS_ENFORCEMENT: z
     .enum(["off", "on"])
-    .default("off")
-    .describe("When on, agent containers run with no route off-box and reach the network only through the authorizing proxy."),
+    .default("on")
+    .describe("On by default: agent containers run with no route off-box and reach the network only through the authorizing proxy. Set to off to restore plain bridge networking."),
   EGRESS_PROXY_PORT: z.coerce.number().int().min(1).max(65535).default(8888),
   EGRESS_PROXY_IMAGE: z.string().min(1).default("node:22-alpine"),
   EGRESS_QUARANTINE_THRESHOLD: z.coerce.number().int().min(1).default(3),

@@ -80,8 +80,5 @@ describe("JsonStore", () => {
     expect(database.agents[0]?.ownerId).toBe("user-a");
     expect(database.agents[0]?.principalId).toBe("agent-agent-1");
     expect(database.grants).toEqual([]);
-    expect(database.evalCases).toEqual([]);
-    expect(database.fleetTopics).toEqual([]);
-    expect(database.fleetTurns).toEqual([]);
   });
 });

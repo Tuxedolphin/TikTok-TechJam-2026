@@ -117,6 +117,8 @@ export const api = {
     ),
   run: (id: string) => request<{ run: AgentRun }>("/api/runs/" + id),
   runEvents: (id: string) => request<{ events: RunEvent[] }>("/api/runs/" + id + "/events"),
+  agentEvents: (id: string) =>
+    request<{ events: RunEvent[] }>("/api/agents/" + id + "/events"),
   listApprovals: (agentId?: string, status?: string) => {
     const params = new URLSearchParams();
     if (agentId) params.set("agentId", agentId);

@@ -33,9 +33,6 @@ const emptyDatabase = (): Database => ({
   principals: [...SEED_HUMANS],
   grants: [],
   resources: [...SEED_RESOURCES],
-  evalCases: [],
-  fleetTopics: [],
-  fleetTurns: [],
 });
 
 type AgentV3 = Omit<Agent, "ownerId" | "principalId">;
@@ -71,10 +68,7 @@ function migrateV3ToV4(v3: Database3Shape): Database {
     principals,
     grants: [],
     resources: SEED_RESOURCES,
-    evalCases: [],
-    fleetTopics: [],
-    fleetTurns: [],
-  };
+        };
 }
 
 function migrateDatabase(parsed: Partial<Database> & { version?: number; sessions?: unknown[]; approvals?: unknown[] }): Database {
@@ -90,9 +84,6 @@ function migrateDatabase(parsed: Partial<Database> & { version?: number; session
       principals: Array.isArray(parsed.principals) ? parsed.principals : [],
       grants: Array.isArray(parsed.grants) ? parsed.grants : [],
       resources: Array.isArray(parsed.resources) ? parsed.resources : [],
-      evalCases: Array.isArray(parsed.evalCases) ? parsed.evalCases : [],
-      fleetTopics: Array.isArray(parsed.fleetTopics) ? parsed.fleetTopics : [],
-      fleetTurns: Array.isArray(parsed.fleetTurns) ? parsed.fleetTurns : [],
     };
   }
   if (parsed.version === 3) {

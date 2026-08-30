@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api, ApiError, setAuthToken } from "./api";
 import PassportPanel from "./PassportPanel";
+import SecurityFeed from "./SecurityFeed";
 import type {
   Agent,
   AgentRun,
@@ -676,7 +677,12 @@ export default function App() {
               </div>
             </header>
 
-            {showPassport && <PassportPanel agent={selected} />}
+            {showPassport && (
+              <>
+                <PassportPanel agent={selected} />
+                <SecurityFeed agent={selected} />
+              </>
+            )}
 
             {showSettings && (
               <form className="settings-panel" onSubmit={saveAgent}>

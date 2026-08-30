@@ -152,6 +152,8 @@ export class EgressAuthorizer {
       allowed: decision.allowed,
       ruleId: decision.ruleId,
       reason: decision.reason,
+      // Platform endpoints live on the host, whose address is private by nature.
+      allowPrivate: decision.ruleId === "NET-EGRESS-PLATFORM-021",
       agentId,
       strikes,
       quarantined,

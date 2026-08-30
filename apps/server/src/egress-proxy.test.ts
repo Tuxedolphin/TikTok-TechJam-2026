@@ -117,6 +117,34 @@ describe("egress proxy", () => {
     expect(JSON.parse(result.body).ruleId).toBe("NET-EGRESS-PRIVATE-024");
   });
 
+  it("lets a platform verdict reach a private address so the model stays reachable", async () => {
+    // The model adapter runs on the host, whose address is private. If the
+    // private-address guard refused it, every agent would lose the ability to
+    // think the moment enforcement was switched on.
+    const upstreamPort = await startUpstream();
+    const proxyPort = await listen(
+      createEgressProxy({
+        authorize: async () => ({
+          allowed: true,
+          ruleId: "NET-EGRESS-PLATFORM-021",
+          reason: "platform endpoint",
+          allowPrivate: true,
+        }),
+      }),
+    );
+    const result = await proxyFetch(proxyPort, `http://127.0.0.1:${upstreamPort}/`, "agent-1");
+    expect(result.status).toBe(200);
+    expect(result.body).toBe("upstream-payload");
+  });
+
+  it("still refuses a private address when the verdict is not a platform one", async () => {
+    const upstreamPort = await startUpstream();
+    const proxyPort = await listen(createEgressProxy({ authorize: async () => allow }));
+    const result = await proxyFetch(proxyPort, `http://127.0.0.1:${upstreamPort}/`, "agent-1");
+    expect(result.status).toBe(403);
+    expect(JSON.parse(result.body).ruleId).toBe("NET-EGRESS-PRIVATE-024");
+  });
+
   it("preserves the request path for origin-form requests", async () => {
     const paths: string[] = [];
     const upstream = createServer((request, response) => {

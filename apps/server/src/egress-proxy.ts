@@ -17,6 +17,12 @@ export interface EgressVerdict {
   allowed: boolean;
   ruleId: string;
   reason: string;
+  /**
+   * Set for platform endpoints (the model adapter on the host) whose addresses
+   * are legitimately private. Without it the private-address guard would refuse
+   * the very callback the agent needs in order to think.
+   */
+  allowPrivate?: boolean;
 }
 
 export type EgressAuthorizer = (input: {
@@ -133,8 +139,8 @@ export function createEgressProxy(options: EgressProxyOptions): Server {
    * Resolves a host once and refuses private targets, then hands back the
    * literal address so the later connect() cannot land somewhere else.
    */
-  const resolveTarget = async (host: string): Promise<string | null> => {
-    if (options.allowPrivateAddresses) return host;
+  const resolveTarget = async (host: string, permitPrivate = false): Promise<string | null> => {
+    if (options.allowPrivateAddresses || permitPrivate) return host;
     if (isIP(host)) return isPrivateAddress(host) ? null : host;
     try {
       const { address } = await dnsLookup(host);
@@ -205,7 +211,7 @@ export function createEgressProxy(options: EgressProxyOptions): Server {
         return;
       }
 
-      const resolved = await resolveTarget(target.hostname);
+      const resolved = await resolveTarget(target.hostname, verdict.allowPrivate === true);
       if (!resolved) {
         response.writeHead(403, { "content-type": "application/json" });
         response.end(DENIED_BODY(privateAddressVerdict(target.hostname), target.hostname));
@@ -278,7 +284,7 @@ export function createEgressProxy(options: EgressProxyOptions): Server {
         return;
       }
 
-      const resolved = await resolveTarget(host);
+      const resolved = await resolveTarget(host, verdict.allowPrivate === true);
       if (!resolved) {
         denyConnect(clientSocket, privateAddressVerdict(host), host);
         return;

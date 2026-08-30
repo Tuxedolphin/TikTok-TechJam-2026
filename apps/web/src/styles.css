@@ -2158,3 +2158,51 @@ textarea:focus {
     align-items: flex-start;
   }
 }
+
+/* Containment feed — makes blocked actions visible in the product itself. */
+.security-feed {
+  margin-top: 1.25rem;
+  border: 1px solid var(--border, #e3e3e3);
+  border-radius: 10px;
+  padding: 1rem 1.15rem 1.15rem;
+  background: var(--surface, #fff);
+}
+.security-feed-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1rem;
+  margin-bottom: 0.85rem;
+}
+.security-feed-head h3 { margin: 0.15rem 0 0; font-size: 1rem; }
+.security-count {
+  font-size: 0.75rem;
+  letter-spacing: 0.04em;
+  padding: 0.28rem 0.6rem;
+  border-radius: 999px;
+  border: 1px solid var(--border, #e3e3e3);
+  white-space: nowrap;
+}
+.security-count-alert { border-color: #d9443f; color: #d9443f; font-weight: 600; }
+.security-empty { font-size: 0.85rem; opacity: 0.68; line-height: 1.5; margin: 0; }
+.security-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 0.4rem; }
+.security-item {
+  display: grid;
+  grid-template-columns: 5.5rem 1fr auto;
+  align-items: baseline;
+  gap: 0.7rem;
+  padding: 0.5rem 0.6rem;
+  border-radius: 7px;
+  border-left: 3px solid transparent;
+  background: var(--surface-muted, #fafafa);
+  font-size: 0.84rem;
+}
+.security-item.security-error { border-left-color: #d9443f; }
+.security-item.security-warning { border-left-color: #d08a1e; }
+.security-item.security-info { border-left-color: #3f8f5f; }
+.security-verdict { font-size: 0.68rem; letter-spacing: 0.09em; font-weight: 700; opacity: 0.85; }
+.security-error .security-verdict { color: #d9443f; }
+.security-warning .security-verdict { color: #d08a1e; }
+.security-info .security-verdict { color: #3f8f5f; }
+.security-why { opacity: 0.66; font-style: normal; }
+.security-time { font-size: 0.72rem; opacity: 0.55; white-space: nowrap; }

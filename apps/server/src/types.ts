@@ -65,13 +65,7 @@ export type RunEventType =
   | "grant.created"
   | "grant.revoked"
   | "grant.expired"
-  | "egress.blocked"
-  | "eval.captured"
-  | "eval.replayed"
-  | "budget.anomaly"
-  | "budget.degraded"
-  | "fleet.turn"
-  | "fleet.timeout";
+  | "egress.blocked";
 
 export interface RunEvent {
   id: string;
@@ -153,37 +147,8 @@ export interface PolicyDecision {
   grantId: string | null;
 }
 
-export interface EvalCase {                 // WS-D
-  id: string;
-  sourceRunId: string;
-  agentId: string;
-  prompt: string;
-  failureReason: string;
-  expectation: "completes" | "blocked" | "denied";
-  createdAt: string;
-  lastReplayRunId: string | null;
-  lastReplayStatus: "pending" | "passed" | "failed" | null;
-}
 
-export interface FleetTopic {               // WS-E
-  id: string;
-  name: string;
-  participantAgentIds: string[];
-  state: Record<string, unknown>;           // e.g. { current: 10, target: 1 }
-  turnAgentId: string | null;
-  status: "active" | "completed" | "failed";
-  createdAt: string;
-  updatedAt: string;
-}
 
-export interface FleetTurn {
-  id: string;
-  topicId: string;
-  agentId: string;
-  runId: string | null;
-  value: string;                            // payload published this turn
-  createdAt: string;
-}
 
 export interface Database {
   version: 4;
@@ -196,9 +161,6 @@ export interface Database {
   principals: Principal[];
   grants: Grant[];
   resources: MockResource[];
-  evalCases: EvalCase[];
-  fleetTopics: FleetTopic[];
-  fleetTurns: FleetTurn[];
 }
 
 export interface CreateAgentInput {

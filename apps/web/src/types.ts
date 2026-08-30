@@ -73,7 +73,9 @@ export type RunEventType =
   | "step.approval_denied"
   | "policy.decision"
   | "grant.created"
-  | "grant.revoked";
+  | "grant.revoked"
+  | "grant.expired"
+  | "egress.blocked";
 
 export interface RunEvent {
   id: string;

@@ -277,6 +277,7 @@ export async function createApp(
         allowed: result.allowed,
         ruleId: result.ruleId,
         reason: result.reason,
+        allowPrivate: result.allowPrivate === true,
       };
     });
   }

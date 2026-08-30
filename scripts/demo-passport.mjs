@@ -24,7 +24,12 @@ const workspaces = new WorkspaceManager(path.join(root, "ws"));
 const runner = { run: async () => ({ output: "", threadId: null, usage: null }), cancel: async () => false, isAvailable: async () => true };
 const service = new AgentService(config, store, workspaces, runner);
 await service.initialize();
-const identity = new IdentityService(store, (runId, agentId, d) => service.recordPolicyDecision(runId, agentId, d));
+// Wired exactly as index.ts does, so this demo reflects production behaviour.
+const identity = new IdentityService(
+  store,
+  (runId, agentId, d) => service.recordPolicyDecision(runId, agentId, d),
+  (runId, agentId, type, grant) => service.recordGrantEvent(runId, agentId, type, grant),
+);
 const app = await createApp(config, service, identity);
 
 const j = (r) => r.json();
@@ -50,7 +55,12 @@ await app.inject({ method: "POST", url: `/api/grants/${grant.id}/revoke` });
 r = await app.inject({ method: "GET", url: "/api/resources/res-a", headers: hdr });
 console.log(`6. read after REVOKE             -> ${r.statusCode} ${j(r).decision?.ruleId}  <-- revocation bites`);
 
+// Same route the browser's containment feed calls.
+const feed = j(await app.inject({ method: "GET", url: `/api/agents/${agent.id}/events` })).events;
+console.log(`\n7. GET /api/agents/:id/events (what the UI feed shows): ${feed.length} events`);
+for (const e of feed) console.log(`   [${e.severity.padEnd(7)}] ${e.type.padEnd(16)} ${e.title}`);
+
 const events = store.snapshot().runEvents.filter((e) => e.type === "policy.decision");
-console.log(`\n7. policy.decision trace events: ${events.length}`);
+console.log(`\n8. policy.decision trace events: ${events.length}`);
 for (const e of events) console.log(`   [${e.severity.padEnd(7)}] ${e.title}`);
 await app.close();
