@@ -48,14 +48,46 @@ export default function App() {
   const [prompt, setPrompt] = useState("");
   const [activeRun, setActiveRun] = useState<AgentRun | null>(null);
   const [busy, setBusy] = useState(false);
+  const [drawerOpen, setDrawerOpen] = useState(false);
+  const [drawerTab, setDrawerTab] = useState<"trace" | "tokens" | "runs">("trace");
   const [error, setError] = useState<string | null>(null);
   const [authRequired, setAuthRequired] = useState<boolean | null>(null);
   const [authInput, setAuthInput] = useState("");
   const messageEnd = useRef<HTMLDivElement>(null);
+  const telemetryRef = useRef<HTMLDivElement>(null);
   const selectedIdRef = useRef<string | null>(null);
   const mountedRef = useRef(true);
   const pollingRunIds = useRef(new Set<string>());
   selectedIdRef.current = selectedId;
+
+  useEffect(() => {
+    const handleClickOutside = (event: MouseEvent) => {
+      if (
+        drawerOpen &&
+        telemetryRef.current &&
+        !telemetryRef.current.contains(event.target as Node)
+      ) {
+        setDrawerOpen(false);
+      }
+    };
+    document.addEventListener("mousedown", handleClickOutside);
+    return () => document.removeEventListener("mousedown", handleClickOutside);
+  }, [drawerOpen]);
+
+  const latestStep = useMemo(() => {
+
+    return traceEvents.length > 0 ? traceEvents[traceEvents.length - 1] : null;
+  }, [traceEvents]);
+
+  const activeRunTokens = useMemo(() => {
+    if (!activeRun?.usage) return 0;
+    return (
+      (activeRun.usage.inputTokens ?? 0) +
+      (activeRun.usage.cachedInputTokens ?? 0) +
+      (activeRun.usage.outputTokens ?? 0)
+    );
+  }, [activeRun]);
+
 
   const selected = useMemo(
     () => agents.find((agent) => agent.id === selectedId) ?? null,
@@ -534,88 +566,6 @@ export default function App() {
               </div>
 
               <div className="messages">
-                {runs.length > 0 && (
-                  <section className="run-dashboard">
-                    <div className="run-list-panel">
-                      <div className="run-panel-heading">
-                        <span className="eyebrow">Run history</span>
-                        <strong>{runs.length} runs</strong>
-                      </div>
-                      <div className="run-list">
-                        {runs.map((run) => (
-                          <button
-                            key={run.id}
-                            className={"run-card " + (activeRun?.id === run.id ? "selected" : "")}
-                            onClick={async () => {
-                              const [details, eventsResult] = await Promise.all([
-                                api.run(run.id),
-                                api.runEvents(run.id),
-                              ]);
-                              setActiveRun(details.run);
-                              setTraceEvents(eventsResult.events);
-                            }}
-                          >
-                            <div className="run-card-top">
-                              <strong>{run.status}</strong>
-                              <span>{formatTime(run.createdAt)}</span>
-                            </div>
-                            <p>{run.prompt}</p>
-                          </button>
-                        ))}
-                      </div>
-                    </div>
-                    <div className="trace-panel">
-                      <div className="run-panel-heading">
-                        <span className="eyebrow">Trace detail</span>
-                        <strong>{activeRun ? activeRun.status : "No run selected"}</strong>
-                      </div>
-                      {activeRun ? (
-                        <>
-                          <div className="trace-summary">
-                            <div>
-                              <span>Prompt</span>
-                              <strong>{activeRun.prompt}</strong>
-                            </div>
-                            <div>
-                              <span>Usage</span>
-                              <strong>
-                                {activeRun.usage
-                                  ? `${(activeRun.usage.inputTokens ?? 0) + (activeRun.usage.cachedInputTokens ?? 0) + (activeRun.usage.outputTokens ?? 0)} tokens`
-                                  : "—"}
-                                {activeRun.usage?.costUsd != null && (
-                                  <small style={{ display: "block", color: "var(--accent, #6366f1)" }}>
-                                    ${activeRun.usage.costUsd.toFixed(5)}
-                                  </small>
-                                )}
-                              </strong>
-                            </div>
-
-                            <div>
-                              <span>Result</span>
-                              <strong>{activeRun.error ?? activeRun.output ?? "Pending"}</strong>
-                            </div>
-                          </div>
-                          <div className="trace-events">
-                            {traceEvents.map((event) => (
-                              <article className={"trace-event trace-" + event.severity} key={event.id}>
-                                <div className="trace-event-top">
-                                  <strong>{event.title}</strong>
-                                  <span>{formatTime(event.createdAt)}</span>
-                                </div>
-                                <p>{event.detail}</p>
-                              </article>
-                            ))}
-                            {traceEvents.length === 0 && (
-                              <div className="trace-empty">No trace events yet.</div>
-                            )}
-                          </div>
-                        </>
-                      ) : (
-                        <div className="trace-empty">Select a run to inspect the trace.</div>
-                      )}
-                    </div>
-                  </section>
-                )}
                 {messages.length === 0 && !activeRun ? (
                   <div className="welcome">
                     <div className="welcome-orbit">
@@ -668,6 +618,227 @@ export default function App() {
               </div>
 
               <form className="composer" onSubmit={sendMessage}>
+                {runs.length > 0 && activeRun && (
+                  <div className="telemetry-bar-wrapper" ref={telemetryRef}>
+                    {drawerOpen && (
+                      <div className="telemetry-drawer">
+                        <div className="telemetry-drawer-header">
+                          <div className="drawer-tabs">
+                            <button
+                              type="button"
+                              className={"drawer-tab " + (drawerTab === "trace" ? "active" : "")}
+                              onClick={() => setDrawerTab("trace")}
+                            >
+                              📋 Live Trace ({traceEvents.length})
+                            </button>
+                            <button
+                              type="button"
+                              className={"drawer-tab " + (drawerTab === "tokens" ? "active" : "")}
+                              onClick={() => setDrawerTab("tokens")}
+                            >
+                              ⚡ Token & Budget
+                            </button>
+                            <button
+                              type="button"
+                              className={"drawer-tab " + (drawerTab === "runs" ? "active" : "")}
+                              onClick={() => setDrawerTab("runs")}
+                            >
+                              📜 Run History ({runs.length})
+                            </button>
+                          </div>
+                          <button
+                            type="button"
+                            className="drawer-close-btn"
+                            onClick={() => setDrawerOpen(false)}
+                            aria-label="Close telemetry drawer"
+                          >
+                            ×
+                          </button>
+                        </div>
+
+                        <div className="telemetry-drawer-body">
+                          {drawerTab === "trace" && (
+                            <div className="trace-events">
+                              {traceEvents.map((event) => (
+                                <article className={"trace-event trace-" + event.severity} key={event.id}>
+                                  <div className="trace-event-top">
+                                    <strong>{event.title}</strong>
+                                    <span>{formatTime(event.createdAt)}</span>
+                                  </div>
+                                  <p>{event.detail}</p>
+                                </article>
+                              ))}
+                              {traceEvents.length === 0 && (
+                                <div className="trace-empty">No trace events recorded for this turn.</div>
+                              )}
+                            </div>
+                          )}
+
+                          {drawerTab === "tokens" && (
+                            <div className="telemetry-tokens-view">
+                              <div className="metrics-grid">
+                                <div className="metric-box">
+                                  <span className="metric-label">Input Tokens</span>
+                                  <strong className="metric-val">{activeRun.usage?.inputTokens?.toLocaleString() ?? "0"}</strong>
+                                </div>
+                                <div className="metric-box">
+                                  <span className="metric-label">Cached Tokens</span>
+                                  <strong className="metric-val">{activeRun.usage?.cachedInputTokens?.toLocaleString() ?? "0"}</strong>
+                                </div>
+                                <div className="metric-box">
+                                  <span className="metric-label">Output Tokens</span>
+                                  <strong className="metric-val">{activeRun.usage?.outputTokens?.toLocaleString() ?? "0"}</strong>
+                                </div>
+                                <div className="metric-box highlight">
+                                  <span className="metric-label">Total Cost (USD)</span>
+                                  <strong className="metric-val">
+                                    {activeRun.usage?.costUsd != null ? `$${activeRun.usage.costUsd.toFixed(5)}` : "$0.00"}
+                                  </strong>
+                                </div>
+                              </div>
+
+                              <div className="telemetry-policy-info">
+                                <div className="policy-row">
+                                  <span>Guardrail Policy:</span>
+                                  <strong>
+                                    {system?.guardrailCanaryEnabled ? "Canary Token Active (workspace secret check)" : "Disabled"}
+                                  </strong>
+                                </div>
+                                <div className="policy-row">
+                                  <span>Token Budget Limit:</span>
+                                  <strong>
+                                    {system?.runBudgetMaxTotalTokens ? `${system.runBudgetMaxTotalTokens.toLocaleString()} tokens` : "Unlimited"}
+                                  </strong>
+                                </div>
+                                <div className="policy-row">
+                                  <span>Duration Budget Watchdog:</span>
+                                  <strong>
+                                    {system?.runBudgetMaxDurationMs ? `${system.runBudgetMaxDurationMs / 1000}s hard timeout` : "Unlimited"}
+                                  </strong>
+                                </div>
+                                <div className="policy-row">
+                                  <span>Sandbox Boundary:</span>
+                                  <strong>{system?.codexSandboxMode ?? "workspace-write"}</strong>
+                                </div>
+                              </div>
+                            </div>
+                          )}
+
+                          {drawerTab === "runs" && (
+                            <div className="run-history-grid">
+                              {runs.map((r) => {
+                                const isSelected = activeRun.id === r.id;
+                                const rTokens = r.usage
+                                  ? (r.usage.inputTokens ?? 0) + (r.usage.cachedInputTokens ?? 0) + (r.usage.outputTokens ?? 0)
+                                  : 0;
+                                return (
+                                  <button
+                                    key={r.id}
+                                    type="button"
+                                    className={"run-history-card " + (isSelected ? "selected" : "")}
+                                    onClick={async () => {
+                                      const [details, eventsResult] = await Promise.all([
+                                        api.run(r.id),
+                                        api.runEvents(r.id),
+                                      ]);
+                                      setActiveRun(details.run);
+                                      setTraceEvents(eventsResult.events);
+                                    }}
+                                  >
+                                    <div className="run-card-top">
+                                      <span className={"status-chip status-" + r.status}>{r.status}</span>
+                                      <span>{formatTime(r.createdAt)}</span>
+                                    </div>
+                                    <p className="run-card-prompt">{r.prompt}</p>
+                                    <div className="run-card-foot">
+                                      <span>{rTokens > 0 ? `${rTokens.toLocaleString()} tokens` : "—"}</span>
+                                      {r.usage?.costUsd != null && <span>${r.usage.costUsd.toFixed(4)}</span>}
+                                    </div>
+                                  </button>
+                                );
+                              })}
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    )}
+
+                    <div className="telemetry-bar">
+                      <div className="telemetry-bar-left">
+                        <span className={"telemetry-status-pill status-" + activeRun.status}>
+                          {["queued", "running"].includes(activeRun.status) && <Spinner />}
+                          {activeRun.status === "running" ? "Running" : activeRun.status}
+                        </span>
+                        <div className="telemetry-step-preview">
+                          {["queued", "running"].includes(activeRun.status) ? (
+                            latestStep ? (
+                              <span title={latestStep.detail}>
+                                <strong>{latestStep.title}:</strong> {latestStep.detail.slice(0, 42)}{latestStep.detail.length > 42 ? "…" : ""}
+                              </span>
+                            ) : (
+                              <span>Codex executing in workspace…</span>
+                            )
+                          ) : (
+                            <span title={activeRun.prompt}>
+                              <strong>Prompt:</strong> {activeRun.prompt.slice(0, 42)}{activeRun.prompt.length > 42 ? "…" : ""}
+                            </span>
+                          )}
+                        </div>
+                      </div>
+
+                      <div className="telemetry-bar-right">
+                        <button
+                          type="button"
+                          className={"telemetry-chip " + (drawerOpen && drawerTab === "tokens" ? "active" : "")}
+                          onClick={() => {
+                            setDrawerTab("tokens");
+                            setDrawerOpen(drawerOpen && drawerTab === "tokens" ? false : true);
+                          }}
+                          title="Click to view token and cost breakdown"
+                        >
+                          ⚡ {activeRunTokens > 0 ? `${activeRunTokens.toLocaleString()} tokens` : "0 tokens"}
+                          {activeRun.usage?.costUsd != null && (
+                            <span className="telemetry-chip-cost">${activeRun.usage.costUsd.toFixed(4)}</span>
+                          )}
+                        </button>
+
+                        <button
+                          type="button"
+                          className={"telemetry-chip " + (drawerOpen && drawerTab === "trace" ? "active" : "")}
+                          onClick={() => {
+                            setDrawerTab("trace");
+                            setDrawerOpen(drawerOpen && drawerTab === "trace" ? false : true);
+                          }}
+                          title="Click to view live execution trace events"
+                        >
+                          📋 {traceEvents.length} events
+                        </button>
+
+                        <button
+                          type="button"
+                          className={"telemetry-chip " + (drawerOpen && drawerTab === "runs" ? "active" : "")}
+                          onClick={() => {
+                            setDrawerTab("runs");
+                            setDrawerOpen(drawerOpen && drawerTab === "runs" ? false : true);
+                          }}
+                          title="Click to switch runs"
+                        >
+                          📜 {runs.length} runs
+                        </button>
+
+                        <button
+                          type="button"
+                          className="telemetry-expand-btn"
+                          onClick={() => setDrawerOpen(!drawerOpen)}
+                          title={drawerOpen ? "Collapse telemetry panel" : "Expand telemetry panel"}
+                        >
+                          {drawerOpen ? "▾ Hide" : "▴ View Details"}
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                )}
+
                 <textarea
                   value={prompt}
                   onChange={(event) => setPrompt(event.target.value)}
