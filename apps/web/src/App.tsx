@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api, ApiError, setAuthToken } from "./api";
+import PassportPanel from "./PassportPanel";
 import type {
   Agent,
   AgentRun,
@@ -128,6 +129,7 @@ export default function App() {
   const [pendingApprovals, setPendingApprovals] = useState<ApprovalRequest[]>([]);
   const [showCreate, setShowCreate] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
+  const [showPassport, setShowPassport] = useState(false);
   const [form, setForm] = useState(emptyForm);
   const [prompt, setPrompt] = useState("");
   const [activeRun, setActiveRun] = useState<AgentRun | null>(null);
@@ -258,6 +260,7 @@ export default function App() {
     setTraceEvents([]);
     setPendingApprovals([]);
     setShowSettings(false);
+    setShowPassport(false);
     setSessionDropdownOpen(false);
     if (!selectedId) {
       setMessages([]);
@@ -645,6 +648,12 @@ export default function App() {
               <div className="header-actions">
                 <button
                   className="button button-ghost"
+                  onClick={() => setShowPassport((value) => !value)}
+                >
+                  Passport
+                </button>
+                <button
+                  className="button button-ghost"
                   onClick={() => setShowSettings((value) => !value)}
                   disabled={busy || selected.status === "busy"}
                 >
@@ -666,6 +675,8 @@ export default function App() {
                 </button>
               </div>
             </header>
+
+            {showPassport && <PassportPanel agent={selected} />}
 
             {showSettings && (
               <form className="settings-panel" onSubmit={saveAgent}>

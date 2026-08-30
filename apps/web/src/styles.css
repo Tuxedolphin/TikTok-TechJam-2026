@@ -1811,3 +1811,350 @@ textarea:focus {
   color: #d97706;
   font-weight: 500;
 }
+
+/* ==========================================================================
+   Identity & Delegation Passport Panel
+   ========================================================================== */
+
+.passport-panel {
+  max-width: 1100px;
+  margin: 0 auto 16px;
+  padding: 16px;
+  border-radius: var(--radius);
+  border: 1px solid var(--border);
+  background: var(--surface);
+}
+
+.passport-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 16px;
+  padding-bottom: 12px;
+  margin-bottom: 12px;
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.passport-header h2 {
+  font-size: 14px;
+  margin: 2px 0 0;
+}
+
+.passport-identity {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  align-items: flex-end;
+}
+
+.passport-identity-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 11px;
+}
+
+.passport-identity-label {
+  color: var(--muted);
+}
+
+.passport-identity-row strong {
+  font-weight: 600;
+  color: var(--ink);
+}
+
+.passport-identity-row code {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--ink-secondary);
+  background: #ffffff;
+  padding: 1px 5px;
+  border-radius: 3px;
+  border: 1px solid var(--border);
+}
+
+.passport-body {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 16px;
+}
+
+.passport-column {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  min-width: 0;
+}
+
+.passport-block {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.passport-block-title {
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--muted);
+}
+
+.passport-hint {
+  margin: 0;
+  font-size: 10px;
+  color: var(--muted);
+  line-height: 1.5;
+}
+
+.passport-hint code {
+  font-family: var(--font-mono);
+  background: #ffffff;
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  padding: 0 4px;
+}
+
+/* Acting-as switcher */
+.acting-as-switcher {
+  display: inline-flex;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  overflow: hidden;
+  width: fit-content;
+}
+
+.acting-as-btn {
+  border: 0;
+  background: #ffffff;
+  color: var(--ink-secondary);
+  font-size: 12px;
+  font-weight: 500;
+  padding: 6px 12px;
+  cursor: pointer;
+  transition: background-color 100ms ease, color 100ms ease;
+}
+
+.acting-as-btn + .acting-as-btn {
+  border-left: 1px solid var(--border);
+}
+
+.acting-as-btn:hover {
+  background: var(--surface-hover);
+}
+
+.acting-as-btn.active {
+  background: #18181b;
+  color: #ffffff;
+}
+
+/* Grant issuance form */
+.grant-form {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+  background: #ffffff;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 10px;
+}
+
+.grant-form label {
+  font-size: 10px;
+}
+
+.grant-form select {
+  width: 100%;
+  height: 30px;
+  margin-top: 4px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: #ffffff;
+  font-size: 12px;
+  padding: 0 6px;
+}
+
+.grant-form input {
+  height: 30px;
+  font-size: 12px;
+}
+
+.grant-form .button {
+  grid-column: 1 / -1;
+  margin-top: 2px;
+}
+
+/* Grant list */
+.grant-list {
+  display: grid;
+  gap: 6px;
+}
+
+.grant-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  background: #ffffff;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 8px 10px;
+}
+
+.grant-row-main {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+}
+
+.grant-scope {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--ink);
+  white-space: nowrap;
+}
+
+.grant-row-main code {
+  font-size: 10px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.grant-struck {
+  text-decoration: line-through;
+  color: var(--muted-light);
+}
+
+.grant-row-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.grant-countdown {
+  font-size: 11px;
+  color: var(--ink-secondary);
+  min-width: 44px;
+  text-align: right;
+}
+
+.grant-badge {
+  font-size: 10px;
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  padding: 2px 7px;
+  border-radius: var(--radius-sm);
+}
+
+.grant-badge-revoked {
+  background: #fef2f2;
+  color: #991b1b;
+  border: 1px solid #fecaca;
+}
+
+.grant-badge-expired {
+  background: var(--surface-hover);
+  color: var(--muted);
+  border: 1px solid var(--border);
+}
+
+.grant-revoke-btn {
+  height: 24px;
+  padding: 0 8px;
+  font-size: 10px;
+  border: 1px solid #fecaca;
+  border-radius: var(--radius-sm);
+}
+
+.grant-status-revoked,
+.grant-status-expired {
+  opacity: 0.7;
+}
+
+/* Access probe */
+.probe-buttons {
+  display: flex;
+  gap: 8px;
+}
+
+.probe-btn {
+  border: 1px solid var(--border);
+}
+
+.probe-results {
+  display: grid;
+  gap: 8px;
+}
+
+.probe-result {
+  border-radius: var(--radius-sm);
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+}
+
+.probe-result-top {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.probe-result-top strong {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+}
+
+.probe-rule-id {
+  margin-left: auto;
+}
+
+.probe-reason {
+  margin: 6px 0 0;
+  font-size: 11px;
+  color: var(--ink-secondary);
+  line-height: 1.5;
+}
+
+.probe-content {
+  margin: 8px 0 0;
+  padding: 8px 10px;
+  background: #18181b;
+  color: #f4f4f5;
+  border-radius: var(--radius-sm);
+  font-size: 11px;
+  overflow-x: auto;
+}
+
+.probe-allow {
+  background: #f0fdf4;
+  border-color: #bbf7d0;
+}
+
+.probe-allow .probe-result-top strong {
+  color: #166534;
+}
+
+.probe-deny {
+  background: #fef2f2;
+  border-color: #fecaca;
+}
+
+.probe-deny .probe-result-top strong {
+  color: #991b1b;
+}
+
+@media (max-width: 800px) {
+  .passport-body {
+    grid-template-columns: 1fr;
+  }
+  .passport-header {
+    flex-direction: column;
+  }
+  .passport-identity {
+    align-items: flex-start;
+  }
+}

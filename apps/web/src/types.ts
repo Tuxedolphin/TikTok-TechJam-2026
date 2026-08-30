@@ -15,6 +15,8 @@ export interface Agent {
   name: string;
   description: string;
   instructions: string;
+  ownerId: string;
+  principalId: string;
   status: AgentStatus;
   workspacePath: string;
   codexThreadId: string | null;
@@ -68,7 +70,10 @@ export type RunEventType =
   | "step.auto_approved"
   | "step.approval_requested"
   | "step.approval_granted"
-  | "step.approval_denied";
+  | "step.approval_denied"
+  | "policy.decision"
+  | "grant.created"
+  | "grant.revoked";
 
 export interface RunEvent {
   id: string;
@@ -113,4 +118,41 @@ export interface SystemInfo {
   runBudgetMaxOutputTokens: number | null;
   runBudgetMaxTotalTokens: number | null;
   runBudgetMaxDurationMs: number | null;
+}
+
+export type PrincipalKind = "human" | "agent";
+
+export interface Principal {
+  id: string;
+  kind: PrincipalKind;
+  name: string;
+  createdAt: string;
+}
+
+export type GrantScope = "resource:read" | "resource:write" | "network:egress";
+
+export interface Grant {
+  id: string;
+  principalId: string;
+  grantedBy: string;
+  scope: GrantScope;
+  target: string;
+  expiresAt: string | null;
+  revokedAt: string | null;
+  createdAt: string;
+}
+
+export interface MockResource {
+  id: string;
+  ownerId: string;
+  name: string;
+  content: string;
+}
+
+export interface PolicyDecision {
+  allowed: boolean;
+  ruleId: string;
+  reason: string;
+  principalId: string | null;
+  grantId: string | null;
 }
