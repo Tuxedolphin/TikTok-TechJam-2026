@@ -220,6 +220,27 @@ textarea {
   background: var(--status-blocked);
 }
 
+.status-waiting_approval .status-dot {
+  background: #f59e0b;
+  box-shadow: 0 0 0 0 rgba(245, 158, 11, 0.7);
+  animation: pulse-amber 1.8s infinite;
+}
+
+@keyframes pulse-amber {
+  0% {
+    transform: scale(0.95);
+    box-shadow: 0 0 0 0 rgba(245, 158, 11, 0.7);
+  }
+  70% {
+    transform: scale(1.05);
+    box-shadow: 0 0 0 5px rgba(245, 158, 11, 0);
+  }
+  100% {
+    transform: scale(0.95);
+    box-shadow: 0 0 0 0 rgba(245, 158, 11, 0);
+  }
+}
+
 /* ==========================================================================
    Layout Shell
    ========================================================================== */
@@ -1484,4 +1505,261 @@ textarea:focus {
   .prompt-grid {
     grid-template-columns: 1fr;
   }
+}
+
+/* ==========================================================================
+   Human-in-the-Loop (HITL) Action Approval & Safety Styles
+   ========================================================================== */
+
+.hitl-approval-banner {
+  background: #ffffff;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 16px 18px;
+  margin: 16px 0;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.05), 0 4px 12px rgba(0, 0, 0, 0.03);
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  animation: hitl-fade-in 150ms ease-out;
+}
+
+@keyframes hitl-fade-in {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.hitl-banner-top {
+  display: flex;
+  align-items: flex-start;
+}
+
+.hitl-title-area {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.hitl-title-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.hitl-heading-group {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.hitl-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #f59e0b;
+  display: inline-block;
+  box-shadow: 0 0 0 3px rgba(245, 158, 11, 0.15);
+}
+
+.hitl-heading {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--ink);
+  letter-spacing: -0.01em;
+}
+
+.risk-badge {
+  display: inline-flex;
+  align-items: center;
+  font-size: 10px;
+  font-weight: 500;
+  font-family: var(--font-mono);
+  text-transform: uppercase;
+  padding: 2px 7px;
+  border-radius: var(--radius-sm);
+}
+
+.risk-badge.risk-critical {
+  background: #fef2f2;
+  color: #991b1b;
+  border: 1px solid #fecaca;
+}
+
+.risk-badge.risk-high {
+  background: #fff7ed;
+  color: #9a3412;
+  border: 1px solid #fed7aa;
+}
+
+.risk-badge.risk-medium {
+  background: #fefce8;
+  color: #854d0e;
+  border: 1px solid #fef08a;
+}
+
+.risk-badge.risk-low {
+  background: #f0fdf4;
+  color: #166534;
+  border: 1px solid #bbf7d0;
+}
+
+.hitl-rule-id {
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.hitl-rule-id code {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--ink-secondary);
+  background: var(--surface);
+  padding: 1px 5px;
+  border-radius: 3px;
+  border: 1px solid var(--border);
+}
+
+.hitl-reason-text {
+  margin: 0;
+  font-size: 12px;
+  color: var(--ink-secondary);
+  line-height: 1.5;
+}
+
+.hitl-command-card {
+  background: #18181b;
+  border: 1px solid #27272a;
+  border-radius: var(--radius-sm);
+  padding: 10px 12px;
+}
+
+.hitl-command-header {
+  font-size: 10px;
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: #71717a;
+  margin-bottom: 5px;
+}
+
+.hitl-command-code {
+  margin: 0;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: #f4f4f5;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+.hitl-actions-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  padding-top: 8px;
+  border-top: 1px solid var(--border-subtle);
+}
+
+.hitl-note {
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.hitl-buttons {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.btn-hitl-deny {
+  height: 28px;
+  padding: 0 12px;
+  font-size: 12px;
+  font-weight: 500;
+  color: #dc2626;
+  background: #ffffff;
+  border: 1px solid #fecaca;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 120ms ease;
+}
+
+.btn-hitl-deny:hover:not(:disabled) {
+  background: #fef2f2;
+  border-color: #fca5a5;
+}
+
+.btn-hitl-deny:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.btn-hitl-approve {
+  height: 28px;
+  padding: 0 14px;
+  font-size: 12px;
+  font-weight: 500;
+  color: #ffffff;
+  background: #18181b;
+  border: 1px solid #18181b;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 120ms ease;
+}
+
+.btn-hitl-approve:hover:not(:disabled) {
+  background: #27272a;
+  border-color: #27272a;
+}
+
+.btn-hitl-approve:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* Trace event enhancements */
+.trace-title-box {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.trace-type-icon {
+  font-size: 11px;
+  line-height: 1;
+}
+
+.trace-hitl-requested {
+  border-left: 2px solid #f59e0b;
+}
+
+.trace-hitl-granted {
+  border-left: 2px solid #10b981;
+}
+
+.trace-hitl-denied {
+  border-left: 2px solid #ef4444;
+}
+
+.trace-hitl-auto {
+  border-left: 2px solid #3b82f6;
+}
+
+.telemetry-hitl-alert {
+  color: #d97706;
+  font-weight: 500;
 }

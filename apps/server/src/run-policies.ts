@@ -1,8 +1,15 @@
 import type { AppConfig } from "./config.js";
 import { HttpError } from "./errors.js";
-import type { RunUsage } from "./types.js";
+import type { ActionRiskLevel, RunnerStepEvent, RunUsage } from "./types.js";
 
-export type RunPolicyKind = "canary" | "budget";
+export type RunPolicyKind = "canary" | "budget" | "approval";
+
+export interface ActionRiskAssessment {
+  riskLevel: ActionRiskLevel;
+  requiresApproval: boolean;
+  ruleId: string;
+  reason: string;
+}
 
 export class RunPolicyViolationError extends HttpError {
   constructor(
@@ -12,6 +19,77 @@ export class RunPolicyViolationError extends HttpError {
   ) {
     super(statusCode, message);
   }
+}
+
+export function evaluateActionRisk(step: RunnerStepEvent): ActionRiskAssessment {
+  const text = `${step.title} ${step.detail} ${JSON.stringify(step.rawPayload ?? "")}`;
+
+  // 1. Destructive filesystem operations
+  if (
+    /\brm\s+(-[a-zA-Z]*r[a-zA-Z]*\s+|--recursive\s+)/i.test(text) ||
+    /\b(mkfs|dd\s+if=|chmod\s+-R\s+777)\b/i.test(text)
+  ) {
+    return {
+      riskLevel: "critical",
+      requiresApproval: true,
+      ruleId: "SEC-DESTRUCTIVE-001",
+      reason: "Destructive filesystem operation detected that could cause permanent data loss.",
+    };
+  }
+
+  // 2. Sensitive credential file access or leak attempts
+  if (
+    /\b(credentials\.env|\.env(?:\.[a-zA-Z0-9_-]+)?|id_rsa|id_ed25519|\.aws\/credentials|\/etc\/shadow|\/etc\/passwd)\b/i.test(text)
+  ) {
+    return {
+      riskLevel: "high",
+      requiresApproval: true,
+      ruleId: "SEC-CREDENTIALS-002",
+      reason: "Access to protected credentials or private keys detected.",
+    };
+  }
+
+  // 3. External network egress & exfiltration tools
+  if (
+    /\b(curl|wget|fetch|nc|netcat|ncat|telnet|ssh|scp|rsync|socat)\b/i.test(text) ||
+    /https?:\/\/[^\s"']+/i.test(text)
+  ) {
+    return {
+      riskLevel: "high",
+      requiresApproval: true,
+      ruleId: "SEC-EGRESS-003",
+      reason: "Outbound network connection or data transfer tool detected outside local perimeter.",
+    };
+  }
+
+  // 4. Package publishing / remote repository releases
+  if (
+    /\b(npm\s+publish|pnpm\s+publish|yarn\s+publish|twine\s+upload|cargo\s+publish|pip\s+upload)\b/i.test(text)
+  ) {
+    return {
+      riskLevel: "medium",
+      requiresApproval: true,
+      ruleId: "SEC-SUPPLY-004",
+      reason: "Package registry publishing action detected targeting remote repositories.",
+    };
+  }
+
+  // 5. Privilege escalation attempts
+  if (/\b(sudo|su\s+-|chown\s+root)\b/i.test(text)) {
+    return {
+      riskLevel: "critical",
+      requiresApproval: true,
+      ruleId: "SEC-PRIVILEGE-005",
+      reason: "Privilege escalation attempt detected targeting elevated system permissions.",
+    };
+  }
+
+  return {
+    riskLevel: "low",
+    requiresApproval: false,
+    ruleId: "ALLOW-STANDARD-000",
+    reason: "Standard workspace execution automatically approved under active policy.",
+  };
 }
 
 export function rejectPromptIfCanaryPresent(config: AppConfig, prompt: string): void {

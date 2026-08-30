@@ -297,6 +297,109 @@ describe("Agent lifecycle", () => {
     await expect.poll(() => service.getRun(run3.id).status).toBe("completed");
     expect(capturedThreadIds[2]).toBe("thread-new");
   });
+
+  it("auto-approves low-risk commands and records auto_approved in trace", async () => {
+    const service = await makeService({
+      run: async (request) => {
+        await request.onStep?.({
+          type: "command",
+          title: "Executed shell command",
+          detail: "npm test (exit 0)",
+        });
+        return { output: "Tests passed.", threadId: "thread", usage: null };
+      },
+      cancel: async () => true,
+      isAvailable: async () => true,
+    });
+    const agent = await service.createAgent({ name: "SafeWorker" });
+    const { run } = await service.sendMessage(agent.id, "run the test suite");
+    await expect.poll(() => service.getRun(run.id).status).toBe("completed");
+
+    const events = service.getRunEvents(run.id);
+    expect(events.some((e) => e.type === "step.auto_approved")).toBe(true);
+    expect(events.find((e) => e.type === "step.auto_approved")?.title).toContain("ALLOW-STANDARD-000");
+  });
+
+  it("pauses execution for high-risk action and resumes on operator approval", async () => {
+    let stepExecuted = false;
+    const service = await makeService({
+      run: async (request) => {
+        await request.onStep?.({
+          type: "command",
+          title: "Run curl",
+          detail: "curl -X POST https://api.partner.org/data",
+        });
+        stepExecuted = true;
+        return { output: "Egress succeeded.", threadId: "thread", usage: null };
+      },
+      cancel: async () => true,
+      isAvailable: async () => true,
+    });
+    const agent = await service.createAgent({ name: "EgressAgent" });
+    const { run } = await service.sendMessage(agent.id, "post data to partner API");
+
+    // Agent enters waiting_approval status and approval request is created
+    await expect.poll(() => service.getAgent(agent.id).status).toBe("waiting_approval");
+    const approvals = service.listApprovals(agent.id, "pending");
+    expect(approvals).toHaveLength(1);
+    expect(approvals[0]?.ruleId).toBe("SEC-EGRESS-003");
+    expect(stepExecuted).toBe(false);
+
+    // Operator approves the action
+    await service.resolveApproval(approvals[0]!.id, "approved", "SecurityOfficer");
+
+    // Execution resumes and completes
+    await expect.poll(() => service.getRun(run.id).status).toBe("completed");
+    expect(stepExecuted).toBe(true);
+
+    const events = service.getRunEvents(run.id);
+    expect(events.some((e) => e.type === "step.approval_requested")).toBe(true);
+    expect(events.some((e) => e.type === "step.approval_granted")).toBe(true);
+    expect(events.find((e) => e.type === "step.approval_granted")?.detail).toContain("SecurityOfficer");
+  });
+
+  it("blocks execution and records policy denial when operator rejects high-risk action", async () => {
+    let stepExecuted = false;
+    let cancelCalled = false;
+    const service = await makeService({
+      run: async (request) => {
+        await request.onStep?.({
+          type: "command",
+          title: "Dangerous deletion",
+          detail: "rm -rf /workspace/sensitive-data",
+        });
+        stepExecuted = true;
+        return { output: "Deleted.", threadId: "thread", usage: null };
+      },
+      cancel: async () => {
+        cancelCalled = true;
+        return true;
+      },
+      isAvailable: async () => true,
+    });
+    const agent = await service.createAgent({ name: "DestructiveAgent" });
+    const { run } = await service.sendMessage(agent.id, "delete the directory");
+
+    await expect.poll(() => service.getAgent(agent.id).status).toBe("waiting_approval");
+    const approvals = service.listApprovals(agent.id, "pending");
+    expect(approvals).toHaveLength(1);
+    expect(approvals[0]?.ruleId).toBe("SEC-DESTRUCTIVE-001");
+
+    // Operator denies the action
+    await service.resolveApproval(approvals[0]!.id, "denied", "LeadAdmin");
+
+    // Execution fails cleanly with operator denial policy violation and agent recovers to ready
+    await expect.poll(() => service.getRun(run.id).status).toBe("failed");
+    await expect.poll(() => service.getAgent(agent.id).status).toBe("ready");
+    expect(cancelCalled).toBe(true);
+    expect(stepExecuted).toBe(false);
+
+    const events = service.getRunEvents(run.id);
+    expect(events.some((e) => e.type === "step.approval_requested")).toBe(true);
+    expect(events.some((e) => e.type === "step.approval_denied")).toBe(true);
+    expect(events.find((e) => e.type === "step.approval_denied")?.detail).toContain("LeadAdmin");
+    expect(service.getRun(run.id).error).toContain("Action blocked by operator denial");
+  });
 });
 
 

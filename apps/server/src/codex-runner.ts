@@ -1,5 +1,6 @@
 import { execFile } from "node:child_process";
 import { spawn, type ChildProcess } from "node:child_process";
+import { createInterface } from "node:readline";
 import { promisify } from "node:util";
 import type { AppConfig } from "./config.js";
 import { RunCancelledError } from "./errors.js";
@@ -43,11 +44,11 @@ export function buildCodexArgs(
   return args;
 }
 
-export function parseCodexEventLine(
+export async function parseCodexEventLine(
   line: string,
   parsed: ParsedEvents,
-  onStep?: (step: RunnerStepEvent) => void,
-): void {
+  onStep?: (step: RunnerStepEvent) => Promise<void> | void,
+): Promise<void> {
   let event: Record<string, unknown>;
   try {
     event = JSON.parse(line) as Record<string, unknown>;
@@ -63,7 +64,7 @@ export function parseCodexEventLine(
     const item = event.item as Record<string, unknown>;
     if (item.type === "agent_message" && typeof item.text === "string") {
       parsed.messages.push(item.text);
-      onStep?.({
+      await onStep?.({
         type: "message",
         title: "Agent response",
         detail: item.text.slice(0, 160),
@@ -72,7 +73,7 @@ export function parseCodexEventLine(
     } else if (item.type === "command_execution") {
       const cmd = typeof item.command === "string" ? item.command : "command";
       const exitCode = typeof item.exit_code === "number" ? ` (exit ${item.exit_code})` : "";
-      onStep?.({
+      await onStep?.({
         type: "command",
         title: "Executed shell command",
         detail: `${cmd}${exitCode}`,
@@ -80,7 +81,7 @@ export function parseCodexEventLine(
       });
     } else if (item.type === "file_change") {
       const filePath = typeof item.path === "string" ? item.path : "file";
-      onStep?.({
+      await onStep?.({
         type: "file_change",
         title: "File modified",
         detail: filePath,
@@ -97,7 +98,7 @@ export function parseCodexEventLine(
         typeof item.input === "string"
           ? item.input
           : JSON.stringify(item.input ?? item.arguments ?? "");
-      onStep?.({
+      await onStep?.({
         type: "tool_call",
         title: `Invoked tool ${name}`,
         detail: inputStr.slice(0, 160),
@@ -131,7 +132,6 @@ export function parseCodexEventLine(
     parsed.errors.push(message);
   }
 }
-
 
 export class CodexRunner implements AgentRunner {
   private readonly active = new Map<
@@ -169,6 +169,28 @@ export class CodexRunner implements AgentRunner {
     this.terminate(active);
     await active.settled;
     return true;
+  }
+
+  async pause(agentId: string): Promise<boolean> {
+    const active = this.active.get(agentId);
+    if (!active || active.cancelled) return false;
+    try {
+      active.child.kill("SIGSTOP");
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  async resume(agentId: string): Promise<boolean> {
+    const active = this.active.get(agentId);
+    if (!active || active.cancelled) return false;
+    try {
+      active.child.kill("SIGCONT");
+      return true;
+    } catch {
+      return false;
+    }
   }
 
   async run(request: RunnerRequest): Promise<RunnerResult> {
@@ -211,34 +233,41 @@ export class CodexRunner implements AgentRunner {
       usage: null,
       errors: [],
     };
-    let stdout = "";
     let stderr = "";
     let totalBytes = 0;
 
-    const consume = (chunk: Buffer, target: "stdout" | "stderr") => {
-      totalBytes += chunk.byteLength;
-      if (totalBytes > this.config.codexMaxOutputBytes) {
-        active.outputExceeded = true;
-        this.terminate(active);
-        return;
-      }
-      if (target === "stdout") {
-        stdout += chunk.toString("utf8");
-        const lines = stdout.split(/\r?\n/);
-        stdout = lines.pop() ?? "";
-        for (const line of lines) {
-          parseCodexEventLine(line, parsed, request.onStep);
-        }
-      } else {
-        stderr += chunk.toString("utf8");
-        if (stderr.length > 16_384) {
-          stderr = stderr.slice(-16_384);
-        }
-      }
-    };
+    const rl = createInterface({
+      input: child.stdout!,
+      crlfDelay: Infinity,
+    });
 
-    child.stdout.on("data", (chunk: Buffer) => consume(chunk, "stdout"));
-    child.stderr.on("data", (chunk: Buffer) => consume(chunk, "stderr"));
+    let stdoutError: Error | null = null;
+    const stdoutPromise = (async () => {
+      try {
+        for await (const line of rl) {
+          totalBytes += Buffer.byteLength(line, "utf8") + 1;
+          if (totalBytes > this.config.codexMaxOutputBytes) {
+            active.outputExceeded = true;
+            this.terminate(active);
+            break;
+          }
+          if (line.trim()) {
+            await parseCodexEventLine(line.trim(), parsed, request.onStep);
+          }
+        }
+      } catch (err) {
+        stdoutError = err instanceof Error ? err : new Error(String(err));
+        active.cancelled = true;
+        this.terminate(active);
+      }
+    })();
+
+    child.stderr!.on("data", (chunk: Buffer) => {
+      stderr += chunk.toString("utf8");
+      if (stderr.length > 16_384) {
+        stderr = stderr.slice(-16_384);
+      }
+    });
 
     const timeout = setTimeout(() => {
       active.timedOut = true;
@@ -252,8 +281,9 @@ export class CodexRunner implements AgentRunner {
         child.once("error", reject);
         child.once("close", (code) => resolve(code ?? 1));
       });
-      if (stdout.trim()) {
-        parseCodexEventLine(stdout.trim(), parsed, request.onStep);
+      await stdoutPromise;
+      if (stdoutError) {
+        throw stdoutError;
       }
       if (active.cancelled) {
         throw new RunCancelledError();

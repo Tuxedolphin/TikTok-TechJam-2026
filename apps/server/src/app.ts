@@ -33,6 +33,14 @@ const createSessionBody = z.object({
 const queryWithSession = z.object({
   sessionId: z.string().trim().min(1).max(128).optional(),
 });
+const approvalIdParams = z.object({ id: z.string().uuid() });
+const approvalQuery = z.object({
+  agentId: z.string().uuid().optional(),
+  status: z.enum(["pending", "approved", "denied"]).optional(),
+});
+const resolveApprovalBody = z.object({
+  operatorName: z.string().trim().min(1).max(80).optional(),
+}).optional();
 
 
 
@@ -166,6 +174,30 @@ export async function createApp(
   app.get("/api/runs/:id/events", async (request) => {
     const { id } = runIdParams.parse(request.params);
     return { events: service.getRunEvents(id) };
+  });
+
+  app.get("/api/approvals", async (request) => {
+    const query = approvalQuery.parse(request.query);
+    return { approvals: service.listApprovals(query.agentId, query.status) };
+  });
+
+  app.get("/api/approvals/:id", async (request) => {
+    const { id } = approvalIdParams.parse(request.params);
+    return { approval: service.getApproval(id) };
+  });
+
+  app.post("/api/approvals/:id/approve", async (request) => {
+    const { id } = approvalIdParams.parse(request.params);
+    const body = resolveApprovalBody.parse(request.body);
+    const approval = await service.resolveApproval(id, "approved", body?.operatorName);
+    return { approval };
+  });
+
+  app.post("/api/approvals/:id/deny", async (request) => {
+    const { id } = approvalIdParams.parse(request.params);
+    const body = resolveApprovalBody.parse(request.body);
+    const approval = await service.resolveApproval(id, "denied", body?.operatorName);
+    return { approval };
   });
 
   app.post("/api/adapter/responses", async (request, reply) => {
