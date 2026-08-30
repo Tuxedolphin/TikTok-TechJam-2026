@@ -10,6 +10,7 @@ import type { AgentService } from "./agent-service.js";
 import { handleGeminiResponsesAdapter } from "./gemini-adapter.js";
 import type { IdentityService } from "./identity.js";
 import type { EgressAuthorizer } from "./egress-authorizer.js";
+import type { EgressNetworkManager } from "./egress-network.js";
 
 const agentIdParams = z.object({ id: z.string().uuid() });
 const runIdParams = z.object({ id: z.string().uuid() });
@@ -51,6 +52,14 @@ const grantBody = z.object({
 });
 const grantQuery = z.object({ principalId: z.string().min(1).max(128).optional() });
 const grantIdParams = z.object({ id: z.string().uuid() });
+const egressProbeBody = z.object({
+  host: z
+    .string()
+    .trim()
+    .min(1)
+    .max(253)
+    .regex(/^[a-zA-Z0-9.-]+$/, "host must be a bare hostname"),
+});
 const egressAuthorizeBody = z.object({
   agentPrincipalId: z.string().min(1).max(128),
   host: z.string().min(1).max(253),
@@ -67,6 +76,7 @@ export async function createApp(
   service: AgentService,
   identity?: IdentityService,
   egressAuthorizer?: EgressAuthorizer,
+  egressNetwork?: EgressNetworkManager,
 ): Promise<FastifyInstance> {
   const app = Fastify({
     logger: {
@@ -191,6 +201,18 @@ export async function createApp(
     const { id } = runIdParams.parse(request.params);
     return { run: service.getRun(id) };
   });
+
+  if (egressNetwork) {
+    // Stages one real outbound connection from the agent's own network
+    // position so containment can be demonstrated in the product itself
+    // rather than only from a terminal.
+    app.post("/api/agents/:id/probe-egress", async (request) => {
+      const { id } = agentIdParams.parse(request.params);
+      const { host } = egressProbeBody.parse(request.body);
+      const agent = service.getAgent(id);
+      return egressNetwork.probeAsAgent(agent.principalId, host);
+    });
+  }
 
   app.get("/api/agents/:id/events", async (request) => {
     const { id } = agentIdParams.parse(request.params);

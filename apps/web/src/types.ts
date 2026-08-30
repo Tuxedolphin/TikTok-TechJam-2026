@@ -115,6 +115,8 @@ export interface SystemInfo {
   runtimeProvider: "local-process" | "container";
   containerEngine: string | null;
   runtime: string;
+  egressEnforcement: boolean;
+  egressQuarantineThreshold: number;
   guardrailCanaryEnabled: boolean;
   runBudgetMaxInputTokens: number | null;
   runBudgetMaxOutputTokens: number | null;

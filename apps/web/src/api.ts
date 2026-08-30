@@ -117,6 +117,11 @@ export const api = {
     ),
   run: (id: string) => request<{ run: AgentRun }>("/api/runs/" + id),
   runEvents: (id: string) => request<{ events: RunEvent[] }>("/api/runs/" + id + "/events"),
+  probeEgress: (id: string, host: string) =>
+    request<{ httpStatus: number | null; blocked: boolean; detail: string }>(
+      "/api/agents/" + id + "/probe-egress",
+      { method: "POST", body: JSON.stringify({ host }) },
+    ),
   agentEvents: (id: string) =>
     request<{ events: RunEvent[] }>("/api/agents/" + id + "/events"),
   listApprovals: (agentId?: string, status?: string) => {

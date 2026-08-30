@@ -129,6 +129,74 @@ export class EgressNetworkManager {
     return `http://${encodeURIComponent(agentPrincipalId)}:${secret}@${PROXY_CONTAINER}:${this.config.egressProxyPort}`;
   }
 
+  /**
+   * Attempts one outbound connection from inside the agent's own network
+   * position — same internal network, same proxy credentials, no route off-box.
+   *
+   * This is how the platform demonstrates containment on itself: the request is
+   * real and travels the real enforcement path, so a block here is the same
+   * block a hijacked agent would hit. Nothing about it is simulated except the
+   * intent.
+   */
+  async probeAsAgent(
+    agentPrincipalId: string,
+    host: string,
+  ): Promise<{ httpStatus: number | null; blocked: boolean; detail: string }> {
+    await this.ensure();
+    const proxy = this.proxyUrlFor(agentPrincipalId);
+    const url = `http://${host}/`;
+    try {
+      const stdout = await this.engine([
+        "run",
+        "--rm",
+        "--network",
+        INTERNAL_NETWORK,
+        "--env",
+        `http_proxy=${proxy}`,
+        "--env",
+        `https_proxy=${proxy}`,
+        "--env",
+        `HTTP_PROXY=${proxy}`,
+        "--env",
+        `HTTPS_PROXY=${proxy}`,
+        this.config.egressProbeImage,
+        "-s",
+        "-o",
+        "/dev/null",
+        "-w",
+        "%{http_code}",
+        "--max-time",
+        "12",
+        url,
+      ]);
+      const httpStatus = Number(stdout.trim());
+      if (!Number.isInteger(httpStatus) || httpStatus === 0) {
+        return { httpStatus: null, blocked: true, detail: "No response: the connection never left." };
+      }
+      // 403 is the proxy refusing; 407 means no usable identity was presented.
+      const blocked = httpStatus === 403 || httpStatus === 407;
+      return {
+        httpStatus,
+        blocked,
+        detail: blocked
+          ? `The proxy refused the connection to ${host}.`
+          : `The connection to ${host} was authorized and completed.`,
+      };
+    } catch (error) {
+      // curl exits non-zero when it cannot connect at all, which under this
+      // topology means the network itself refused — still a block.
+      return {
+        httpStatus: null,
+        blocked: true,
+        detail:
+          "No route to " +
+          host +
+          ": " +
+          (error instanceof Error ? error.message.split("\n")[0] : String(error)),
+      };
+    }
+  }
+
   private async removeProxy(): Promise<void> {
     try {
       await this.engine(["rm", "-f", PROXY_CONTAINER]);

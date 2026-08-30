@@ -55,7 +55,7 @@ egressAuthorizer = config.egressEnforcement
     })
   : undefined;
 
-const app = await createApp(config, service, identity, egressAuthorizer);
+const app = await createApp(config, service, identity, egressAuthorizer, egressNetwork);
 
 const shutdown = async (signal: string) => {
   app.log.info({ signal }, "Shutting down");
