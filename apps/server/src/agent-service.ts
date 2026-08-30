@@ -11,6 +11,7 @@ import type {
   ApprovalRequest,
   ApprovalStatus,
   CreateAgentInput,
+  Grant,
   Message,
   PolicyDecision,
   RunEvent,
@@ -153,6 +154,28 @@ export class AgentService {
         severity: decision.allowed ? "info" : "warning",
         title: decision.ruleId,
         detail: JSON.stringify(decision),
+        createdAt: now(),
+      });
+    });
+  }
+
+  async recordGrantEvent(
+    runId: string,
+    agentId: string,
+    type: "grant.created" | "grant.revoked",
+    grant: Grant,
+  ): Promise<void> {
+    await this.store.mutate((database) => {
+      this.appendRunEvent(database, {
+        runId,
+        agentId,
+        type,
+        severity: type === "grant.revoked" ? "warning" : "info",
+        title:
+          type === "grant.revoked"
+            ? `Revoked ${grant.scope} on ${grant.target}`
+            : `Granted ${grant.scope} on ${grant.target}`,
+        detail: JSON.stringify(grant),
         createdAt: now(),
       });
     });

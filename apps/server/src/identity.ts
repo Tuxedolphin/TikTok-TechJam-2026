@@ -12,6 +12,12 @@ export class IdentityService {
       agentId: string,
       decision: PolicyDecision,
     ) => Promise<void> | void,
+    private readonly recordGrantLifecycle?: (
+      runId: string,
+      agentId: string,
+      type: "grant.created" | "grant.revoked",
+      grant: Grant,
+    ) => Promise<void> | void,
   ) {}
 
   listPrincipals(): Principal[] {
@@ -47,18 +53,42 @@ export class IdentityService {
       if (!database.principals.some((p) => p.id === input.principalId)) {
         throw new HttpError(404, `Unknown principal ${input.principalId}`);
       }
-      database.grants.push(grant);
+      database.grants.push(structuredClone(grant));
     });
+    await this.recordGrantEvent("grant.created", grant);
     return grant;
   }
 
   async revokeGrant(id: string): Promise<Grant> {
-    return this.store.mutate((database) => {
-      const grant = database.grants.find((g) => g.id === id);
-      if (!grant) throw new HttpError(404, `Unknown grant ${id}`);
-      grant.revokedAt = new Date().toISOString();
-      return structuredClone(grant);
+    const grant = await this.store.mutate((database) => {
+      const stored = database.grants.find((g) => g.id === id);
+      if (!stored) throw new HttpError(404, `Unknown grant ${id}`);
+      stored.revokedAt = new Date().toISOString();
+      return structuredClone(stored);
     });
+    await this.recordGrantEvent("grant.revoked", grant);
+    return grant;
+  }
+
+  /**
+   * Grants are issued and revoked outside any run, so they have no runId to
+   * attach to. They anchor to the agent's most recent run when there is one so
+   * the operator sees the revocation land on the timeline they are watching.
+   */
+  private async recordGrantEvent(
+    type: "grant.created" | "grant.revoked",
+    grant: Grant,
+  ): Promise<void> {
+    if (!this.recordGrantLifecycle) return;
+    const database = this.store.snapshot();
+    const agent = database.agents.find((a) => a.principalId === grant.principalId);
+    const runs = agent ? this.runsForAgent(database.runs, agent.id) : [];
+    await this.recordGrantLifecycle(
+      runs[0]?.id ?? `grant-${grant.id}`,
+      agent?.id ?? "unknown",
+      type,
+      grant,
+    );
   }
 
   async readResourceAsAgent(

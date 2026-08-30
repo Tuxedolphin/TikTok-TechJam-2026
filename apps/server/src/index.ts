@@ -16,8 +16,10 @@ const runner = createRunner(config);
 const service = new AgentService(config, store, workspaces, runner);
 await service.initialize();
 
-const identity = new IdentityService(store, (runId, agentId, decision) =>
-  service.recordPolicyDecision(runId, agentId, decision),
+const identity = new IdentityService(
+  store,
+  (runId, agentId, decision) => service.recordPolicyDecision(runId, agentId, decision),
+  (runId, agentId, type, grant) => service.recordGrantEvent(runId, agentId, type, grant),
 );
 const app = await createApp(config, service, identity);
 

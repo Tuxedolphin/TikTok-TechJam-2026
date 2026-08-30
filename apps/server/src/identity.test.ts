@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { IdentityService } from "./identity.js";
-import type { PolicyDecision } from "./types.js";
+import type { Grant, PolicyDecision } from "./types.js";
 import { JsonStore } from "./store.js";
 
 const temporaryDirectories: string[] = [];
@@ -13,6 +13,12 @@ afterEach(async () => {
 
 async function makeService(
   recordDecision?: (runId: string, agentId: string, decision: PolicyDecision) => Promise<void> | void,
+  recordGrantLifecycle?: (
+    runId: string,
+    agentId: string,
+    type: "grant.created" | "grant.revoked",
+    grant: Grant,
+  ) => Promise<void> | void,
 ): Promise<IdentityService> {
   const root = await mkdtemp(path.join(tmpdir(), "launchpad-identity-test-"));
   temporaryDirectories.push(root);
@@ -21,7 +27,7 @@ async function makeService(
   await store.mutate((database) => {
     database.principals.push({ id: "agent-1", kind: "agent", name: "A1", createdAt: new Date().toISOString() });
   });
-  return new IdentityService(store, recordDecision);
+  return new IdentityService(store, recordDecision, recordGrantLifecycle);
 }
 
 describe("IdentityService", () => {
@@ -65,5 +71,24 @@ describe("IdentityService", () => {
     await service.readResourceAsAgent("res-a", "agent-1");           // allow
     expect(recorded.map((entry) => entry.ruleId)).toEqual(["AUTHZ-GRANT-011", "AUTHZ-GRANT-011"]);
     expect(recorded).toHaveLength(2);
+  });
+  it("records grant.created and grant.revoked in the trace", async () => {
+    const lifecycle: Array<"grant.created" | "grant.revoked"> = [];
+    const service = await makeService(undefined, (_runId, _agentId, type) => {
+      lifecycle.push(type);
+    });
+    const grant = await service.createGrant({
+      principalId: "agent-1", grantedBy: "user-a", scope: "resource:read", target: "res-a",
+    });
+    await service.revokeGrant(grant.id);
+    expect(lifecycle).toEqual(["grant.created", "grant.revoked"]);
+  });
+  it("does not hand out a Grant that aliases stored state", async () => {
+    const service = await makeService();
+    const grant = await service.createGrant({
+      principalId: "agent-1", grantedBy: "user-a", scope: "resource:read", target: "res-a",
+    });
+    grant.revokedAt = "1999-01-01T00:00:00.000Z";
+    expect(service.listGrants("agent-1")[0]?.revokedAt).toBeNull();
   });
 });
