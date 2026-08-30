@@ -53,6 +53,73 @@ textarea {
 }
 
 /* ==========================================================================
+   Auth Screen (Centered Box in Middle of Screen)
+   ========================================================================== */
+
+.auth-screen {
+  min-height: 100vh;
+  width: 100vw;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: var(--surface);
+}
+
+.auth-card {
+  width: 100%;
+  max-width: 380px;
+  padding: 28px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: #ffffff;
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.04);
+}
+
+.auth-card .brand-mark {
+  margin-bottom: 12px;
+}
+
+.auth-card h1 {
+  margin: 8px 0 6px;
+  font-size: 18px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  color: var(--ink);
+}
+
+.auth-card p {
+  margin: 0 0 20px;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.auth-card label {
+  display: grid;
+  gap: 6px;
+  margin-bottom: 16px;
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--ink-secondary);
+}
+
+.auth-card input {
+  height: 36px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 0 10px;
+  font-size: 13px;
+  width: 100%;
+}
+
+.auth-card .button {
+  width: 100%;
+  height: 36px;
+  margin-top: 4px;
+}
+
+
+/* ==========================================================================
    Buttons
    ========================================================================== */
 
