@@ -3,11 +3,13 @@ import { spawn, type ChildProcess } from "node:child_process";
 import { promisify } from "node:util";
 import type { AppConfig } from "./config.js";
 import { RunCancelledError } from "./errors.js";
+import { RunPolicyViolationError } from "./run-policies.js";
 import type {
   AgentRunner,
   RunUsage,
   RunnerRequest,
   RunnerResult,
+  RunnerStepEvent,
 } from "./types.js";
 
 const execFileAsync = promisify(execFile);
@@ -41,7 +43,11 @@ export function buildCodexArgs(
   return args;
 }
 
-export function parseCodexEventLine(line: string, parsed: ParsedEvents): void {
+export function parseCodexEventLine(
+  line: string,
+  parsed: ParsedEvents,
+  onStep?: (step: RunnerStepEvent) => void,
+): void {
   let event: Record<string, unknown>;
   try {
     event = JSON.parse(line) as Record<string, unknown>;
@@ -57,6 +63,46 @@ export function parseCodexEventLine(line: string, parsed: ParsedEvents): void {
     const item = event.item as Record<string, unknown>;
     if (item.type === "agent_message" && typeof item.text === "string") {
       parsed.messages.push(item.text);
+      onStep?.({
+        type: "message",
+        title: "Agent response",
+        detail: item.text.slice(0, 160),
+        rawPayload: item,
+      });
+    } else if (item.type === "command_execution") {
+      const cmd = typeof item.command === "string" ? item.command : "command";
+      const exitCode = typeof item.exit_code === "number" ? ` (exit ${item.exit_code})` : "";
+      onStep?.({
+        type: "command",
+        title: "Executed shell command",
+        detail: `${cmd}${exitCode}`,
+        rawPayload: item,
+      });
+    } else if (item.type === "file_change") {
+      const filePath = typeof item.path === "string" ? item.path : "file";
+      onStep?.({
+        type: "file_change",
+        title: "File modified",
+        detail: filePath,
+        rawPayload: item,
+      });
+    } else if (item.type === "mcp_tool_call" || item.type === "tool_call") {
+      const name =
+        typeof item.tool === "string"
+          ? item.tool
+          : typeof item.name === "string"
+            ? item.name
+            : "tool";
+      const inputStr =
+        typeof item.input === "string"
+          ? item.input
+          : JSON.stringify(item.input ?? item.arguments ?? "");
+      onStep?.({
+        type: "tool_call",
+        title: `Invoked tool ${name}`,
+        detail: inputStr.slice(0, 160),
+        rawPayload: item,
+      });
     }
   }
 
@@ -85,6 +131,7 @@ export function parseCodexEventLine(line: string, parsed: ParsedEvents): void {
     parsed.errors.push(message);
   }
 }
+
 
 export class CodexRunner implements AgentRunner {
   private readonly active = new Map<
@@ -135,6 +182,14 @@ export class CodexRunner implements AgentRunner {
       env: this.childEnvironment(),
       stdio: ["ignore", "pipe", "pipe"],
     });
+    const effectiveTimeoutMs =
+      this.config.runBudgetMaxDurationMs !== null &&
+      this.config.runBudgetMaxDurationMs > 0 &&
+      this.config.runBudgetMaxDurationMs < this.config.codexTimeoutMs
+        ? this.config.runBudgetMaxDurationMs
+        : this.config.codexTimeoutMs;
+    const isBudgetTimeout = effectiveTimeoutMs === this.config.runBudgetMaxDurationMs;
+
     const settled = new Promise<void>((resolve) => {
       child.once("close", () => resolve());
       child.once("error", () => resolve());
@@ -143,6 +198,7 @@ export class CodexRunner implements AgentRunner {
       child,
       cancelled: false,
       timedOut: false,
+      budgetExceeded: false,
       outputExceeded: false,
       settled,
       forceKillTimer: null as NodeJS.Timeout | null,
@@ -171,7 +227,7 @@ export class CodexRunner implements AgentRunner {
         const lines = stdout.split(/\r?\n/);
         stdout = lines.pop() ?? "";
         for (const line of lines) {
-          parseCodexEventLine(line, parsed);
+          parseCodexEventLine(line, parsed, request.onStep);
         }
       } else {
         stderr += chunk.toString("utf8");
@@ -186,8 +242,9 @@ export class CodexRunner implements AgentRunner {
 
     const timeout = setTimeout(() => {
       active.timedOut = true;
+      active.budgetExceeded = isBudgetTimeout;
       this.terminate(active);
-    }, this.config.codexTimeoutMs);
+    }, effectiveTimeoutMs);
     timeout.unref();
 
     try {
@@ -196,14 +253,24 @@ export class CodexRunner implements AgentRunner {
         child.once("close", (code) => resolve(code ?? 1));
       });
       if (stdout.trim()) {
-        parseCodexEventLine(stdout.trim(), parsed);
+        parseCodexEventLine(stdout.trim(), parsed, request.onStep);
       }
       if (active.cancelled) {
         throw new RunCancelledError();
       }
       if (active.timedOut) {
+        if (active.budgetExceeded) {
+          throw new RunPolicyViolationError(
+            "budget",
+            429,
+            "Run budget circuit breaker tripped: duration exceeded " +
+              this.config.runBudgetMaxDurationMs +
+              " ms",
+          );
+        }
         throw new Error("Codex timed out after " + this.config.codexTimeoutMs + " ms");
       }
+
       if (active.outputExceeded) {
         throw new Error("Codex output exceeded CODEX_MAX_OUTPUT_BYTES");
       }
@@ -256,7 +323,10 @@ export class CodexRunner implements AgentRunner {
     ] as const;
     const environment: NodeJS.ProcessEnv = {
       CODEX_HOME: this.config.codexHome,
-      ARK_API_KEY: this.config.arkApiKey,
+      OPENROUTER_API_KEY: this.config.openRouterApiKey,
+      OPENAI_API_KEY: this.config.openRouterApiKey,
+      OPENROUTER_BASE_URL: this.config.openRouterBaseUrl,
+      OPENAI_BASE_URL: this.config.openRouterBaseUrl,
       NO_COLOR: "1",
     };
     for (const name of inheritedNames) {

@@ -28,6 +28,31 @@ export interface RunUsage {
   inputTokens?: number;
   cachedInputTokens?: number;
   outputTokens?: number;
+  costUsd?: number | null;
+}
+
+export type RunEventSeverity = "info" | "success" | "warning" | "error";
+export type RunEventType =
+  | "run.created"
+  | "run.started"
+  | "run.completed"
+  | "run.failed"
+  | "run.blocked"
+  | "run.cancelled"
+  | "step.command"
+  | "step.tool_call"
+  | "step.file_change"
+  | "step.message";
+
+export interface RunEvent {
+  id: string;
+  runId: string;
+  agentId: string;
+  type: RunEventType;
+  severity: RunEventSeverity;
+  title: string;
+  detail: string;
+  createdAt: string;
 }
 
 export interface AgentRun {
@@ -44,10 +69,11 @@ export interface AgentRun {
 }
 
 export interface Database {
-  version: 1;
+  version: 2;
   agents: Agent[];
   messages: Message[];
   runs: AgentRun[];
+  runEvents: RunEvent[];
 }
 
 export interface CreateAgentInput {
@@ -68,11 +94,19 @@ export interface RunnerResult {
   usage: RunUsage | null;
 }
 
+export interface RunnerStepEvent {
+  type: "command" | "tool_call" | "file_change" | "message";
+  title: string;
+  detail: string;
+  rawPayload?: unknown;
+}
+
 export interface RunnerRequest {
   agentId: string;
   workspacePath: string;
   prompt: string;
   threadId: string | null;
+  onStep?: (step: RunnerStepEvent) => void;
 }
 
 export interface AgentRunner {
@@ -80,3 +114,4 @@ export interface AgentRunner {
   cancel(agentId: string): Promise<boolean>;
   isAvailable(): Promise<boolean>;
 }
+

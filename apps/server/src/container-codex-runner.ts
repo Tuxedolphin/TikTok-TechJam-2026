@@ -3,6 +3,7 @@ import { promisify } from "node:util";
 import type { AppConfig } from "./config.js";
 import { buildCodexArgs, parseCodexEventLine } from "./codex-runner.js";
 import { RunCancelledError } from "./errors.js";
+import { RunPolicyViolationError } from "./run-policies.js";
 import type {
   AgentRunner,
   RunUsage,
@@ -17,10 +18,12 @@ interface ActiveContainer {
   containerName: string;
   cancelled: boolean;
   timedOut: boolean;
+  budgetExceeded: boolean;
   outputExceeded: boolean;
   settled: Promise<void>;
   termination: Promise<void> | null;
 }
+
 
 interface ParsedEvents {
   messages: string[];
@@ -56,6 +59,8 @@ export function buildContainerRunArgs(
     ...(engineName === "podman" ? ["--userns", "keep-id"] : []),
     "--network",
     "bridge",
+    "--add-host",
+    "host.docker.internal:host-gateway",
     "--security-opt",
     "no-new-privileges",
     "--cap-drop",
@@ -69,7 +74,13 @@ export function buildContainerRunArgs(
     "--user",
     config.containerUser,
     "--env",
-    "ARK_API_KEY",
+    "OPENROUTER_API_KEY=" + config.openRouterApiKey,
+    "--env",
+    "OPENAI_API_KEY=" + config.openRouterApiKey,
+    "--env",
+    "OPENROUTER_BASE_URL=" + config.openRouterBaseUrl,
+    "--env",
+    "OPENAI_BASE_URL=" + config.openRouterBaseUrl,
     "--env",
     "CODEX_HOME=/codex-home",
     "--env",
@@ -151,6 +162,14 @@ export class ContainerCodexRunner implements AgentRunner {
         stdio: ["ignore", "pipe", "pipe"],
       },
     );
+    const effectiveTimeoutMs =
+      this.config.runBudgetMaxDurationMs !== null &&
+      this.config.runBudgetMaxDurationMs > 0 &&
+      this.config.runBudgetMaxDurationMs < this.config.codexTimeoutMs
+        ? this.config.runBudgetMaxDurationMs
+        : this.config.codexTimeoutMs;
+    const isBudgetTimeout = effectiveTimeoutMs === this.config.runBudgetMaxDurationMs;
+
     const settled = new Promise<void>((resolve) => {
       child.once("close", () => resolve());
       child.once("error", () => resolve());
@@ -160,6 +179,7 @@ export class ContainerCodexRunner implements AgentRunner {
       containerName: containerName(request.agentId, this.config.runtimeInstanceId),
       cancelled: false,
       timedOut: false,
+      budgetExceeded: false,
       outputExceeded: false,
       settled,
       termination: null,
@@ -187,7 +207,7 @@ export class ContainerCodexRunner implements AgentRunner {
         stdout += chunk.toString("utf8");
         const lines = stdout.split(/\r?\n/);
         stdout = lines.pop() ?? "";
-        for (const line of lines) parseCodexEventLine(line, parsed);
+        for (const line of lines) parseCodexEventLine(line, parsed, request.onStep);
       } else {
         stderr += chunk.toString("utf8");
         if (stderr.length > 16_384) stderr = stderr.slice(-16_384);
@@ -199,8 +219,9 @@ export class ContainerCodexRunner implements AgentRunner {
 
     const timeout = setTimeout(() => {
       active.timedOut = true;
+      active.budgetExceeded = isBudgetTimeout;
       void this.removeContainer(active);
-    }, this.config.codexTimeoutMs);
+    }, effectiveTimeoutMs);
     timeout.unref();
 
     try {
@@ -208,11 +229,21 @@ export class ContainerCodexRunner implements AgentRunner {
         child.once("error", reject);
         child.once("close", (code) => resolve(code ?? 1));
       });
-      if (stdout.trim()) parseCodexEventLine(stdout.trim(), parsed);
+      if (stdout.trim()) parseCodexEventLine(stdout.trim(), parsed, request.onStep);
       if (active.cancelled) throw new RunCancelledError();
       if (active.timedOut) {
+        if (active.budgetExceeded) {
+          throw new RunPolicyViolationError(
+            "budget",
+            429,
+            "Run budget circuit breaker tripped: duration exceeded " +
+              this.config.runBudgetMaxDurationMs +
+              " ms",
+          );
+        }
         throw new Error("Runtime timed out after " + this.config.codexTimeoutMs + " ms");
       }
+
       if (active.outputExceeded) {
         throw new Error("Codex output exceeded CODEX_MAX_OUTPUT_BYTES");
       }
@@ -237,7 +268,10 @@ export class ContainerCodexRunner implements AgentRunner {
 
   private childEnvironment(): NodeJS.ProcessEnv {
     const environment: NodeJS.ProcessEnv = {
-      ARK_API_KEY: this.config.arkApiKey,
+      OPENROUTER_API_KEY: this.config.openRouterApiKey,
+      OPENAI_API_KEY: this.config.openRouterApiKey,
+      OPENROUTER_BASE_URL: this.config.openRouterBaseUrl,
+      OPENAI_BASE_URL: this.config.openRouterBaseUrl,
       NO_COLOR: "1",
     };
     for (const name of [

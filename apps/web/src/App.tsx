@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api, ApiError, setAuthToken } from "./api";
-import type { Agent, AgentRun, Message, SystemInfo } from "./types";
+import type { Agent, AgentRun, Message, RunEvent, SystemInfo } from "./types";
 
 const starterPrompts = [
   "Create a small TypeScript CLI that prints a weather summary from sample JSON.",
@@ -39,7 +39,9 @@ export default function App() {
   const [agents, setAgents] = useState<Agent[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [messages, setMessages] = useState<Message[]>([]);
+  const [runs, setRuns] = useState<AgentRun[]>([]);
   const [system, setSystem] = useState<SystemInfo | null>(null);
+  const [traceEvents, setTraceEvents] = useState<RunEvent[]>([]);
   const [showCreate, setShowCreate] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
   const [form, setForm] = useState(emptyForm);
@@ -77,6 +79,14 @@ export default function App() {
     }
   }, []);
 
+  const refreshRuns = useCallback(async (agentId: string) => {
+    const result = await api.runs(agentId);
+    if (mountedRef.current && selectedIdRef.current === agentId) {
+      setRuns(result.runs);
+    }
+    return result.runs;
+  }, []);
+
   const bootstrap = useCallback(async () => {
     await Promise.all([refreshAgents(), api.system().then(setSystem)]);
   }, [refreshAgents]);
@@ -98,15 +108,17 @@ export default function App() {
 
   useEffect(() => {
     setActiveRun(null);
+    setRuns([]);
+    setTraceEvents([]);
     setShowSettings(false);
     if (!selectedId) {
       setMessages([]);
       return;
     }
-    void Promise.all([refreshMessages(selectedId), api.runs(selectedId)])
-      .then(([, result]) => {
+    void Promise.all([refreshMessages(selectedId), refreshRuns(selectedId)])
+      .then(([, nextRuns]) => {
         if (selectedIdRef.current !== selectedId) return;
-        const latest = result.runs[0] ?? null;
+        const latest = nextRuns[0] ?? null;
         setActiveRun(latest);
         if (latest && ["queued", "running"].includes(latest.status)) {
           void pollRun(latest.id, selectedId).catch((reason) =>
@@ -132,6 +144,23 @@ export default function App() {
   useEffect(() => {
     messageEnd.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages, activeRun]);
+
+  useEffect(() => {
+    if (!activeRun) {
+      setTraceEvents([]);
+      return;
+    }
+    void api
+      .runEvents(activeRun.id)
+      .then(({ events }) => {
+        if (mountedRef.current) {
+          setTraceEvents(events);
+        }
+      })
+      .catch((reason) =>
+        setError(reason instanceof Error ? reason.message : String(reason)),
+      );
+  }, [activeRun]);
 
   const createAgent = async (event: React.FormEvent) => {
     event.preventDefault();
@@ -208,10 +237,16 @@ export default function App() {
       while (mountedRef.current) {
         await new Promise((resolve) => window.setTimeout(resolve, 900));
         if (!mountedRef.current) return;
-        const result = await api.run(runId);
-        if (selectedIdRef.current === agentId) setActiveRun(result.run);
+        const [result, eventsResult] = await Promise.all([
+          api.run(runId),
+          api.runEvents(runId),
+        ]);
+        if (selectedIdRef.current === agentId) {
+          setActiveRun(result.run);
+          setTraceEvents(eventsResult.events);
+        }
         if (!["queued", "running"].includes(result.run.status)) {
-          await Promise.all([refreshMessages(agentId), refreshAgents()]);
+          await Promise.all([refreshMessages(agentId), refreshAgents(), refreshRuns(agentId)]);
           return;
         }
       }
@@ -231,6 +266,7 @@ export default function App() {
       if (selectedIdRef.current === selected.id) {
         setMessages((current) => [...current, result.message]);
         setActiveRun(result.run);
+        setRuns((current) => [result.run, ...current.filter((r) => r.id !== result.run.id)]);
       }
       setAgents((current) =>
         current.map((agent) =>
@@ -240,8 +276,11 @@ export default function App() {
       await pollRun(result.run.id, selected.id);
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : String(reason));
-      setActiveRun(null);
+      const nextRuns = await refreshRuns(selected.id);
+      const latest = nextRuns[0] ?? null;
+      setActiveRun(latest);
       await refreshAgents();
+
     }
   };
 
@@ -362,21 +401,26 @@ export default function App() {
           <span className="eyebrow">Runtime</span>
           <strong>{system?.runtime ?? "Checking…"}</strong>
           <span>
-            {system?.arkModel ?? "Ark model not configured"}
+            {system?.openRouterModel ?? "OpenRouter model not configured"}
             {system?.containerEngine ? " · " + system.containerEngine : ""}
+          </span>
+          <span>
+            {system?.guardrailCanaryEnabled
+              ? "Canary guardrail active"
+              : "Canary guardrail off"}
           </span>
         </div>
       </aside>
 
       <main className="main">
-        {!system?.arkConfigured || !system?.codexAvailable ? (
+        {!system?.openRouterConfigured || !system?.codexAvailable ? (
           <div className="config-banner">
             <span>!</span>
             <div>
               <strong>Runtime configuration needed</strong>
               <p>
-                {!system?.arkConfigured
-                  ? "Set ARK_API_KEY and ARK_MODEL in .env before using the Playground."
+                {!system?.openRouterConfigured
+                  ? "Set OPENROUTER_API_KEY and OPENROUTER_MODEL in .env before using the Playground."
                   : system.runtimeProvider === "container"
                     ? "The local container engine or Agent Runtime image is unavailable. Rerun npm run poc."
                     : "Codex CLI was not found. Use the Docker image or install @openai/codex."}
@@ -490,6 +534,88 @@ export default function App() {
               </div>
 
               <div className="messages">
+                {runs.length > 0 && (
+                  <section className="run-dashboard">
+                    <div className="run-list-panel">
+                      <div className="run-panel-heading">
+                        <span className="eyebrow">Run history</span>
+                        <strong>{runs.length} runs</strong>
+                      </div>
+                      <div className="run-list">
+                        {runs.map((run) => (
+                          <button
+                            key={run.id}
+                            className={"run-card " + (activeRun?.id === run.id ? "selected" : "")}
+                            onClick={async () => {
+                              const [details, eventsResult] = await Promise.all([
+                                api.run(run.id),
+                                api.runEvents(run.id),
+                              ]);
+                              setActiveRun(details.run);
+                              setTraceEvents(eventsResult.events);
+                            }}
+                          >
+                            <div className="run-card-top">
+                              <strong>{run.status}</strong>
+                              <span>{formatTime(run.createdAt)}</span>
+                            </div>
+                            <p>{run.prompt}</p>
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                    <div className="trace-panel">
+                      <div className="run-panel-heading">
+                        <span className="eyebrow">Trace detail</span>
+                        <strong>{activeRun ? activeRun.status : "No run selected"}</strong>
+                      </div>
+                      {activeRun ? (
+                        <>
+                          <div className="trace-summary">
+                            <div>
+                              <span>Prompt</span>
+                              <strong>{activeRun.prompt}</strong>
+                            </div>
+                            <div>
+                              <span>Usage</span>
+                              <strong>
+                                {activeRun.usage
+                                  ? `${(activeRun.usage.inputTokens ?? 0) + (activeRun.usage.cachedInputTokens ?? 0) + (activeRun.usage.outputTokens ?? 0)} tokens`
+                                  : "—"}
+                                {activeRun.usage?.costUsd != null && (
+                                  <small style={{ display: "block", color: "var(--accent, #6366f1)" }}>
+                                    ${activeRun.usage.costUsd.toFixed(5)}
+                                  </small>
+                                )}
+                              </strong>
+                            </div>
+
+                            <div>
+                              <span>Result</span>
+                              <strong>{activeRun.error ?? activeRun.output ?? "Pending"}</strong>
+                            </div>
+                          </div>
+                          <div className="trace-events">
+                            {traceEvents.map((event) => (
+                              <article className={"trace-event trace-" + event.severity} key={event.id}>
+                                <div className="trace-event-top">
+                                  <strong>{event.title}</strong>
+                                  <span>{formatTime(event.createdAt)}</span>
+                                </div>
+                                <p>{event.detail}</p>
+                              </article>
+                            ))}
+                            {traceEvents.length === 0 && (
+                              <div className="trace-empty">No trace events yet.</div>
+                            )}
+                          </div>
+                        </>
+                      ) : (
+                        <div className="trace-empty">Select a run to inspect the trace.</div>
+                      )}
+                    </div>
+                  </section>
+                )}
                 {messages.length === 0 && !activeRun ? (
                   <div className="welcome">
                     <div className="welcome-orbit">

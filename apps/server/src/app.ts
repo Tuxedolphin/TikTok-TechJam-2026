@@ -7,6 +7,7 @@ import { z } from "zod";
 import type { AppConfig } from "./config.js";
 import { HttpError } from "./errors.js";
 import type { AgentService } from "./agent-service.js";
+import { handleGeminiResponsesAdapter } from "./gemini-adapter.js";
 
 const agentIdParams = z.object({ id: z.string().uuid() });
 const runIdParams = z.object({ id: z.string().uuid() });
@@ -47,7 +48,8 @@ export async function createApp(
       !config.authToken ||
       !request.url.startsWith("/api/") ||
       request.url === "/api/health" ||
-      request.url === "/api/auth"
+      request.url === "/api/auth" ||
+      request.url.startsWith("/api/adapter/")
     ) {
       return;
     }
@@ -126,6 +128,15 @@ export async function createApp(
   app.get("/api/runs/:id", async (request) => {
     const { id } = runIdParams.parse(request.params);
     return { run: service.getRun(id) };
+  });
+
+  app.get("/api/runs/:id/events", async (request) => {
+    const { id } = runIdParams.parse(request.params);
+    return { events: service.getRunEvents(id) };
+  });
+
+  app.post("/api/adapter/responses", async (request, reply) => {
+    await handleGeminiResponsesAdapter(request, reply, config);
   });
 
   if (config.nodeEnv === "production") {
