@@ -25,14 +25,15 @@ const messageBody = z.object({
 });
 const sessionParams = z.object({
   id: z.string().uuid(),
-  sessionId: z.string().uuid(),
+  sessionId: z.string().trim().min(1).max(128),
 });
 const createSessionBody = z.object({
   title: z.string().trim().max(80).optional(),
 }).optional();
 const queryWithSession = z.object({
-  sessionId: z.string().uuid().optional(),
+  sessionId: z.string().trim().min(1).max(128).optional(),
 });
+
 
 
 export async function createApp(

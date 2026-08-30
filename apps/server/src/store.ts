@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import path from "node:path";
 import type { Database } from "./types.js";
@@ -34,7 +35,7 @@ function migrateDatabase(parsed: Partial<Database> & { version?: number; session
       let session = sessions.find((s) => s.agentId === a.id);
       if (!session) {
         session = {
-          id: a.activeSessionId || a.id + "-default-session",
+          id: a.activeSessionId || randomUUID(),
           agentId: a.id,
           title: "Chat 1",
           codexThreadId: a.codexThreadId ?? null,
@@ -48,6 +49,7 @@ function migrateDatabase(parsed: Partial<Database> & { version?: number; session
         activeSessionId: a.activeSessionId ?? session.id,
       };
     });
+
 
     const messages = rawMessages.map((m) => {
       if (m.sessionId) return m;
