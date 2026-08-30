@@ -90,7 +90,7 @@ describe("Agent lifecycle", () => {
 
   it("injects recent messages from the active session into the next run", async () => {
     const prompts: string[] = [];
-    const service = await makeService({
+    const { service } = await makeService({
       run: async (request) => {
         prompts.push(request.prompt);
         return { output: "done", threadId: "thread", usage: null };
