@@ -218,15 +218,18 @@ export function summarizeRunPolicies(config: AppConfig): Record<string, unknown>
 function activeGrant(
   grants: Grant[], principalId: string, scope: GrantScope, target: string, nowIso: string,
 ): { grant: Grant | null; ruleId: string } {
+  const noGrantRuleId = scope === "network:egress" ? "NET-EGRESS-020" : "AUTHZ-GRANT-011";
   const matching = grants.filter(
     (g) => g.principalId === principalId && g.scope === scope && g.target === target,
   );
-  if (matching.length === 0) return { grant: null, ruleId: scope === "network:egress" ? "NET-EGRESS-020" : "AUTHZ-GRANT-011" };
-  const revoked = matching.every((g) => g.revokedAt !== null);
+  if (matching.length === 0) return { grant: null, ruleId: noGrantRuleId };
   const live = matching.find(
     (g) => g.revokedAt === null && (g.expiresAt === null || g.expiresAt > nowIso),
   );
-  if (live) return { grant: live, ruleId: scope === "network:egress" ? "NET-EGRESS-020" : "AUTHZ-GRANT-011" };
+  if (live) return { grant: live, ruleId: noGrantRuleId };
+  // Every matching grant is spent: say which way, since "you revoked this" and
+  // "this timed out" mean different things to whoever reads the timeline.
+  const revoked = matching.every((g) => g.revokedAt !== null);
   return { grant: null, ruleId: revoked ? "AUTHZ-REVOKED-013" : "AUTHZ-EXPIRED-012" };
 }
 

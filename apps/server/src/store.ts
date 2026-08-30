@@ -161,6 +161,21 @@ function migrateDatabase(parsed: Partial<Database> & { version?: number; session
 }
 
 
+/**
+ * Most recent run for an agent, or null when it has never run. Decisions that
+ * happen outside a run (issuing a grant, probing a resource) anchor their trace
+ * event here so the operator sees them on the timeline they are already
+ * watching.
+ */
+export function latestRunFor(runs: AgentRun[], agentId: string): AgentRun | null {
+  let latest: AgentRun | null = null;
+  for (const run of runs) {
+    if (run.agentId !== agentId) continue;
+    if (!latest || run.createdAt.localeCompare(latest.createdAt) > 0) latest = run;
+  }
+  return latest;
+}
+
 export class JsonStore {
   private data: Database = emptyDatabase();
   private queue: Promise<void> = Promise.resolve();

@@ -1,6 +1,6 @@
 import { createHmac, timingSafeEqual } from "node:crypto";
 import { evaluateEgress } from "./run-policies.js";
-import type { JsonStore } from "./store.js";
+import { latestRunFor, type JsonStore } from "./store.js";
 import type { EgressVerdict } from "./egress-proxy.js";
 import type { PolicyDecision } from "./types.js";
 
@@ -33,7 +33,6 @@ function secretMatches(expected: string, presented: string | undefined): boolean
 }
 
 export interface EgressAuthorizationResult extends EgressVerdict {
-  decision: PolicyDecision;
   agentId: string | null;
   strikes: number;
   quarantined: boolean;
@@ -100,13 +99,6 @@ export class EgressAuthorizer {
           allowed: false,
           ruleId: "NET-EGRESS-IMPERSONATION-023",
           reason: "Presented principal is not backed by a valid agent secret.",
-          decision: {
-            allowed: false,
-            ruleId: "NET-EGRESS-IMPERSONATION-023",
-            reason: "Presented principal is not backed by a valid agent secret.",
-            principalId: input.agentPrincipalId,
-            grantId: null,
-          },
           agentId,
           strikes: agentId ? this.strikesFor(agentId) : 0,
           quarantined: false,
@@ -129,7 +121,11 @@ export class EgressAuthorizer {
           new Date().toISOString(),
         );
 
-    const runId = agentId ? this.latestRunId(agentId) : `egress-${input.agentPrincipalId}`;
+    // Reuse the snapshot taken above: it is a deep clone of the whole store, so
+    // taking a second one per connection would double an already hot cost.
+    const runId = agentId
+      ? (latestRunFor(database.runs, agentId)?.id ?? `egress-${agentId}`)
+      : `egress-${input.agentPrincipalId}`;
 
     // Platform endpoints are noise on the timeline; agent-initiated egress is not.
     if (decision.ruleId !== "NET-EGRESS-PLATFORM-021" && agentId) {
@@ -156,18 +152,9 @@ export class EgressAuthorizer {
       allowed: decision.allowed,
       ruleId: decision.ruleId,
       reason: decision.reason,
-      decision,
       agentId,
       strikes,
       quarantined,
     };
-  }
-
-  private latestRunId(agentId: string): string {
-    const runs = this.store
-      .snapshot()
-      .runs.filter((run) => run.agentId === agentId)
-      .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
-    return runs[0]?.id ?? `egress-${agentId}`;
   }
 }

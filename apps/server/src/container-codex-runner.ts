@@ -33,6 +33,25 @@ interface ParsedEvents {
   errors: string[];
 }
 
+/**
+ * Environment handed to the container engine. Deliberately an allowlist: the
+ * server's own process environment holds credentials that have no business
+ * reaching a `docker`/`podman` invocation.
+ */
+export function containerEngineEnvironment(config: AppConfig): NodeJS.ProcessEnv {
+  const environment: NodeJS.ProcessEnv = {
+    OPENROUTER_API_KEY: config.openRouterApiKey,
+    OPENAI_API_KEY: config.openRouterApiKey,
+    OPENROUTER_BASE_URL: config.openRouterBaseUrl,
+    OPENAI_BASE_URL: config.openRouterBaseUrl,
+    NO_COLOR: "1",
+  };
+  for (const name of ["PATH", "HOME", "TMPDIR", "LANG", "LC_ALL", "XDG_RUNTIME_DIR"] as const) {
+    if (process.env[name] !== undefined) environment[name] = process.env[name];
+  }
+  return environment;
+}
+
 export function containerName(agentId: string, instanceId = "default"): string {
   const safeInstance = instanceId.replace(/[^a-zA-Z0-9_.-]/g, "-").slice(0, 32);
   const safeAgent = agentId.replace(/[^a-zA-Z0-9_.-]/g, "-").slice(0, 48);
@@ -333,23 +352,6 @@ export class ContainerCodexRunner implements AgentRunner {
   }
 
   private childEnvironment(): NodeJS.ProcessEnv {
-    const environment: NodeJS.ProcessEnv = {
-      OPENROUTER_API_KEY: this.config.openRouterApiKey,
-      OPENAI_API_KEY: this.config.openRouterApiKey,
-      OPENROUTER_BASE_URL: this.config.openRouterBaseUrl,
-      OPENAI_BASE_URL: this.config.openRouterBaseUrl,
-      NO_COLOR: "1",
-    };
-    for (const name of [
-      "PATH",
-      "HOME",
-      "TMPDIR",
-      "LANG",
-      "LC_ALL",
-      "XDG_RUNTIME_DIR",
-    ] as const) {
-      if (process.env[name] !== undefined) environment[name] = process.env[name];
-    }
-    return environment;
+    return containerEngineEnvironment(this.config);
   }
 }

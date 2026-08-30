@@ -2,6 +2,9 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { api, ApiError, getCurrentPrincipalId, setCurrentPrincipalId } from "./api";
 import type { Agent, Grant, GrantScope, MockResource, PolicyDecision, Principal } from "./types";
 
+/** Seeded fixtures: res-a belongs to user-a, res-b to user-b. */
+const PROBEABLE_RESOURCES = ["res-a", "res-b"] as const;
+
 const scopeOptions: { value: GrantScope; label: string }[] = [
   { value: "resource:read", label: "resource:read" },
   { value: "resource:write", label: "resource:write" },
@@ -277,7 +280,7 @@ export default function PassportPanel({ agent }: { agent: Agent }) {
           <div className="passport-block">
             <span className="passport-block-title">Try to read (as this agent)</span>
             <div className="probe-buttons">
-              {["res-a", "res-b"].map((resourceId) => (
+              {PROBEABLE_RESOURCES.map((resourceId) => (
                 <button
                   key={resourceId}
                   type="button"
@@ -290,7 +293,7 @@ export default function PassportPanel({ agent }: { agent: Agent }) {
               ))}
             </div>
             <div className="probe-results">
-              {["res-a", "res-b"].map((resourceId) => {
+              {PROBEABLE_RESOURCES.map((resourceId) => {
                 const result = probes[resourceId];
                 if (!result) return null;
                 return (

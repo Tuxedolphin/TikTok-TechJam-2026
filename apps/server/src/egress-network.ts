@@ -2,6 +2,7 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import type { AppConfig } from "./config.js";
 import { egressProxySecret } from "./egress-authorizer.js";
+import { containerEngineEnvironment } from "./container-codex-runner.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -26,7 +27,6 @@ export const PROXY_CONTAINER = "launchpad-egress-proxy";
  * See docs/superpowers/specs/2026-08-30-egress-architecture-verified.md.
  */
 export class EgressNetworkManager {
-  private ready = false;
   private pending: Promise<void> | null = null;
 
   constructor(private readonly config: AppConfig) {}
@@ -34,6 +34,7 @@ export class EgressNetworkManager {
   private async engine(args: string[]): Promise<string> {
     const { stdout } = await execFileAsync(this.config.containerEngine, args, {
       timeout: 30_000,
+      env: containerEngineEnvironment(this.config),
     });
     return stdout.trim();
   }
@@ -76,7 +77,7 @@ export class EgressNetworkManager {
   }
 
   private async provision(): Promise<void> {
-    if (this.ready && (await this.containerRunning(PROXY_CONTAINER))) return;
+    if (await this.containerRunning(PROXY_CONTAINER)) return;
 
     if (!(await this.networkExists(INTERNAL_NETWORK))) {
       await this.engine(["network", "create", "--internal", INTERNAL_NETWORK]);
@@ -85,7 +86,7 @@ export class EgressNetworkManager {
       await this.engine(["network", "create", UPLINK_NETWORK]);
     }
 
-    if (!(await this.containerRunning(PROXY_CONTAINER))) {
+    {
       await this.removeProxy();
       await this.engine([
         "run",
@@ -116,8 +117,6 @@ export class EgressNetworkManager {
       // internal network while it still has a path to the internet.
       await this.engine(["network", "connect", UPLINK_NETWORK, PROXY_CONTAINER]);
     }
-
-    this.ready = true;
   }
 
   /** Proxy URL as seen from inside an agent container on the internal network. */
@@ -139,7 +138,6 @@ export class EgressNetworkManager {
   }
 
   async shutdown(): Promise<void> {
-    this.ready = false;
     await this.removeProxy();
   }
 }

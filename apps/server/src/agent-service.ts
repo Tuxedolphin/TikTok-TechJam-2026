@@ -58,6 +58,7 @@ export class AgentService {
     private readonly workspaces: WorkspaceManager,
     private readonly runner: AgentRunner,
     private readonly egress?: EgressNetworkManager,
+    private readonly onAgentStarted?: (agentId: string) => void,
   ) {}
 
   async initialize(): Promise<void> {
@@ -325,9 +326,6 @@ export class AgentService {
     return this.setStatus(id, "ready");
   }
 
-  /** Set by the composition root when egress enforcement is active. */
-  onAgentStarted?: (agentId: string) => void;
-
   async stopAgent(id: string): Promise<Agent> {
     this.getAgent(id);
     await this.cancelExecution(id);
@@ -352,6 +350,19 @@ export class AgentService {
       throw new HttpError(404, "Run not found");
     }
     return run;
+  }
+
+  /**
+   * Every event for an agent, including decisions recorded outside any run
+   * (issuing a grant, probing a resource). Those anchor to synthetic run ids,
+   * so a run-scoped query alone can never surface them.
+   */
+  getAgentEvents(agentId: string): RunEvent[] {
+    this.getAgent(agentId);
+    return this.store
+      .snapshot()
+      .runEvents.filter((event) => event.agentId === agentId)
+      .sort((left, right) => left.createdAt.localeCompare(right.createdAt));
   }
 
   getRunEvents(runId: string): RunEvent[] {

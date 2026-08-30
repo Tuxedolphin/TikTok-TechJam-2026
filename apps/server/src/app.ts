@@ -192,6 +192,11 @@ export async function createApp(
     return { run: service.getRun(id) };
   });
 
+  app.get("/api/agents/:id/events", async (request) => {
+    const { id } = agentIdParams.parse(request.params);
+    return { events: service.getAgentEvents(id) };
+  });
+
   app.get("/api/runs/:id/events", async (request) => {
     const { id } = runIdParams.parse(request.params);
     return { events: service.getRunEvents(id) };

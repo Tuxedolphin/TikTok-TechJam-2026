@@ -102,6 +102,12 @@ export function isPrivateAddress(address: string): boolean {
   return false;
 }
 
+const privateAddressVerdict = (host: string): EgressVerdict => ({
+  allowed: false,
+  ruleId: "NET-EGRESS-PRIVATE-024",
+  reason: `${host} resolves to a private or loopback address.`,
+});
+
 const DENIED_BODY = (verdict: EgressVerdict, host: string): string =>
   JSON.stringify(
     {
@@ -202,16 +208,7 @@ export function createEgressProxy(options: EgressProxyOptions): Server {
       const resolved = await resolveTarget(target.hostname);
       if (!resolved) {
         response.writeHead(403, { "content-type": "application/json" });
-        response.end(
-          DENIED_BODY(
-            {
-              allowed: false,
-              ruleId: "NET-EGRESS-PRIVATE-024",
-              reason: `${target.hostname} resolves to a private or loopback address.`,
-            },
-            target.hostname,
-          ),
-        );
+        response.end(DENIED_BODY(privateAddressVerdict(target.hostname), target.hostname));
         return;
       }
 
@@ -257,6 +254,19 @@ export function createEgressProxy(options: EgressProxyOptions): Server {
 
   // HTTPS and any other TCP protocol arrives as CONNECT. Only the hostname is
   // visible here — never the path — so authorization is host-scoped.
+  /** CONNECT has no ServerResponse, so denials are written as raw bytes. */
+  const denyConnect = (clientSocket: Socket, verdict: EgressVerdict, host: string): void => {
+    const body = DENIED_BODY(verdict, host);
+    clientSocket.write(
+      "HTTP/1.1 403 Forbidden\r\n" +
+        "content-type: application/json\r\n" +
+        `content-length: ${Buffer.byteLength(body)}\r\n` +
+        "\r\n" +
+        body,
+    );
+    clientSocket.end();
+  };
+
   server.on("connect", (request: IncomingMessage, clientSocket: Socket, head: Buffer) => {
     void (async () => {
       const { host, port } = parseAuthority(request.url ?? "", 443);
@@ -264,36 +274,13 @@ export function createEgressProxy(options: EgressProxyOptions): Server {
       const verdict = await decide(principal, host, port, "CONNECT");
 
       if (!verdict.allowed) {
-        const body = DENIED_BODY(verdict, host);
-        clientSocket.write(
-          "HTTP/1.1 403 Forbidden\r\n" +
-            "content-type: application/json\r\n" +
-            `content-length: ${Buffer.byteLength(body)}\r\n` +
-            "\r\n" +
-            body,
-        );
-        clientSocket.end();
+        denyConnect(clientSocket, verdict, host);
         return;
       }
 
       const resolved = await resolveTarget(host);
       if (!resolved) {
-        const body = DENIED_BODY(
-          {
-            allowed: false,
-            ruleId: "NET-EGRESS-PRIVATE-024",
-            reason: `${host} resolves to a private or loopback address.`,
-          },
-          host,
-        );
-        clientSocket.write(
-          "HTTP/1.1 403 Forbidden\r\n" +
-            "content-type: application/json\r\n" +
-            `content-length: ${Buffer.byteLength(body)}\r\n` +
-            "\r\n" +
-            body,
-        );
-        clientSocket.end();
+        denyConnect(clientSocket, privateAddressVerdict(host), host);
         return;
       }
 

@@ -1,8 +1,8 @@
 import { randomUUID } from "node:crypto";
 import { HttpError } from "./errors.js";
 import { evaluateResourceAccess } from "./run-policies.js";
-import type { JsonStore } from "./store.js";
-import type { AgentRun, Grant, GrantScope, MockResource, PolicyDecision, Principal } from "./types.js";
+import { latestRunFor, type JsonStore } from "./store.js";
+import type { Grant, GrantScope, MockResource, PolicyDecision, Principal } from "./types.js";
 
 export class IdentityService {
   constructor(
@@ -82,9 +82,9 @@ export class IdentityService {
     if (!this.recordGrantLifecycle) return;
     const database = this.store.snapshot();
     const agent = database.agents.find((a) => a.principalId === grant.principalId);
-    const runs = agent ? this.runsForAgent(database.runs, agent.id) : [];
+    const latestRun = agent ? latestRunFor(database.runs, agent.id) : null;
     await this.recordGrantLifecycle(
-      runs[0]?.id ?? `grant-${grant.id}`,
+      latestRun?.id ?? `grant-${grant.id}`,
       agent?.id ?? "unknown",
       type,
       grant,
@@ -109,17 +109,12 @@ export class IdentityService {
     );
 
     if (this.recordDecision) {
-      const runs = agent ? this.runsForAgent(database.runs, agent.id) : [];
-      const runId = runs[0]?.id ?? `authz-${resourceId}`;
+      const latestRun = agent ? latestRunFor(database.runs, agent.id) : null;
+      const runId = latestRun?.id ?? `authz-${resourceId}`;
       await this.recordDecision(runId, agent?.id ?? "unknown", decision);
     }
 
     return { resource: decision.allowed ? resource : null, decision };
   }
 
-  private runsForAgent(runs: AgentRun[], agentId: string): AgentRun[] {
-    return runs
-      .filter((r) => r.agentId === agentId)
-      .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
-  }
 }

@@ -27,7 +27,11 @@ const store = new JsonStore(path.join(config.dataDirectory, "launchpad.json"));
 const workspaces = new WorkspaceManager(config.workspaceRoot);
 const runner = createRunner(config);
 const egressNetwork = config.egressEnforcement ? new EgressNetworkManager(config) : undefined;
-const service = new AgentService(config, store, workspaces, runner, egressNetwork);
+// Declared before the service so the start hook can clear egress strikes.
+let egressAuthorizer: EgressAuthorizer | undefined;
+const service = new AgentService(config, store, workspaces, runner, egressNetwork, (agentId) =>
+  egressAuthorizer?.resetStrikes(agentId),
+);
 await service.initialize();
 
 const identity = new IdentityService(
@@ -36,7 +40,7 @@ const identity = new IdentityService(
   (runId, agentId, type, grant) => service.recordGrantEvent(runId, agentId, type, grant),
 );
 
-const egressAuthorizer = config.egressEnforcement
+egressAuthorizer = config.egressEnforcement
   ? new EgressAuthorizer(store, {
       // The platform's own endpoints must stay reachable or the agent cannot
       // think; they are explicit and auditable rather than an implicit hole.
@@ -50,10 +54,6 @@ const egressAuthorizer = config.egressEnforcement
       quarantineAgent: (agentId, reason) => service.quarantineAgent(agentId, reason),
     })
   : undefined;
-
-if (egressAuthorizer) {
-  service.onAgentStarted = (agentId) => egressAuthorizer.resetStrikes(agentId);
-}
 
 const app = await createApp(config, service, identity, egressAuthorizer);
 
