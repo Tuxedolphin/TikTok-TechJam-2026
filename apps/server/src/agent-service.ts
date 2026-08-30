@@ -385,6 +385,11 @@ export class AgentService {
 
   private async executeRun(agentAtStart: Agent, run: AgentRun): Promise<void> {
     const startedAt = Date.now();
+    try {
+      await this.workspaces.ensureCanaryToken(agentAtStart, this.config.guardrailCanaryToken);
+    } catch {
+      // workspace directory might be initialized by runner
+    }
     await this.store.mutate((database) => {
       const storedRun = database.runs.find((item) => item.id === run.id);
       if (storedRun) {
@@ -401,6 +406,7 @@ export class AgentService {
         createdAt: now(),
       });
     });
+
     try {
       if (this.cancellationRequests.has(agentAtStart.id)) {
         throw new RunCancelledError();
