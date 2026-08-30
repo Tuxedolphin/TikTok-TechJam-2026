@@ -1,13 +1,84 @@
+import { randomUUID } from "node:crypto";
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import path from "node:path";
 import type { Database } from "./types.js";
 
 const emptyDatabase = (): Database => ({
-  version: 1,
+  version: 3,
   agents: [],
+  sessions: [],
   messages: [],
   runs: [],
+  runEvents: [],
+  approvals: [],
 });
+
+function migrateDatabase(parsed: Partial<Database> & { version?: number; sessions?: unknown[]; approvals?: unknown[] }): Database {
+  if (parsed.version === 3) {
+    return {
+      version: 3,
+      agents: Array.isArray(parsed.agents) ? parsed.agents : [],
+      sessions: Array.isArray(parsed.sessions) ? parsed.sessions : [],
+      messages: Array.isArray(parsed.messages) ? parsed.messages : [],
+      runs: Array.isArray(parsed.runs) ? parsed.runs : [],
+      runEvents: Array.isArray(parsed.runEvents) ? parsed.runEvents : [],
+      approvals: Array.isArray(parsed.approvals) ? parsed.approvals : [],
+    };
+  }
+  if (parsed.version === 2 || parsed.version === 1) {
+    const rawAgents = Array.isArray(parsed.agents) ? parsed.agents : [];
+    const rawSessions = Array.isArray(parsed.sessions) ? parsed.sessions : [];
+    const rawMessages = Array.isArray(parsed.messages) ? parsed.messages : [];
+    const rawRuns = Array.isArray(parsed.runs) ? parsed.runs : [];
+    const rawRunEvents = Array.isArray(parsed.runEvents) ? parsed.runEvents : [];
+    const rawApprovals = Array.isArray(parsed.approvals) ? parsed.approvals : [];
+
+    const sessions = [...rawSessions];
+    const agents = rawAgents.map((a) => {
+      let session = sessions.find((s) => s.agentId === a.id);
+      if (!session) {
+        session = {
+          id: a.activeSessionId || randomUUID(),
+          agentId: a.id,
+          title: "Chat 1",
+          codexThreadId: a.codexThreadId ?? null,
+          createdAt: a.createdAt || new Date().toISOString(),
+          updatedAt: a.updatedAt || new Date().toISOString(),
+        };
+        sessions.push(session);
+      }
+      return {
+        ...a,
+        activeSessionId: a.activeSessionId ?? session.id,
+      };
+    });
+
+
+    const messages = rawMessages.map((m) => {
+      if (m.sessionId) return m;
+      const session = sessions.find((s) => s.agentId === m.agentId);
+      return { ...m, sessionId: session?.id ?? null };
+    });
+
+    const runs = rawRuns.map((r) => {
+      if (r.sessionId) return r;
+      const session = sessions.find((s) => s.agentId === r.agentId);
+      return { ...r, sessionId: session?.id ?? null };
+    });
+
+    return {
+      version: 3,
+      agents,
+      sessions,
+      messages,
+      runs,
+      runEvents: rawRunEvents,
+      approvals: rawApprovals,
+    };
+  }
+  throw new Error("Unsupported database format");
+}
+
 
 export class JsonStore {
   private data: Database = emptyDatabase();
@@ -19,11 +90,7 @@ export class JsonStore {
     await mkdir(path.dirname(this.filePath), { recursive: true });
     try {
       const raw = await readFile(this.filePath, "utf8");
-      const parsed = JSON.parse(raw) as Database;
-      if (parsed.version !== 1 || !Array.isArray(parsed.agents)) {
-        throw new Error("Unsupported database format");
-      }
-      this.data = parsed;
+      this.data = migrateDatabase(JSON.parse(raw) as Partial<Database> & { version?: number });
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
         throw error;

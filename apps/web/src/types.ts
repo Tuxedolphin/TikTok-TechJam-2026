@@ -1,5 +1,14 @@
-export type AgentStatus = "ready" | "busy" | "stopped" | "error";
+export type AgentStatus = "ready" | "busy" | "waiting_approval" | "stopped" | "error";
 export type RunStatus = "queued" | "running" | "completed" | "failed" | "cancelled";
+
+export interface AgentSession {
+  id: string;
+  agentId: string;
+  title: string;
+  codexThreadId: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
 
 export interface Agent {
   id: string;
@@ -9,6 +18,7 @@ export interface Agent {
   status: AgentStatus;
   workspacePath: string;
   codexThreadId: string | null;
+  activeSessionId: string | null;
   lastError: string | null;
   createdAt: string;
   updatedAt: string;
@@ -17,6 +27,7 @@ export interface Agent {
 export interface Message {
   id: string;
   agentId: string;
+  sessionId?: string | null;
   runId: string;
   role: "user" | "assistant";
   content: string;
@@ -26,6 +37,8 @@ export interface Message {
 export interface AgentRun {
   id: string;
   agentId: string;
+  sessionId?: string | null;
+
   status: RunStatus;
   prompt: string;
   output: string | null;
@@ -34,17 +47,69 @@ export interface AgentRun {
     inputTokens?: number;
     cachedInputTokens?: number;
     outputTokens?: number;
+    costUsd?: number | null;
   } | null;
   createdAt: string;
 }
 
+export type RunEventSeverity = "info" | "success" | "warning" | "error";
+export type RunEventType =
+  | "run.created"
+  | "run.started"
+  | "run.completed"
+  | "run.failed"
+  | "run.blocked"
+  | "run.cancelled"
+  | "step.command"
+  | "step.tool_call"
+  | "step.file_change"
+  | "step.message"
+  | "step.auto_approved"
+  | "step.approval_requested"
+  | "step.approval_granted"
+  | "step.approval_denied";
+
+export interface RunEvent {
+  id: string;
+  runId: string;
+  agentId: string;
+  type: RunEventType;
+  severity: RunEventSeverity;
+  title: string;
+  detail: string;
+  createdAt: string;
+}
+
+export type ApprovalStatus = "pending" | "approved" | "denied";
+export type ActionRiskLevel = "low" | "medium" | "high" | "critical";
+
+export interface ApprovalRequest {
+  id: string;
+  runId: string;
+  agentId: string;
+  actionType: "command" | "tool_call" | "file_change";
+  actionDetail: string;
+  ruleId: string;
+  reason: string;
+  riskLevel: ActionRiskLevel;
+  status: ApprovalStatus;
+  createdAt: string;
+  resolvedAt: string | null;
+  resolvedBy: string | null;
+}
+
 export interface SystemInfo {
-  arkConfigured: boolean;
-  arkBaseUrl: string;
-  arkModel: string | null;
+  openRouterConfigured: boolean;
+  openRouterBaseUrl: string;
+  openRouterModel: string | null;
   codexAvailable: boolean;
   codexSandboxMode: string;
   runtimeProvider: "local-process" | "container";
   containerEngine: string | null;
   runtime: string;
+  guardrailCanaryEnabled: boolean;
+  runBudgetMaxInputTokens: number | null;
+  runBudgetMaxOutputTokens: number | null;
+  runBudgetMaxTotalTokens: number | null;
+  runBudgetMaxDurationMs: number | null;
 }

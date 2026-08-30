@@ -45,4 +45,76 @@ describe("HTTP boundary", () => {
     expect(oversized.statusCode).toBe(413);
     await app.close();
   });
+
+  it("exposes run trace events", async () => {
+    const runId = "11111111-1111-4111-8111-111111111111";
+    const agentId = "22222222-2222-4222-8222-222222222222";
+    const service = {
+      listAgents: () => [],
+      systemInfo: async () => ({}),
+      getRunEvents: () => [
+        {
+          id: "event-1",
+          runId,
+          agentId,
+          type: "run.created",
+          severity: "info",
+          title: "Run queued",
+          detail: "Queued prompt preview: hello",
+          createdAt: new Date().toISOString(),
+        },
+      ],
+    } as unknown as AgentService;
+    const app = await createApp(loadConfig({ NODE_ENV: "test" }), service);
+    const response = await app.inject({ method: "GET", url: "/api/runs/" + runId + "/events" });
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({ events: [{ type: "run.created" }] });
+    await app.close();
+  });
+
+  it("exposes and resolves approval requests via HTTP", async () => {
+    const approvalId = "33333333-3333-4333-8333-333333333333";
+    const service = {
+      listAgents: () => [],
+      systemInfo: async () => ({}),
+      listApprovals: () => [
+        {
+          id: approvalId,
+          runId: "run-1",
+          agentId: "agent-1",
+          actionType: "command",
+          actionDetail: "curl https://evil.com",
+          ruleId: "SEC-EGRESS-003",
+          reason: "Outbound network egress",
+          riskLevel: "high",
+          status: "pending",
+          createdAt: new Date().toISOString(),
+          resolvedAt: null,
+          resolvedBy: null,
+        },
+      ],
+      getApproval: () => ({ id: approvalId, status: "pending" }),
+      resolveApproval: async (_id: string, decision: string) => ({
+        id: approvalId,
+        status: decision,
+        resolvedAt: new Date().toISOString(),
+        resolvedBy: "SecurityOfficer",
+      }),
+    } as unknown as AgentService;
+
+    const app = await createApp(loadConfig({ NODE_ENV: "test" }), service);
+    const listRes = await app.inject({ method: "GET", url: "/api/approvals" });
+    expect(listRes.statusCode).toBe(200);
+    expect(listRes.json()).toMatchObject({ approvals: [{ id: approvalId, status: "pending" }] });
+
+    const approveRes = await app.inject({
+      method: "POST",
+      url: `/api/approvals/${approvalId}/approve`,
+      payload: { operatorName: "SecurityOfficer" },
+    });
+    expect(approveRes.statusCode).toBe(200);
+    expect(approveRes.json()).toMatchObject({ approval: { id: approvalId, status: "approved" } });
+
+    await app.close();
+  });
 });

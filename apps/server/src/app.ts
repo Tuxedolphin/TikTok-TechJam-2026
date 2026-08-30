@@ -7,6 +7,7 @@ import { z } from "zod";
 import type { AppConfig } from "./config.js";
 import { HttpError } from "./errors.js";
 import type { AgentService } from "./agent-service.js";
+import { handleGeminiResponsesAdapter } from "./gemini-adapter.js";
 
 const agentIdParams = z.object({ id: z.string().uuid() });
 const runIdParams = z.object({ id: z.string().uuid() });
@@ -22,6 +23,26 @@ const updateAgentBody = createAgentBody.partial().refine(
 const messageBody = z.object({
   content: z.string().trim().min(1).max(50_000),
 });
+const sessionParams = z.object({
+  id: z.string().uuid(),
+  sessionId: z.string().trim().min(1).max(128),
+});
+const createSessionBody = z.object({
+  title: z.string().trim().max(80).optional(),
+}).optional();
+const queryWithSession = z.object({
+  sessionId: z.string().trim().min(1).max(128).optional(),
+});
+const approvalIdParams = z.object({ id: z.string().uuid() });
+const approvalQuery = z.object({
+  agentId: z.string().uuid().optional(),
+  status: z.enum(["pending", "approved", "denied"]).optional(),
+});
+const resolveApprovalBody = z.object({
+  operatorName: z.string().trim().min(1).max(80).optional(),
+}).optional();
+
+
 
 export async function createApp(
   config: AppConfig,
@@ -47,7 +68,8 @@ export async function createApp(
       !config.authToken ||
       !request.url.startsWith("/api/") ||
       request.url === "/api/health" ||
-      request.url === "/api/auth"
+      request.url === "/api/auth" ||
+      request.url.startsWith("/api/adapter/")
     ) {
       return;
     }
@@ -106,14 +128,34 @@ export async function createApp(
     return { agent: await service.stopAgent(id) };
   });
 
+  app.get("/api/agents/:id/sessions", async (request) => {
+    const { id } = agentIdParams.parse(request.params);
+    return { sessions: service.listSessions(id) };
+  });
+
+  app.post("/api/agents/:id/sessions", async (request, reply) => {
+    const { id } = agentIdParams.parse(request.params);
+    const body = createSessionBody.parse(request.body);
+    const result = await service.createSession(id, body?.title);
+    return reply.code(201).send(result);
+  });
+
+  app.post("/api/agents/:id/sessions/:sessionId/select", async (request) => {
+    const { id, sessionId } = sessionParams.parse(request.params);
+    const agent = await service.selectSession(id, sessionId);
+    return { agent };
+  });
+
   app.get("/api/agents/:id/messages", async (request) => {
     const { id } = agentIdParams.parse(request.params);
-    return { messages: service.getMessages(id) };
+    const query = queryWithSession.parse(request.query);
+    return { messages: service.getMessages(id, query.sessionId) };
   });
 
   app.get("/api/agents/:id/runs", async (request) => {
     const { id } = agentIdParams.parse(request.params);
-    return { runs: service.getRuns(id) };
+    const query = queryWithSession.parse(request.query);
+    return { runs: service.getRuns(id, query.sessionId) };
   });
 
   app.post("/api/agents/:id/messages", async (request, reply) => {
@@ -123,9 +165,43 @@ export async function createApp(
     return reply.code(202).send(result);
   });
 
+
   app.get("/api/runs/:id", async (request) => {
     const { id } = runIdParams.parse(request.params);
     return { run: service.getRun(id) };
+  });
+
+  app.get("/api/runs/:id/events", async (request) => {
+    const { id } = runIdParams.parse(request.params);
+    return { events: service.getRunEvents(id) };
+  });
+
+  app.get("/api/approvals", async (request) => {
+    const query = approvalQuery.parse(request.query);
+    return { approvals: service.listApprovals(query.agentId, query.status) };
+  });
+
+  app.get("/api/approvals/:id", async (request) => {
+    const { id } = approvalIdParams.parse(request.params);
+    return { approval: service.getApproval(id) };
+  });
+
+  app.post("/api/approvals/:id/approve", async (request) => {
+    const { id } = approvalIdParams.parse(request.params);
+    const body = resolveApprovalBody.parse(request.body);
+    const approval = await service.resolveApproval(id, "approved", body?.operatorName);
+    return { approval };
+  });
+
+  app.post("/api/approvals/:id/deny", async (request) => {
+    const { id } = approvalIdParams.parse(request.params);
+    const body = resolveApprovalBody.parse(request.body);
+    const approval = await service.resolveApproval(id, "denied", body?.operatorName);
+    return { approval };
+  });
+
+  app.post("/api/adapter/responses", async (request, reply) => {
+    await handleGeminiResponsesAdapter(request, reply, config);
   });
 
   if (config.nodeEnv === "production") {

@@ -4,11 +4,33 @@ set -euo pipefail
 repo_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$repo_dir"
 
+cli_gemini_key="${GEMINI_API_KEY:-}"
+cli_gemini_model="${GEMINI_MODEL:-}"
+cli_openrouter_key="${OPENROUTER_API_KEY:-}"
+cli_openrouter_model="${OPENROUTER_MODEL:-}"
+
+if [[ -f .env ]]; then
+  set -a
+  source .env
+  set +a
+fi
+
+if [[ -n "$cli_gemini_key" ]]; then export GEMINI_API_KEY="$cli_gemini_key"; fi
+if [[ -n "$cli_gemini_model" ]]; then export GEMINI_MODEL="$cli_gemini_model"; fi
+if [[ -n "$cli_openrouter_key" ]]; then export OPENROUTER_API_KEY="$cli_openrouter_key"; fi
+if [[ -n "$cli_openrouter_model" ]]; then export OPENROUTER_MODEL="$cli_openrouter_model"; fi
+
+if [[ -n "${GEMINI_API_KEY:-}" ]]; then
+  export OPENROUTER_API_KEY="${OPENROUTER_API_KEY:-$GEMINI_API_KEY}"
+  export OPENROUTER_MODEL="${OPENROUTER_MODEL:-${GEMINI_MODEL:-gemini-2.5-flash}}"
+fi
+
+
 runtime_image="${CONTAINER_RUNTIME_IMAGE:-volc-agent-runtime:local}"
 runtime_base_image="${CONTAINER_RUNTIME_BASE_IMAGE:-node:22-bookworm-slim}"
 runtime_apt_mirror="${CONTAINER_APT_MIRROR:-}"
 runtime_apt_security_mirror="${CONTAINER_APT_SECURITY_MIRROR:-}"
-runtime_apt_packages="${CONTAINER_RUNTIME_APT_PACKAGES:-ca-certificates git ripgrep}"
+runtime_apt_packages="${CONTAINER_RUNTIME_APT_PACKAGES:-ca-certificates git ripgrep curl}"
 codex_sandbox_mode="${CODEX_SANDBOX_MODE:-workspace-write}"
 
 log() {
@@ -63,11 +85,13 @@ detect_engine() {
   return 1
 }
 
-if [[ -z "${ARK_API_KEY:-}" || -z "${ARK_MODEL:-}" ]]; then
-  log "ARK_API_KEY and ARK_MODEL are required."
-  log "Example: ARK_API_KEY=key ARK_MODEL=ep-id ./scripts/start-local-poc.sh"
+if [[ -z "${OPENROUTER_API_KEY:-${ARK_API_KEY:-}}" || -z "${OPENROUTER_MODEL:-${ARK_MODEL:-}}" ]]; then
+  log "GEMINI_API_KEY or (OPENROUTER_API_KEY and OPENROUTER_MODEL) is required."
+  log "Example with Gemini:     GEMINI_API_KEY=your-gemini-key npm run poc"
+  log "Example with OpenRouter: OPENROUTER_API_KEY=your-key OPENROUTER_MODEL=openai/gpt-4o-mini npm run poc"
   exit 2
 fi
+
 
 command -v node >/dev/null 2>&1 || {
   log "Node.js 22+ is required to run the local control plane."
@@ -95,6 +119,9 @@ if [[ -n "${LOCAL_POC_DATA_ROOT:-}" ]]; then
   export CODEX_HOME="$local_state_root/codex-home"
 elif [[ "$(uname -s)" == "Darwin" ]]; then
   local_state_root="${HOME}/.volc-agent-launchpad"
+  if [[ "${APP_DATA_DIR:-}" == /app* ]]; then unset APP_DATA_DIR; fi
+  if [[ "${AGENT_WORKSPACE_ROOT:-}" == /app* ]]; then unset AGENT_WORKSPACE_ROOT; fi
+  if [[ "${CODEX_HOME:-}" == /app* ]]; then unset CODEX_HOME; fi
   export APP_DATA_DIR="${APP_DATA_DIR:-$local_state_root/data}"
   export AGENT_WORKSPACE_ROOT="${AGENT_WORKSPACE_ROOT:-$local_state_root/workspaces}"
   export CODEX_HOME="${CODEX_HOME:-$local_state_root/codex-home}"

@@ -1,4 +1,12 @@
-import type { Agent, AgentRun, Message, SystemInfo } from "./types";
+import type {
+  Agent,
+  AgentRun,
+  AgentSession,
+  ApprovalRequest,
+  Message,
+  RunEvent,
+  SystemInfo,
+} from "./types";
 
 export class ApiError extends Error {
   constructor(
@@ -65,10 +73,21 @@ export const api = {
     request<{ agent: Agent }>("/api/agents/" + id + "/stop", {
       method: "POST",
     }),
-  messages: (id: string) =>
-    request<{ messages: Message[] }>("/api/agents/" + id + "/messages"),
-  runs: (id: string) =>
-    request<{ runs: AgentRun[] }>("/api/agents/" + id + "/runs"),
+  sessions: (id: string) =>
+    request<{ sessions: AgentSession[] }>("/api/agents/" + id + "/sessions"),
+  createSession: (id: string, title?: string) =>
+    request<{ session: AgentSession; agent: Agent }>("/api/agents/" + id + "/sessions", {
+      method: "POST",
+      body: JSON.stringify({ title }),
+    }),
+  selectSession: (id: string, sessionId: string) =>
+    request<{ agent: Agent }>("/api/agents/" + id + "/sessions/" + sessionId + "/select", {
+      method: "POST",
+    }),
+  messages: (id: string, sessionId?: string) =>
+    request<{ messages: Message[] }>("/api/agents/" + id + "/messages" + (sessionId ? "?sessionId=" + sessionId : "")),
+  runs: (id: string, sessionId?: string) =>
+    request<{ runs: AgentRun[] }>("/api/agents/" + id + "/runs" + (sessionId ? "?sessionId=" + sessionId : "")),
   sendMessage: (id: string, content: string) =>
     request<{ run: AgentRun; message: Message }>(
       "/api/agents/" + id + "/messages",
@@ -78,4 +97,24 @@ export const api = {
       },
     ),
   run: (id: string) => request<{ run: AgentRun }>("/api/runs/" + id),
+  runEvents: (id: string) => request<{ events: RunEvent[] }>("/api/runs/" + id + "/events"),
+  listApprovals: (agentId?: string, status?: string) => {
+    const params = new URLSearchParams();
+    if (agentId) params.set("agentId", agentId);
+    if (status) params.set("status", status);
+    const qs = params.toString();
+    return request<{ approvals: ApprovalRequest[] }>("/api/approvals" + (qs ? "?" + qs : ""));
+  },
+  getApproval: (id: string) => request<{ approval: ApprovalRequest }>("/api/approvals/" + id),
+  approve: (id: string, operatorName = "Human Operator") =>
+    request<{ approval: ApprovalRequest }>("/api/approvals/" + id + "/approve", {
+      method: "POST",
+      body: JSON.stringify({ operatorName }),
+    }),
+  deny: (id: string, operatorName = "Human Operator") =>
+    request<{ approval: ApprovalRequest }>("/api/approvals/" + id + "/deny", {
+      method: "POST",
+      body: JSON.stringify({ operatorName }),
+    }),
 };
+

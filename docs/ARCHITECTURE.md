@@ -11,8 +11,8 @@ flowchart LR
     Service --> Runner{"AgentRunner"}
     Runner -->|Local POC| Container["Disposable Runtime container"]
     Runner -->|ECS| Process["Codex child process"]
-    Container --> Ark["Volcengine Ark"]
-    Process --> Ark
+    Container --> ModelAPI["OpenRouter-compatible model API"]
+    Process --> ModelAPI
 ```
 
 ## Components
