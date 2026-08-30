@@ -487,66 +487,163 @@ export class IdentityService {
 Run: `npm test --workspace apps/server -- identity.test`
 Expected: 3 PASS.
 
-- [ ] **Step 5: Add routes**
+- [ ] **Step 5: Add routes and wire the service**
 
-In `app.ts` (mirror existing route style; `IdentityService` constructed alongside `AgentService` — check `index.ts`/`buildApp` wiring and pass it in the same way `service` is):
+`createApp` is currently 2-arg (`app.ts:47`). Change its signature to take the identity service as an OPTIONAL third parameter so the four existing `createApp(...)` call sites in `app.test.ts` (lines 13, 30, 68, 105) keep compiling unchanged:
 
 ```ts
-app.get("/api/principals", async () => ({ principals: identity.listPrincipals() }));
+export async function createApp(
+  config: AppConfig,
+  service: AgentService,
+  identity?: IdentityService,
+): Promise<FastifyInstance> {
+```
 
-app.get("/api/grants", async (request) => {
-  const { principalId } = request.query as { principalId?: string };
-  return { grants: identity.listGrants(principalId) };
+Add zod schemas beside the existing ones at the top of `app.ts` (the file validates exclusively with zod — `agentIdParams`, `createAgentBody` — match that style, do not use `as` casts):
+
+```ts
+const grantBody = z.object({
+  principalId: z.string().min(1).max(128),
+  scope: z.enum(["resource:read", "resource:write", "network:egress"]),
+  target: z.string().min(1).max(256),
+  ttlMinutes: z.number().int().positive().max(10_080).nullish(),
 });
+const grantQuery = z.object({ principalId: z.string().min(1).max(128).optional() });
+const grantIdParams = z.object({ id: z.string().uuid() });
+const resourceIdParams = z.object({ id: z.string().min(1).max(128) });
+```
 
-app.post("/api/grants", async (request, reply) => {
-  const body = request.body as {
-    principalId: string; scope: GrantScope; target: string; ttlMinutes?: number | null;
-  };
-  const grantedBy = (request.headers["x-principal-id"] as string | undefined) ?? "user-a";
-  const grant = await identity.createGrant({ ...body, grantedBy });
-  return reply.code(201).send({ grant });
-});
+Register the routes inside an `if (identity) { ... }` block, placed just before the `POST /api/adapter/responses` route:
 
-app.post("/api/grants/:id/revoke", async (request) => {
-  const { id } = request.params as { id: string };
-  return { grant: await identity.revokeGrant(id) };
-});
+```ts
+if (identity) {
+  app.get("/api/principals", async () => ({ principals: identity.listPrincipals() }));
 
-app.get("/api/resources/:id", async (request, reply) => {
-  const { id } = request.params as { id: string };
-  const agentPrincipalId = request.headers["x-agent-principal-id"] as string | undefined;
-  if (!agentPrincipalId) return reply.code(400).send({ error: "x-agent-principal-id header required" });
-  const { resource, decision } = await identity.readResourceAsAgent(id, agentPrincipalId);
-  if (!decision.allowed) return reply.code(403).send({ error: decision.reason, decision });
-  return { resource, decision };
+  app.get("/api/grants", async (request) => {
+    const { principalId } = grantQuery.parse(request.query);
+    return { grants: identity.listGrants(principalId) };
+  });
+
+  app.post("/api/grants", async (request, reply) => {
+    const body = grantBody.parse(request.body);
+    const grantedBy = (request.headers["x-principal-id"] as string | undefined) ?? "user-a";
+    const grant = await identity.createGrant({
+      principalId: body.principalId,
+      scope: body.scope,
+      target: body.target,
+      ttlMinutes: body.ttlMinutes ?? null,
+      grantedBy,
+    });
+    return reply.code(201).send({ grant });
+  });
+
+  app.post("/api/grants/:id/revoke", async (request) => {
+    const { id } = grantIdParams.parse(request.params);
+    return { grant: await identity.revokeGrant(id) };
+  });
+
+  app.get("/api/resources/:id", async (request, reply) => {
+    const { id } = resourceIdParams.parse(request.params);
+    const agentPrincipalId = request.headers["x-agent-principal-id"] as string | undefined;
+    if (!agentPrincipalId) {
+      return reply.code(400).send({ error: "x-agent-principal-id header required" });
+    }
+    const { resource, decision } = await identity.readResourceAsAgent(id, agentPrincipalId);
+    if (!decision.allowed) {
+      return reply.code(403).send({ error: decision.reason, decision });
+    }
+    return { resource, decision };
+  });
+}
+```
+
+Wire it in `apps/server/src/index.ts` — it constructs `JsonStore` and `AgentService` today and is the only production wiring site. Build the identity service from the SAME store instance and pass it third:
+
+```ts
+const identity = new IdentityService(store, (runId, agentId, decision) =>
+  service.recordPolicyDecision(runId, agentId, decision),
+);
+const app = await createApp(config, service, identity);
+```
+
+- [ ] **Step 6: Record every decision in the trace (spec requirement)**
+
+The spec requires EVERY allow and deny to be persisted as a `policy.decision` RunEvent — this is the evidence the demo shows when a grant is revoked. `IdentityService` therefore takes an optional recorder in its constructor (signature in this task's Interfaces block) and calls it from `readResourceAsAgent` after computing the decision:
+
+```ts
+// in IdentityService, after `const decision = evaluateResourceAccess(...)`:
+if (this.recordDecision) {
+  const runs = agent ? this.runsForAgent(agent.id) : [];
+  const runId = runs[0]?.id ?? `authz-${resourceId}`;
+  await this.recordDecision(runId, agent?.id ?? "unknown", decision);
+}
+```
+
+`runsForAgent` reads `database.runs.filter(r => r.agentId === id).sort((a, b) => b.createdAt.localeCompare(a.createdAt))` — the agent's most recent run, so the decision lands on the run the operator is watching. When the agent has never run, fall back to the synthetic `authz-<resourceId>` id: the event is still recorded and queryable, just not attached to a run row.
+
+Add to `identity.test.ts`:
+
+```ts
+it("records a policy.decision for both allow and deny", async () => {
+  const recorded: Array<{ runId: string; agentId: string; ruleId: string }> = [];
+  const service = await makeService((runId, agentId, decision) => {
+    recorded.push({ runId, agentId, ruleId: decision.ruleId });
+  });
+  await service.readResourceAsAgent("res-a", "agent-1");           // deny, no grant
+  await service.createGrant({
+    principalId: "agent-1", grantedBy: "user-a", scope: "resource:read", target: "res-a",
+  });
+  await service.readResourceAsAgent("res-a", "agent-1");           // allow
+  expect(recorded.map((entry) => entry.ruleId)).toEqual(["AUTHZ-GRANT-011", "AUTHZ-GRANT-011"]);
+  expect(recorded).toHaveLength(2);
 });
 ```
 
-Add validation to POST /api/grants: reject scope not in `["resource:read", "resource:write", "network:egress"]` with 400 (same pattern as existing body validation in `app.ts` — read how POST /api/agents validates and copy it).
+Extend the `makeService` helper from Step 1 to accept the optional recorder and pass it to the `IdentityService` constructor.
 
-- [ ] **Step 6: Write failing route tests, then verify**
+Run: `npm test -w @launchpad/server -- identity.test` → 4 PASS.
 
-Append to `apps/server/src/app.test.ts` (follow its existing inject-style tests):
+- [ ] **Step 7: Route-level test**
+
+Append to `apps/server/src/app.test.ts`. Note its existing tests all stub `AgentService` with `as unknown as AgentService` — there is NO real-stack bootstrap in that file, so build the smallest stub that satisfies these routes rather than standing up a full agent:
 
 ```ts
 it("denies an agent access to another user's resource server-side", async () => {
-  // create agent as user-a (default header), then:
+  const root = await mkdtemp(path.join(tmpdir(), "launchpad-app-authz-"));
+  temporaryDirectories.push(root);
+  const store = new JsonStore(path.join(root, "db.json"));
+  await store.initialize();
+  await store.mutate((database) => {
+    database.principals.push({
+      id: "agent-1", kind: "agent", name: "A1", createdAt: new Date().toISOString(),
+    });
+  });
+  const identity = new IdentityService(store);
+  const app = await createApp(
+    loadConfig({ NODE_ENV: "test" }),
+    {} as unknown as AgentService,
+    identity,
+  );
+
   const denied = await app.inject({
-    method: "GET", url: "/api/resources/res-b",
-    headers: { "x-agent-principal-id": agentPrincipalId },
+    method: "GET",
+    url: "/api/resources/res-b",
+    headers: { "x-agent-principal-id": "agent-1" },
   });
   expect(denied.statusCode).toBe(403);
   expect(denied.json().decision.ruleId).toBe("AUTHZ-OWNER-010");
+  await app.close();
 });
 ```
 
-(Adapt setup to `app.test.ts`'s existing bootstrap for creating an agent; `agentPrincipalId` comes from the create-agent response after Task 4.) Run: `npm test --workspace apps/server -- app.test` → PASS.
+`res-b` is owned by `user-b` and the agent principal resolves to owner `user-a` (the migration default), so ownership denial fires before any grant check — exactly the spec's acceptance example. Add the `mkdtemp`/`tmpdir`/`path` imports and a `temporaryDirectories` cleanup array if `app.test.ts` does not already have them (copy the pattern from `store.test.ts`).
 
-- [ ] **Step 7: Commit**
+Run: `npm test -w @launchpad/server -- app.test` → PASS. Then `npm run check` → green.
+
+- [ ] **Step 8: Commit**
 
 ```bash
-git add apps/server/src/identity.ts apps/server/src/identity.test.ts apps/server/src/app.ts apps/server/src/app.test.ts
+git add apps/server/src/identity.ts apps/server/src/identity.test.ts apps/server/src/app.ts apps/server/src/app.test.ts apps/server/src/index.ts
 git commit -m "feat(identity): identity service with grant lifecycle and authz-enforced resource routes"
 ```
 
