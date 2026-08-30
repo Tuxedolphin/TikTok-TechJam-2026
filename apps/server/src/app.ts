@@ -8,6 +8,7 @@ import type { AppConfig } from "./config.js";
 import { HttpError } from "./errors.js";
 import type { AgentService } from "./agent-service.js";
 import { handleGeminiResponsesAdapter } from "./gemini-adapter.js";
+import type { IdentityService } from "./identity.js";
 
 const agentIdParams = z.object({ id: z.string().uuid() });
 const runIdParams = z.object({ id: z.string().uuid() });
@@ -41,12 +42,22 @@ const approvalQuery = z.object({
 const resolveApprovalBody = z.object({
   operatorName: z.string().trim().min(1).max(80).optional(),
 }).optional();
+const grantBody = z.object({
+  principalId: z.string().min(1).max(128),
+  scope: z.enum(["resource:read", "resource:write", "network:egress"]),
+  target: z.string().min(1).max(256),
+  ttlMinutes: z.number().int().positive().max(10_080).nullish(),
+});
+const grantQuery = z.object({ principalId: z.string().min(1).max(128).optional() });
+const grantIdParams = z.object({ id: z.string().uuid() });
+const resourceIdParams = z.object({ id: z.string().min(1).max(128) });
 
 
 
 export async function createApp(
   config: AppConfig,
   service: AgentService,
+  identity?: IdentityService,
 ): Promise<FastifyInstance> {
   const app = Fastify({
     logger: {
@@ -199,6 +210,46 @@ export async function createApp(
     const approval = await service.resolveApproval(id, "denied", body?.operatorName);
     return { approval };
   });
+
+  if (identity) {
+    app.get("/api/principals", async () => ({ principals: identity.listPrincipals() }));
+
+    app.get("/api/grants", async (request) => {
+      const { principalId } = grantQuery.parse(request.query);
+      return { grants: identity.listGrants(principalId) };
+    });
+
+    app.post("/api/grants", async (request, reply) => {
+      const body = grantBody.parse(request.body);
+      const grantedBy = (request.headers["x-principal-id"] as string | undefined) ?? "user-a";
+      const grant = await identity.createGrant({
+        principalId: body.principalId,
+        scope: body.scope,
+        target: body.target,
+        ttlMinutes: body.ttlMinutes ?? null,
+        grantedBy,
+      });
+      return reply.code(201).send({ grant });
+    });
+
+    app.post("/api/grants/:id/revoke", async (request) => {
+      const { id } = grantIdParams.parse(request.params);
+      return { grant: await identity.revokeGrant(id) };
+    });
+
+    app.get("/api/resources/:id", async (request, reply) => {
+      const { id } = resourceIdParams.parse(request.params);
+      const agentPrincipalId = request.headers["x-agent-principal-id"] as string | undefined;
+      if (!agentPrincipalId) {
+        return reply.code(400).send({ error: "x-agent-principal-id header required" });
+      }
+      const { resource, decision } = await identity.readResourceAsAgent(id, agentPrincipalId);
+      if (!decision.allowed) {
+        return reply.code(403).send({ error: decision.reason, decision });
+      }
+      return { resource, decision };
+    });
+  }
 
   app.post("/api/adapter/responses", async (request, reply) => {
     await handleGeminiResponsesAdapter(request, reply, config);
