@@ -1,5 +1,10 @@
 # WS-E: Governed Multi-Agent Fleet Implementation Plan
 
+> ## ⛔ STOP — read [REVIEW-2026-08-30.md](REVIEW-2026-08-30.md) before executing
+>
+> - **SKIP TASK 1 ENTIRELY.** `Grant`, `GrantScope`, `FleetTopic`, `FleetTurn`, `Database v4`, and the `fleet.turn`/`fleet.timeout` event types already exist in the working tree (WS-A). Task 1's Step 3 re-declares them (compile errors) and its Step 4 **replaces `emptyDatabase`/`migrateDatabase` wholesale, deleting WS-A's working migration and seeding**. Its "expected: FAIL" step will silently pass — that is the tell. Verify, then start at Task 2.
+> - Tasks 2–7 were verified sound against the real `agent-service.ts`, `app.ts`, and `types.ts` contracts — including the `sendMessage` fire-and-forget polling contract and `topic.id`-as-runId trace correlation.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** A lightweight turn-taking coordinator (`fleet-service.ts`) that drives multiple existing Agents through a shared topic — demoed as a 10→1 countdown relay — with every turn attributable in one correlated trace, 60s turn timeouts, per-turn grant re-checks, and a minimal web fleet view.

@@ -1,6 +1,7 @@
 # Agent Passport — plan index & merge order
 
 Spec: [`../specs/2026-08-30-agent-passport-design.md`](../specs/2026-08-30-agent-passport-design.md)
+**⛔ [REVIEW-2026-08-30.md](REVIEW-2026-08-30.md) — read first. Eight Critical findings; WS-D and WS-E Task 1 are destructive as written.**
 Prior art & upgrades: [`../specs/2026-08-30-prior-art-and-upgrades.md`](../specs/2026-08-30-prior-art-and-upgrades.md) — read before executing WS-B (proxy upgrade) and WS-D (policy-outcome evals framing).
 Narrative: **assume the agent is compromised** — the platform stays safe even when the model is hostile.
 

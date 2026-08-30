@@ -1,5 +1,12 @@
 # WS-A: Identity & Delegation Implementation Plan
 
+> ## ⛔ STOP — read [REVIEW-2026-08-30.md](REVIEW-2026-08-30.md) before executing
+>
+> - **Task 1 is already implemented** as uncommitted working-tree changes. Verify against Steps 1–5, run the suite, and commit (Step 6) — do not re-implement. Its "expected: FAIL" step cannot fail.
+> - **`policy.decision` is never wired up (spec gap).** Task 4 defines `recordPolicyDecision` but no task calls it from the authz path, so the resource route records nothing and Task 5's manual verification fails. This is the demo's hero evidence — wire it: inject the recorder into the route, resolve the agent by `principalId`, use its active-or-latest run for `runId`, and define the no-active-run fallback.
+> - **Task 3 Steps 5–6 are not executable as written.** `createApp` is 2-arg; the new signature, `index.ts` wiring, and the 4 existing `app.test.ts` call sites are unspecified — and the "existing bootstrap for creating an agent" that Step 6 refers to does not exist. Specify `createApp(config, service, identity?)` and write the real-stack test harness explicitly.
+> - Also: Task 4 tests reference a `store` variable `makeService()` doesn't return; `grant.created`/`revoked`/`expired` types are never emitted; route snippets should use zod, matching `app.ts`.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Human vs agent principals, scoped time-bound revocable grants, server-side ownership denial, and every decision recorded as a `policy.decision` trace event.

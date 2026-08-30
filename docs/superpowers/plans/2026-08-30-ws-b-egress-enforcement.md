@@ -1,5 +1,11 @@
 # WS-B: Runtime Egress Enforcement Implementation Plan
 
+> ## ⛔ STOP — read [REVIEW-2026-08-30.md](REVIEW-2026-08-30.md) before executing
+>
+> - **`--network none` will brick every run.** `grants` is now always `[]` (nothing seeds it), so `hasEgressGrants` is always `false`, so every container loses networking — and the Codex CLI inside it reaches the model API through `host.docker.internal` (`config.ts:76`). Seed a standing `network:egress` grant for the model-API host at agent creation AND gate `--network none` behind an explicit config flag. Delete the dead `undefined`-grants branch and its Task 5 test.
+> - **The "fail closed / blocked before execution" claim is false.** `onStep` fires on `item.completed` — the command has already run inside the container (its detail even carries `(exit N)`). This is post-hoc detection, and any agent with one grant still has unrestricted bridge networking. Either implement the real proxy, or reword honestly ("violation detected; run failed closed") — a judge reading the code will find this.
+> - `host: null` matches (`git fetch`, `npm install node-fetch`) must fall through to HITL approval, not hard-deny + quarantine; exclude `message` steps from strike counting; extract **all** hosts, not just the first (`curl allowed.com evil.net` currently passes).
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Default-deny network egress at the runtime boundary: intercept runner steps that target a network host, evaluate them against `network:egress` grants, block fail-closed, quarantine the agent after 3 blocked attempts in one run, and cut container networking entirely (`--network none`) for agents with zero egress grants.

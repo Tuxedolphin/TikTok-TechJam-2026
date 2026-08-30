@@ -1,5 +1,12 @@
 # WS-C: HITL Diff-Review Approval Implementation Plan
 
+> ## ⛔ STOP — read [REVIEW-2026-08-30.md](REVIEW-2026-08-30.md) before executing
+>
+> - **DO NOT EXECUTE TASK 4 AS WRITTEN — licensing.** This plan vendors codegraff's `packages/diffs` believing it is Apache-2.0 (its `package.json` says so). The governing **root LICENSE is a modified AGPLv3** with Section 13 network copyleft; no subpackage LICENSE exists. Vendoring it into a network-facing demo creates a real compliance problem for this repo.
+>   **Replace with `react-diff-view` (MIT) + `jsdiff` (BSD-3-Clause)** — both confirmed React 18 + Vite compatible. Strip "Apache-2.0" from Task 4/5 commit messages and per-file attribution headers.
+> - **Task 3 correctness:** a snapshot miss caused by `MAX_SNAPSHOT_FILES` truncation is indistinguishable from "file never existed", so deny-revert will `unlink()` a pre-existing file. Treat snapshot-miss as "unknown: do not diff, do not delete."
+> - Tasks 1–3 are otherwise verified sound, including the freeze/revert ordering (revert-then-cancel, never resume-then-revert).
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** When an agent's `file_change` step trips the HITL approval gate, the operator reviews the actual unified diff of the pending change in the web UI — approve applies it (existing flow), deny reverts the files on disk.

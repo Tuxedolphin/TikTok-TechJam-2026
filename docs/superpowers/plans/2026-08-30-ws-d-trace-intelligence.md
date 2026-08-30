@@ -1,5 +1,11 @@
 # WS-D Trace Intelligence Implementation Plan
 
+> ## ⛔ STOP — read [REVIEW-2026-08-30.md](REVIEW-2026-08-30.md) before executing
+>
+> - **SKIP TASK 1 ENTIRELY.** Its types and Database v4 migration already exist in the working tree (WS-A). Executing it literally causes duplicate-identifier compile errors and **deletes WS-A's working `migrateV3ToV4`**, its seeding, and its passing test. Verify the types exist, then start at Task 2.
+> - **Before Tasks 3–4, settle C7:** count how many `turn.completed` events a real `codex exec --json` run emits. If exactly one, the mid-run degrade cannot work as written — move the breaker to session-cumulative or document it as end-of-run.
+> - Fix `clearModelOverride()` to be conditional (`if (degradedModel)`), give replay a fresh session, and catch `HttpError` in `replay()`.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Add eval capture/replay for failed runs, a token-rate anomaly breaker that degrades to a cheap model before hard-killing, and per-step cost attribution surfaced in the web trace panel.
