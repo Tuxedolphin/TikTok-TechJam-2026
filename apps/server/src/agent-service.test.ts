@@ -243,5 +243,60 @@ describe("Agent lifecycle", () => {
     expect(events.some((e) => e.type === "step.command")).toBe(true);
     expect(events.find((e) => e.type === "step.command")?.detail).toBe("npm test (exit 0)");
   });
+
+  it("provisions an initial Chat 1 session and supports multi-session chat isolation", async () => {
+    let capturedThreadIds: (string | null)[] = [];
+    const service = await makeService({
+      run: async (request) => {
+        capturedThreadIds.push(request.threadId);
+        return { output: "response to " + request.prompt, threadId: "thread-" + (request.threadId ? "resumed" : "new"), usage: null };
+      },
+      cancel: async () => true,
+      isAvailable: async () => true,
+    });
+
+    const agent = await service.createAgent({ name: "MultiSessionAgent" });
+    const sessions = service.listSessions(agent.id);
+    expect(sessions).toHaveLength(1);
+    expect(sessions[0]?.title).toBe("Chat 1");
+    expect(agent.activeSessionId).toBe(sessions[0]?.id);
+
+    // Send first message in Chat 1
+    const { run: run1 } = await service.sendMessage(agent.id, "hello in chat 1");
+    await expect.poll(() => service.getRun(run1.id).status).toBe("completed");
+    expect(capturedThreadIds[0]).toBeNull();
+
+    const chat1Updated = service.listSessions(agent.id).find((s) => s.id === sessions[0]?.id);
+    expect(chat1Updated?.codexThreadId).toBe("thread-new");
+
+    // Create a new session (Chat 2)
+    const { session: chat2, agent: agentInChat2 } = await service.createSession(agent.id, "Chat 2");
+    expect(agentInChat2.activeSessionId).toBe(chat2.id);
+    expect(chat2.codexThreadId).toBeNull();
+
+    // Send message in Chat 2 - threadId should be null (fresh context window baseline!)
+    const { run: run2 } = await service.sendMessage(agent.id, "hello in chat 2");
+    await expect.poll(() => service.getRun(run2.id).status).toBe("completed");
+    expect(capturedThreadIds[1]).toBeNull();
+
+    // Chat 1 messages vs Chat 2 messages are isolated
+    const chat1Messages = service.getMessages(agent.id, sessions[0]?.id);
+    const chat2Messages = service.getMessages(agent.id, chat2.id);
+    expect(chat1Messages.map((m) => m.content)).toContain("hello in chat 1");
+    expect(chat1Messages.map((m) => m.content)).not.toContain("hello in chat 2");
+    expect(chat2Messages.map((m) => m.content)).toContain("hello in chat 2");
+    expect(chat2Messages.map((m) => m.content)).not.toContain("hello in chat 1");
+
+    // Switch back to Chat 1
+    const switchedAgent = await service.selectSession(agent.id, sessions[0]!.id);
+    expect(switchedAgent.activeSessionId).toBe(sessions[0]?.id);
+    expect(switchedAgent.codexThreadId).toBe("thread-new");
+
+    // Send another message in Chat 1 - threadId is resumed
+    const { run: run3 } = await service.sendMessage(agent.id, "continuing chat 1");
+    await expect.poll(() => service.getRun(run3.id).status).toBe("completed");
+    expect(capturedThreadIds[2]).toBe("thread-new");
+  });
 });
+
 

@@ -23,6 +23,18 @@ const updateAgentBody = createAgentBody.partial().refine(
 const messageBody = z.object({
   content: z.string().trim().min(1).max(50_000),
 });
+const sessionParams = z.object({
+  id: z.string().uuid(),
+  sessionId: z.string().trim().min(1).max(128),
+});
+const createSessionBody = z.object({
+  title: z.string().trim().max(80).optional(),
+}).optional();
+const queryWithSession = z.object({
+  sessionId: z.string().trim().min(1).max(128).optional(),
+});
+
+
 
 export async function createApp(
   config: AppConfig,
@@ -108,14 +120,34 @@ export async function createApp(
     return { agent: await service.stopAgent(id) };
   });
 
+  app.get("/api/agents/:id/sessions", async (request) => {
+    const { id } = agentIdParams.parse(request.params);
+    return { sessions: service.listSessions(id) };
+  });
+
+  app.post("/api/agents/:id/sessions", async (request, reply) => {
+    const { id } = agentIdParams.parse(request.params);
+    const body = createSessionBody.parse(request.body);
+    const result = await service.createSession(id, body?.title);
+    return reply.code(201).send(result);
+  });
+
+  app.post("/api/agents/:id/sessions/:sessionId/select", async (request) => {
+    const { id, sessionId } = sessionParams.parse(request.params);
+    const agent = await service.selectSession(id, sessionId);
+    return { agent };
+  });
+
   app.get("/api/agents/:id/messages", async (request) => {
     const { id } = agentIdParams.parse(request.params);
-    return { messages: service.getMessages(id) };
+    const query = queryWithSession.parse(request.query);
+    return { messages: service.getMessages(id, query.sessionId) };
   });
 
   app.get("/api/agents/:id/runs", async (request) => {
     const { id } = agentIdParams.parse(request.params);
-    return { runs: service.getRuns(id) };
+    const query = queryWithSession.parse(request.query);
+    return { runs: service.getRuns(id, query.sessionId) };
   });
 
   app.post("/api/agents/:id/messages", async (request, reply) => {
@@ -124,6 +156,7 @@ export async function createApp(
     const result = await service.sendMessage(id, body.content);
     return reply.code(202).send(result);
   });
+
 
   app.get("/api/runs/:id", async (request) => {
     const { id } = runIdParams.parse(request.params);
