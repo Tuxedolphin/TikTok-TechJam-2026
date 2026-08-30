@@ -1011,6 +1011,15 @@ git commit -m "feat(governance): enforce default-deny egress with fail-closed bl
 
 ### Task 5: Container network hardening (`--network none` for zero-grant agents)
 
+> **Corrected by empirical testing — read [the verified egress architecture](../specs/2026-08-30-egress-architecture-verified.md) before starting.**
+>
+> `--network none` for zero-grant agents is **verified correct and kept**. Two changes to what follows:
+>
+> 1. **Seed a standing `network:egress` grant for the model-API host** (Gemini adapter host / OpenRouter host, from `config.ts`) whenever an agent is created, and backfill it for existing agents in the same place the migration seeds principals. Without this, every agent has zero grants, every container gets `--network none`, and **no run can reach the model at all** — the baseline breaks. Task 5 must not land before this seeding does.
+> 2. **Granted agents need the sidecar, not the host.** The original "host proxy + `HTTP_PROXY`" idea does not work: a container on an `--internal` network cannot reach `host.docker.internal` (tested: 000) nor the explicit gateway IP (000). What works is a **proxy sidecar attached to both the internal network and a bridge network**, reached by container name (tested: client→sidecar 200, sidecar→internet OK, client→internet 000). That is a follow-on task; this task only ships the zero-grant cutoff.
+>
+> Until the sidecar lands, be accurate in the README and the demo: the step-level guard is **detection** (it fires on `item.completed`, after the command has run), and `--network none` is the only real enforcement. Do not claim per-host enforcement for granted agents yet.
+
 **Files:**
 - Modify: `apps/server/src/container-codex-runner.ts:41-100` (`buildContainerRunArgs`)
 - Modify: `apps/server/src/agent-service.ts:613-620` (the `this.runner.run({...})` call in `executeRun`)
