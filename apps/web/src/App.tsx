@@ -24,12 +24,13 @@ function formatTime(value: string): string {
 
 function StatusPill({ status }: { status: Agent["status"] }) {
   return (
-    <span className={"status status-" + status}>
+    <span className={"status-tag status-" + status}>
       <span className="status-dot" />
       {status}
     </span>
   );
 }
+
 
 function Spinner() {
   return <span className="spinner" aria-label="Loading" />;
@@ -399,11 +400,11 @@ export default function App() {
             setShowCreate(true);
           }}
         >
-          <span>＋</span> Create Agent
+          Create Agent
         </button>
 
         <div className="sidebar-label">
-          <span>Your Agents</span>
+          <span>Agents</span>
           <span>{agents.length}</span>
         </div>
         <nav className="agent-list">
@@ -423,11 +424,11 @@ export default function App() {
           ))}
           {agents.length === 0 && (
             <div className="empty-sidebar">
-              <span>◇</span>
-              Create your first coding Agent.
+              No agents created yet.
             </div>
           )}
         </nav>
+
 
         <div className="runtime-card">
           <span className="eyebrow">Runtime</span>
@@ -568,18 +569,13 @@ export default function App() {
               <div className="messages">
                 {messages.length === 0 && !activeRun ? (
                   <div className="welcome">
-                    <div className="welcome-orbit">
-                      <div>⌁</div>
-                    </div>
-                    <h3>What should {selected.name} build?</h3>
+                    <h3>{selected.name}</h3>
                     <p>
-                      The Agent can inspect files, write code, run commands, and continue the
-                      same Codex session across messages.
+                      Inspect files, edit code, run commands, and continue the same session across messages.
                     </p>
                     <div className="prompt-grid">
                       {starterPrompts.map((item) => (
-                        <button key={item} onClick={() => setPrompt(item)}>
-                          <span>↗</span>
+                        <button key={item} onClick={() => setPrompt(item)} className="prompt-card">
                           {item}
                         </button>
                       ))}
@@ -600,11 +596,11 @@ export default function App() {
                   <article className="message message-assistant thinking">
                     <div className="message-meta">
                       <strong>{selected.name}</strong>
-                      <span>working in the Agent workspace</span>
+                      <span>working</span>
                     </div>
                     <div className="thinking-row">
                       <Spinner />
-                      Codex is reading, editing, or running commands…
+                      <span>Executing in workspace…</span>
                     </div>
                   </article>
                 )}
@@ -629,28 +625,28 @@ export default function App() {
                               className={"drawer-tab " + (drawerTab === "trace" ? "active" : "")}
                               onClick={() => setDrawerTab("trace")}
                             >
-                              📋 Live Trace ({traceEvents.length})
+                              Trace ({traceEvents.length})
                             </button>
                             <button
                               type="button"
                               className={"drawer-tab " + (drawerTab === "tokens" ? "active" : "")}
                               onClick={() => setDrawerTab("tokens")}
                             >
-                              ⚡ Token & Budget
+                              Usage
                             </button>
                             <button
                               type="button"
                               className={"drawer-tab " + (drawerTab === "runs" ? "active" : "")}
                               onClick={() => setDrawerTab("runs")}
                             >
-                              📜 Run History ({runs.length})
+                              History ({runs.length})
                             </button>
                           </div>
                           <button
                             type="button"
                             className="drawer-close-btn"
                             onClick={() => setDrawerOpen(false)}
-                            aria-label="Close telemetry drawer"
+                            aria-label="Close details"
                           >
                             ×
                           </button>
@@ -660,13 +656,13 @@ export default function App() {
                           {drawerTab === "trace" && (
                             <div className="trace-events">
                               {traceEvents.map((event) => (
-                                <article className={"trace-event trace-" + event.severity} key={event.id}>
+                                <div className={"trace-event trace-" + event.severity} key={event.id}>
                                   <div className="trace-event-top">
                                     <strong>{event.title}</strong>
-                                    <span>{formatTime(event.createdAt)}</span>
+                                    <span className="mono">{formatTime(event.createdAt)}</span>
                                   </div>
                                   <p>{event.detail}</p>
-                                </article>
+                                </div>
                               ))}
                               {traceEvents.length === 0 && (
                                 <div className="trace-empty">No trace events recorded for this turn.</div>
@@ -679,19 +675,19 @@ export default function App() {
                               <div className="metrics-grid">
                                 <div className="metric-box">
                                   <span className="metric-label">Input Tokens</span>
-                                  <strong className="metric-val">{activeRun.usage?.inputTokens?.toLocaleString() ?? "0"}</strong>
+                                  <strong className="metric-val mono">{activeRun.usage?.inputTokens?.toLocaleString() ?? "0"}</strong>
                                 </div>
                                 <div className="metric-box">
-                                  <span className="metric-label">Cached Tokens</span>
-                                  <strong className="metric-val">{activeRun.usage?.cachedInputTokens?.toLocaleString() ?? "0"}</strong>
+                                  <span className="metric-label">Cached</span>
+                                  <strong className="metric-val mono">{activeRun.usage?.cachedInputTokens?.toLocaleString() ?? "0"}</strong>
                                 </div>
                                 <div className="metric-box">
-                                  <span className="metric-label">Output Tokens</span>
-                                  <strong className="metric-val">{activeRun.usage?.outputTokens?.toLocaleString() ?? "0"}</strong>
+                                  <span className="metric-label">Output</span>
+                                  <strong className="metric-val mono">{activeRun.usage?.outputTokens?.toLocaleString() ?? "0"}</strong>
                                 </div>
                                 <div className="metric-box highlight">
-                                  <span className="metric-label">Total Cost (USD)</span>
-                                  <strong className="metric-val">
+                                  <span className="metric-label">Est. Cost</span>
+                                  <strong className="metric-val mono">
                                     {activeRun.usage?.costUsd != null ? `$${activeRun.usage.costUsd.toFixed(5)}` : "$0.00"}
                                   </strong>
                                 </div>
@@ -699,26 +695,26 @@ export default function App() {
 
                               <div className="telemetry-policy-info">
                                 <div className="policy-row">
-                                  <span>Guardrail Policy:</span>
-                                  <strong>
-                                    {system?.guardrailCanaryEnabled ? "Canary Token Active (workspace secret check)" : "Disabled"}
+                                  <span>Canary Guardrail</span>
+                                  <strong className="mono">
+                                    {system?.guardrailCanaryEnabled ? "Active" : "Disabled"}
                                   </strong>
                                 </div>
                                 <div className="policy-row">
-                                  <span>Token Budget Limit:</span>
-                                  <strong>
-                                    {system?.runBudgetMaxTotalTokens ? `${system.runBudgetMaxTotalTokens.toLocaleString()} tokens` : "Unlimited"}
+                                  <span>Token Budget</span>
+                                  <strong className="mono">
+                                    {system?.runBudgetMaxTotalTokens ? `${system.runBudgetMaxTotalTokens.toLocaleString()} tokens` : "None"}
                                   </strong>
                                 </div>
                                 <div className="policy-row">
-                                  <span>Duration Budget Watchdog:</span>
-                                  <strong>
-                                    {system?.runBudgetMaxDurationMs ? `${system.runBudgetMaxDurationMs / 1000}s hard timeout` : "Unlimited"}
+                                  <span>Duration Watchdog</span>
+                                  <strong className="mono">
+                                    {system?.runBudgetMaxDurationMs ? `${system.runBudgetMaxDurationMs / 1000}s` : "None"}
                                   </strong>
                                 </div>
                                 <div className="policy-row">
-                                  <span>Sandbox Boundary:</span>
-                                  <strong>{system?.codexSandboxMode ?? "workspace-write"}</strong>
+                                  <span>Sandbox Mode</span>
+                                  <strong className="mono">{system?.codexSandboxMode ?? "workspace-write"}</strong>
                                 </div>
                               </div>
                             </div>
@@ -746,12 +742,12 @@ export default function App() {
                                     }}
                                   >
                                     <div className="run-card-top">
-                                      <span className={"status-chip status-" + r.status}>{r.status}</span>
-                                      <span>{formatTime(r.createdAt)}</span>
+                                      <span className={"status-tag status-" + r.status}>{r.status}</span>
+                                      <span className="mono">{formatTime(r.createdAt)}</span>
                                     </div>
                                     <p className="run-card-prompt">{r.prompt}</p>
-                                    <div className="run-card-foot">
-                                      <span>{rTokens > 0 ? `${rTokens.toLocaleString()} tokens` : "—"}</span>
+                                    <div className="run-card-foot mono">
+                                      <span>{rTokens > 0 ? `${rTokens.toLocaleString()} tok` : "—"}</span>
                                       {r.usage?.costUsd != null && <span>${r.usage.costUsd.toFixed(4)}</span>}
                                     </div>
                                   </button>
@@ -765,22 +761,22 @@ export default function App() {
 
                     <div className="telemetry-bar">
                       <div className="telemetry-bar-left">
-                        <span className={"telemetry-status-pill status-" + activeRun.status}>
+                        <span className={"status-tag status-" + activeRun.status}>
                           {["queued", "running"].includes(activeRun.status) && <Spinner />}
-                          {activeRun.status === "running" ? "Running" : activeRun.status}
+                          {activeRun.status}
                         </span>
                         <div className="telemetry-step-preview">
                           {["queued", "running"].includes(activeRun.status) ? (
                             latestStep ? (
                               <span title={latestStep.detail}>
-                                <strong>{latestStep.title}:</strong> {latestStep.detail.slice(0, 42)}{latestStep.detail.length > 42 ? "…" : ""}
+                                <strong>{latestStep.title}:</strong> {latestStep.detail.slice(0, 40)}{latestStep.detail.length > 40 ? "…" : ""}
                               </span>
                             ) : (
-                              <span>Codex executing in workspace…</span>
+                              <span>Running…</span>
                             )
                           ) : (
                             <span title={activeRun.prompt}>
-                              <strong>Prompt:</strong> {activeRun.prompt.slice(0, 42)}{activeRun.prompt.length > 42 ? "…" : ""}
+                              {activeRun.prompt.slice(0, 45)}{activeRun.prompt.length > 45 ? "…" : ""}
                             </span>
                           )}
                         </div>
@@ -789,55 +785,61 @@ export default function App() {
                       <div className="telemetry-bar-right">
                         <button
                           type="button"
-                          className={"telemetry-chip " + (drawerOpen && drawerTab === "tokens" ? "active" : "")}
+                          className={"telemetry-item " + (drawerOpen && drawerTab === "tokens" ? "active" : "")}
                           onClick={() => {
                             setDrawerTab("tokens");
                             setDrawerOpen(drawerOpen && drawerTab === "tokens" ? false : true);
                           }}
-                          title="Click to view token and cost breakdown"
+                          title="View token usage and cost"
                         >
-                          ⚡ {activeRunTokens > 0 ? `${activeRunTokens.toLocaleString()} tokens` : "0 tokens"}
+                          <span className="mono">{activeRunTokens.toLocaleString()} tokens</span>
                           {activeRun.usage?.costUsd != null && (
-                            <span className="telemetry-chip-cost">${activeRun.usage.costUsd.toFixed(4)}</span>
+                            <span className="telemetry-sub mono">${activeRun.usage.costUsd.toFixed(4)}</span>
                           )}
                         </button>
 
+                        <span className="telemetry-sep">·</span>
+
                         <button
                           type="button"
-                          className={"telemetry-chip " + (drawerOpen && drawerTab === "trace" ? "active" : "")}
+                          className={"telemetry-item " + (drawerOpen && drawerTab === "trace" ? "active" : "")}
                           onClick={() => {
                             setDrawerTab("trace");
                             setDrawerOpen(drawerOpen && drawerTab === "trace" ? false : true);
                           }}
-                          title="Click to view live execution trace events"
+                          title="View execution trace"
                         >
-                          📋 {traceEvents.length} events
+                          {traceEvents.length} events
                         </button>
+
+                        <span className="telemetry-sep">·</span>
 
                         <button
                           type="button"
-                          className={"telemetry-chip " + (drawerOpen && drawerTab === "runs" ? "active" : "")}
+                          className={"telemetry-item " + (drawerOpen && drawerTab === "runs" ? "active" : "")}
                           onClick={() => {
                             setDrawerTab("runs");
                             setDrawerOpen(drawerOpen && drawerTab === "runs" ? false : true);
                           }}
-                          title="Click to switch runs"
+                          title="View run history"
                         >
-                          📜 {runs.length} runs
+                          {runs.length} runs
                         </button>
+
+                        <span className="telemetry-sep">·</span>
 
                         <button
                           type="button"
-                          className="telemetry-expand-btn"
+                          className={"telemetry-toggle " + (drawerOpen ? "active" : "")}
                           onClick={() => setDrawerOpen(!drawerOpen)}
-                          title={drawerOpen ? "Collapse telemetry panel" : "Expand telemetry panel"}
                         >
-                          {drawerOpen ? "▾ Hide" : "▴ View Details"}
+                          {drawerOpen ? "Close" : "Inspect"}
                         </button>
                       </div>
                     </div>
                   </div>
                 )}
+
 
                 <textarea
                   value={prompt}
