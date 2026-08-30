@@ -233,6 +233,12 @@ export interface RunnerRequest {
   prompt: string;
   threadId: string | null;
   onStep?: ((step: RunnerStepEvent) => Promise<void> | void) | undefined;
+  /**
+   * Set when egress enforcement is on. Its presence puts the container on the
+   * internal network with no route off-box, reachable outward only through
+   * this proxy. Absent, the container keeps the default bridge networking.
+   */
+  egressProxyUrl?: string | undefined;
 }
 
 export interface AgentRunner {

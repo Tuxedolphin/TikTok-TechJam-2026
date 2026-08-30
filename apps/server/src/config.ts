@@ -16,6 +16,13 @@ const envSchema = z.object({
   CODEX_TIMEOUT_MS: z.coerce.number().int().min(1_000).default(600_000),
   CODEX_MAX_OUTPUT_BYTES: z.coerce.number().int().min(65_536).default(2_097_152),
   RUNTIME_PROVIDER: z.enum(["local-process", "container"]).default("local-process"),
+  EGRESS_ENFORCEMENT: z
+    .enum(["off", "on"])
+    .default("off")
+    .describe("When on, agent containers run with no route off-box and reach the network only through the authorizing proxy."),
+  EGRESS_PROXY_PORT: z.coerce.number().int().min(1).max(65535).default(8888),
+  EGRESS_PROXY_IMAGE: z.string().min(1).default("node:22-alpine"),
+  EGRESS_QUARANTINE_THRESHOLD: z.coerce.number().int().min(1).default(3),
   CONTAINER_ENGINE: z.string().min(1).default("docker"),
   CONTAINER_RUNTIME_IMAGE: z.string().min(1).default("volc-agent-runtime:local"),
   CONTAINER_CPU_LIMIT: z.coerce.number().positive().default(2),
@@ -108,6 +115,11 @@ export function loadConfig(environment: Record<string, unknown> = process.env) {
     containerPidsLimit: env.CONTAINER_PIDS_LIMIT,
     containerUser: env.CONTAINER_USER?.trim() || defaultContainerUser,
     runtimeInstanceId: env.RUNTIME_INSTANCE_ID,
+    egressEnforcement: env.EGRESS_ENFORCEMENT === "on",
+    egressProxyPort: env.EGRESS_PROXY_PORT,
+    egressProxyImage: env.EGRESS_PROXY_IMAGE,
+    egressQuarantineThreshold: env.EGRESS_QUARANTINE_THRESHOLD,
+    serverDistPath: path.resolve("apps/server/dist"),
     authToken,
     geminiApiKey,
     openRouterApiKey,

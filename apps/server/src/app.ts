@@ -9,6 +9,7 @@ import { HttpError } from "./errors.js";
 import type { AgentService } from "./agent-service.js";
 import { handleGeminiResponsesAdapter } from "./gemini-adapter.js";
 import type { IdentityService } from "./identity.js";
+import type { EgressAuthorizer } from "./egress-authorizer.js";
 
 const agentIdParams = z.object({ id: z.string().uuid() });
 const runIdParams = z.object({ id: z.string().uuid() });
@@ -50,6 +51,12 @@ const grantBody = z.object({
 });
 const grantQuery = z.object({ principalId: z.string().min(1).max(128).optional() });
 const grantIdParams = z.object({ id: z.string().uuid() });
+const egressAuthorizeBody = z.object({
+  agentPrincipalId: z.string().min(1).max(128),
+  host: z.string().min(1).max(253),
+  port: z.coerce.number().int().min(1).max(65535),
+  method: z.string().min(1).max(16),
+});
 const resourceIdParams = z.object({ id: z.string().min(1).max(128) });
 
 
@@ -58,6 +65,7 @@ export async function createApp(
   config: AppConfig,
   service: AgentService,
   identity?: IdentityService,
+  egressAuthorizer?: EgressAuthorizer,
 ): Promise<FastifyInstance> {
   const app = Fastify({
     logger: {
@@ -249,6 +257,21 @@ export async function createApp(
         return reply.code(403).send({ error: decision.reason, decision });
       }
       return { resource, decision };
+    });
+  }
+
+  if (egressAuthorizer) {
+    // Called by the egress proxy sidecar for EVERY outbound connection an
+    // agent container attempts. Answering slowly or failing here makes the
+    // proxy fail closed, which is the safe direction.
+    app.post("/api/egress/authorize", async (request) => {
+      const body = egressAuthorizeBody.parse(request.body);
+      const result = await egressAuthorizer.authorize(body);
+      return {
+        allowed: result.allowed,
+        ruleId: result.ruleId,
+        reason: result.reason,
+      };
     });
   }
 

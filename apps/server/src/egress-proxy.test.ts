@@ -1,0 +1,184 @@
+import { createServer, request as httpRequest, type Server } from "node:http";
+import { once } from "node:events";
+import { afterEach, describe, expect, it } from "vitest";
+import { createEgressProxy, parseAuthority, principalFromProxyAuth } from "./egress-proxy.js";
+import type { EgressVerdict } from "./egress-proxy.js";
+
+const servers: Server[] = [];
+
+afterEach(async () => {
+  await Promise.all(
+    servers.splice(0).map(
+      (server) =>
+        new Promise<void>((resolve) => {
+          server.close(() => resolve());
+        }),
+    ),
+  );
+});
+
+async function listen(server: Server): Promise<number> {
+  servers.push(server);
+  server.listen(0, "127.0.0.1");
+  await once(server, "listening");
+  const address = server.address();
+  if (typeof address === "string" || address === null) throw new Error("no port");
+  return address.port;
+}
+
+/** Upstream the proxy is asked to reach; stands in for the public internet. */
+async function startUpstream(): Promise<number> {
+  const upstream = createServer((_request, response) => {
+    response.writeHead(200, { "content-type": "text/plain" });
+    response.end("upstream-payload");
+  });
+  return listen(upstream);
+}
+
+function proxyFetch(
+  proxyPort: number,
+  targetUrl: string,
+  principal: string | null,
+): Promise<{ status: number; body: string }> {
+  return new Promise((resolve, reject) => {
+    const headers: Record<string, string> = { host: new URL(targetUrl).host };
+    if (principal) {
+      headers["proxy-authorization"] =
+        "Basic " + Buffer.from(`${principal}:token`).toString("base64");
+    }
+    const proxied = httpRequest(
+      { host: "127.0.0.1", port: proxyPort, method: "GET", path: targetUrl, headers },
+      (response) => {
+        let body = "";
+        response.on("data", (chunk) => (body += chunk));
+        response.on("end", () => resolve({ status: response.statusCode ?? 0, body }));
+      },
+    );
+    proxied.on("error", reject);
+    proxied.end();
+  });
+}
+
+const allow: EgressVerdict = { allowed: true, ruleId: "NET-EGRESS-020", reason: "granted" };
+const deny: EgressVerdict = { allowed: false, ruleId: "NET-EGRESS-020", reason: "no grant" };
+
+describe("parseAuthority", () => {
+  it("splits host and port", () => {
+    expect(parseAuthority("example.com:8443", 443)).toEqual({ host: "example.com", port: 8443 });
+  });
+  it("defaults the port when absent", () => {
+    expect(parseAuthority("example.com", 443)).toEqual({ host: "example.com", port: 443 });
+  });
+  it("handles bracketed IPv6 authorities", () => {
+    expect(parseAuthority("[::1]:9000", 443)).toEqual({ host: "::1", port: 9000 });
+  });
+});
+
+describe("principalFromProxyAuth", () => {
+  it("reads the principal from the basic-auth username", () => {
+    const header = "Basic " + Buffer.from("agent-42:secret").toString("base64");
+    expect(principalFromProxyAuth(header)).toBe("agent-42");
+  });
+  it("returns null when the header is absent or empty", () => {
+    expect(principalFromProxyAuth(undefined)).toBeNull();
+    expect(principalFromProxyAuth("Basic " + Buffer.from(":secret").toString("base64"))).toBeNull();
+  });
+});
+
+describe("egress proxy", () => {
+  it("forwards a request the authorizer allows", async () => {
+    const upstreamPort = await startUpstream();
+    const proxyPort = await listen(createEgressProxy({ authorize: async () => allow }));
+    const result = await proxyFetch(
+      proxyPort,
+      `http://127.0.0.1:${upstreamPort}/data`,
+      "agent-1",
+    );
+    expect(result.status).toBe(200);
+    expect(result.body).toBe("upstream-payload");
+  });
+
+  it("blocks a request the authorizer denies and explains why", async () => {
+    const upstreamPort = await startUpstream();
+    const proxyPort = await listen(createEgressProxy({ authorize: async () => deny }));
+    const result = await proxyFetch(
+      proxyPort,
+      `http://127.0.0.1:${upstreamPort}/data`,
+      "agent-1",
+    );
+    expect(result.status).toBe(403);
+    expect(JSON.parse(result.body)).toMatchObject({
+      error: "egress_denied",
+      ruleId: "NET-EGRESS-020",
+    });
+    expect(result.body).not.toContain("upstream-payload");
+  });
+
+  it("challenges for credentials when no principal is presented", async () => {
+    const upstreamPort = await startUpstream();
+    let authorizeCalls = 0;
+    const proxyPort = await listen(
+      createEgressProxy({
+        authorize: async () => {
+          authorizeCalls += 1;
+          return allow;
+        },
+      }),
+    );
+    const result = await proxyFetch(proxyPort, `http://127.0.0.1:${upstreamPort}/data`, null);
+    // 407 invites a credentialed retry; the connection is still refused and the
+    // authorizer is never consulted for an anonymous caller.
+    expect(result.status).toBe(407);
+    expect(authorizeCalls).toBe(0);
+    expect(result.body).not.toContain("upstream-payload");
+  });
+
+  it("fails closed when the authorizer throws", async () => {
+    const upstreamPort = await startUpstream();
+    const proxyPort = await listen(
+      createEgressProxy({
+        authorize: async () => {
+          throw new Error("grants store unreachable");
+        },
+      }),
+    );
+    const result = await proxyFetch(
+      proxyPort,
+      `http://127.0.0.1:${upstreamPort}/data`,
+      "agent-1",
+    );
+    expect(result.status).toBe(403);
+    expect(result.body).toContain("failing closed");
+  });
+
+  it("re-authorizes every request so revocation bites immediately", async () => {
+    const upstreamPort = await startUpstream();
+    let granted = true;
+    const proxyPort = await listen(
+      createEgressProxy({ authorize: async () => (granted ? allow : deny) }),
+    );
+    const before = await proxyFetch(proxyPort, `http://127.0.0.1:${upstreamPort}/`, "agent-1");
+    expect(before.status).toBe(200);
+
+    granted = false; // the operator revokes mid-run
+    const after = await proxyFetch(proxyPort, `http://127.0.0.1:${upstreamPort}/`, "agent-1");
+    expect(after.status).toBe(403);
+  });
+
+  it("authorizes each host independently", async () => {
+    const upstreamPort = await startUpstream();
+    const seen: string[] = [];
+    const proxyPort = await listen(
+      createEgressProxy({
+        authorize: async ({ host }) => {
+          seen.push(host);
+          return host === "127.0.0.1" ? allow : deny;
+        },
+      }),
+    );
+    await proxyFetch(proxyPort, `http://127.0.0.1:${upstreamPort}/`, "agent-1");
+    const blocked = await proxyFetch(proxyPort, "http://attacker.example/", "agent-1");
+    expect(blocked.status).toBe(403);
+    expect(seen).toEqual(["127.0.0.1", "attacker.example"]);
+  });
+});

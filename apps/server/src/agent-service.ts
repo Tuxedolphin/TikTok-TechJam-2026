@@ -22,6 +22,7 @@ import type {
 } from "./types.js";
 
 import { WorkspaceManager } from "./workspace.js";
+import type { EgressNetworkManager } from "./egress-network.js";
 import {
   estimateRunCostUsd,
   evaluateActionRisk,
@@ -56,6 +57,7 @@ export class AgentService {
     private readonly store: JsonStore,
     private readonly workspaces: WorkspaceManager,
     private readonly runner: AgentRunner,
+    private readonly egress?: EgressNetworkManager,
   ) {}
 
   async initialize(): Promise<void> {
@@ -178,6 +180,43 @@ export class AgentService {
         detail: JSON.stringify(grant),
         createdAt: now(),
       });
+    });
+  }
+
+  async recordEgressBlocked(
+    runId: string,
+    agentId: string,
+    host: string,
+    decision: PolicyDecision,
+    strikes: number,
+  ): Promise<void> {
+    await this.store.mutate((database) => {
+      this.appendRunEvent(database, {
+        runId,
+        agentId,
+        type: "egress.blocked",
+        severity: "error",
+        title: `Blocked outbound connection to ${host}`,
+        detail: JSON.stringify({ host, strikes, ...decision }),
+        createdAt: now(),
+      });
+    });
+  }
+
+  /**
+   * Stops an agent that keeps trying to reach hosts it has no grant for.
+   * Repeated denials are the signature of a hijacked agent probing for an
+   * exfiltration route, so containment escalates from blocking each attempt to
+   * halting the agent outright.
+   */
+  async quarantineAgent(agentId: string, reason: string): Promise<void> {
+    await this.cancelExecution(agentId);
+    await this.store.mutate((database) => {
+      const agent = database.agents.find((item) => item.id === agentId);
+      if (!agent) return;
+      agent.status = "stopped";
+      agent.lastError = reason;
+      agent.updatedAt = now();
     });
   }
 
@@ -679,6 +718,14 @@ export class AgentService {
         });
       }
 
+      // Under enforcement the agent gets no route off-box; its only path out
+      // is the proxy, which authorizes every connection against live grants.
+      let egressProxyUrl: string | undefined;
+      if (this.egress && this.config.runtimeProvider === "container") {
+        await this.egress.ensure();
+        egressProxyUrl = this.egress.proxyUrlFor(agentAtStart.principalId);
+      }
+
       const result = await this.runner.run({
         agentId: agentAtStart.id,
         sessionId: run.sessionId,
@@ -686,6 +733,7 @@ export class AgentService {
         prompt,
         threadId,
         onStep,
+        egressProxyUrl,
       });
 
       if (stepViolation) {

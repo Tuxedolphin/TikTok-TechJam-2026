@@ -259,7 +259,7 @@ export function evaluateResourceAccess(
 export function evaluateEgress(
   agentPrincipalId: string, host: string, grants: Grant[], nowIso: string,
 ): PolicyDecision {
-  const { grant } = activeGrant(grants, agentPrincipalId, "network:egress", host, nowIso);
+  const { grant, ruleId } = activeGrant(grants, agentPrincipalId, "network:egress", host, nowIso);
   if (grant) {
     return {
       allowed: true, ruleId: "NET-EGRESS-020",
@@ -267,9 +267,18 @@ export function evaluateEgress(
       principalId: agentPrincipalId, grantId: grant.id,
     };
   }
+  // Keep the specific reason a grant stopped applying: a revoked or expired
+  // egress grant is the operator's own action taking effect, and reads very
+  // differently on the timeline from "this host was never allowed".
   return {
-    allowed: false, ruleId: "NET-EGRESS-020",
-    reason: `Default-deny egress: no active network:egress grant for ${host}.`,
+    allowed: false,
+    ruleId,
+    reason:
+      ruleId === "AUTHZ-REVOKED-013"
+        ? `Egress grant for ${host} was revoked.`
+        : ruleId === "AUTHZ-EXPIRED-012"
+          ? `Egress grant for ${host} has expired.`
+          : `Default-deny egress: no active network:egress grant for ${host}.`,
     principalId: agentPrincipalId, grantId: null,
   };
 }
