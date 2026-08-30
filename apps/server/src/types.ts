@@ -2,6 +2,15 @@ export type AgentStatus = "ready" | "busy" | "stopped" | "error";
 export type RunStatus = "queued" | "running" | "completed" | "failed" | "cancelled";
 export type MessageRole = "user" | "assistant";
 
+export interface AgentSession {
+  id: string;
+  agentId: string;
+  title: string;
+  codexThreadId: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
 export interface Agent {
   id: string;
   name: string;
@@ -10,6 +19,7 @@ export interface Agent {
   status: AgentStatus;
   workspacePath: string;
   codexThreadId: string | null;
+  activeSessionId: string | null;
   lastError: string | null;
   createdAt: string;
   updatedAt: string;
@@ -18,6 +28,7 @@ export interface Agent {
 export interface Message {
   id: string;
   agentId: string;
+  sessionId?: string | null | undefined;
   runId: string;
   role: MessageRole;
   content: string;
@@ -58,6 +69,7 @@ export interface RunEvent {
 export interface AgentRun {
   id: string;
   agentId: string;
+  sessionId?: string | null | undefined;
   status: RunStatus;
   prompt: string;
   output: string | null;
@@ -69,12 +81,14 @@ export interface AgentRun {
 }
 
 export interface Database {
-  version: 2;
+  version: 3;
   agents: Agent[];
+  sessions: AgentSession[];
   messages: Message[];
   runs: AgentRun[];
   runEvents: RunEvent[];
 }
+
 
 export interface CreateAgentInput {
   name: string;
@@ -103,11 +117,14 @@ export interface RunnerStepEvent {
 
 export interface RunnerRequest {
   agentId: string;
+  sessionId?: string | null | undefined;
   workspacePath: string;
   prompt: string;
   threadId: string | null;
-  onStep?: (step: RunnerStepEvent) => void;
+  onStep?: ((step: RunnerStepEvent) => void) | undefined;
 }
+
+
 
 export interface AgentRunner {
   run(request: RunnerRequest): Promise<RunnerResult>;

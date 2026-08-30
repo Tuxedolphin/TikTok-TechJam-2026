@@ -7,6 +7,7 @@ import type {
   Agent,
   AgentRun,
   AgentRunner,
+  AgentSession,
   CreateAgentInput,
   Message,
   RunEvent,
@@ -15,6 +16,7 @@ import type {
   RunnerStepEvent,
   UpdateAgentInput,
 } from "./types.js";
+
 import { WorkspaceManager } from "./workspace.js";
 import {
   estimateRunCostUsd,
@@ -78,6 +80,15 @@ export class AgentService {
   async createAgent(input: CreateAgentInput): Promise<Agent> {
     const timestamp = now();
     const id = randomUUID();
+    const initialSessionId = randomUUID();
+    const initialSession: AgentSession = {
+      id: initialSessionId,
+      agentId: id,
+      title: "Chat 1",
+      codexThreadId: null,
+      createdAt: timestamp,
+      updatedAt: timestamp,
+    };
     const agent: Agent = {
       id,
       name: input.name.trim(),
@@ -86,15 +97,18 @@ export class AgentService {
       status: "ready",
       workspacePath: this.workspaces.workspacePath(id),
       codexThreadId: null,
+      activeSessionId: initialSessionId,
       lastError: null,
       createdAt: timestamp,
       updatedAt: timestamp,
     };
     await this.workspaces.create(agent, this.config.guardrailCanaryToken);
-    await this.store.mutate((database) => database.agents.push(agent));
+    await this.store.mutate((database) => {
+      database.agents.push(agent);
+      database.sessions.push(initialSession);
+    });
     return agent;
   }
-
 
   async updateAgent(id: string, input: UpdateAgentInput): Promise<Agent> {
     const current = this.getAgent(id);
@@ -126,11 +140,70 @@ export class AgentService {
     const archivedWorkspace = await this.workspaces.archive(agent);
     await this.store.mutate((database) => {
       database.agents = database.agents.filter((item) => item.id !== id);
+      database.sessions = database.sessions.filter((item) => item.agentId !== id);
       database.messages = database.messages.filter((item) => item.agentId !== id);
       database.runs = database.runs.filter((item) => item.agentId !== id);
       database.runEvents = database.runEvents.filter((item) => item.agentId !== id);
     });
     return { archivedWorkspace };
+  }
+
+  listSessions(agentId: string): AgentSession[] {
+    this.getAgent(agentId);
+    return this.store
+      .snapshot()
+      .sessions.filter((s) => s.agentId === agentId)
+      .sort((left, right) => right.createdAt.localeCompare(left.createdAt));
+  }
+
+  async createSession(agentId: string, title?: string): Promise<{ session: AgentSession; agent: Agent }> {
+    const currentAgent = this.getAgent(agentId);
+    if (currentAgent.status === "busy") {
+      throw new HttpError(409, "Wait for the active run to finish before creating a new chat session");
+    }
+    const timestamp = now();
+    const sessionId = randomUUID();
+    const existingCount = this.store.snapshot().sessions.filter((s) => s.agentId === agentId).length;
+    const sessionTitle = title?.trim() || `Chat ${existingCount + 1}`;
+    const session: AgentSession = {
+      id: sessionId,
+      agentId,
+      title: sessionTitle,
+      codexThreadId: null,
+      createdAt: timestamp,
+      updatedAt: timestamp,
+    };
+    const updatedAgent = await this.store.mutate((database) => {
+      const agent = database.agents.find((a) => a.id === agentId);
+      if (!agent) throw new HttpError(404, "Agent not found");
+      database.sessions.push(session);
+      agent.activeSessionId = sessionId;
+      agent.codexThreadId = null;
+      agent.updatedAt = timestamp;
+      return structuredClone(agent);
+    });
+    return { session, agent: updatedAgent };
+  }
+
+  async selectSession(agentId: string, sessionId: string): Promise<Agent> {
+    const currentAgent = this.getAgent(agentId);
+    if (currentAgent.status === "busy") {
+      throw new HttpError(409, "Wait for the active run to finish before switching chat sessions");
+    }
+    const session = this.store.snapshot().sessions.find((s) => s.id === sessionId && s.agentId === agentId);
+    if (!session) {
+      throw new HttpError(404, "Session not found");
+    }
+    const timestamp = now();
+    const updatedAgent = await this.store.mutate((database) => {
+      const agent = database.agents.find((a) => a.id === agentId);
+      if (!agent) throw new HttpError(404, "Agent not found");
+      agent.activeSessionId = sessionId;
+      agent.codexThreadId = session.codexThreadId;
+      agent.updatedAt = timestamp;
+      return structuredClone(agent);
+    });
+    return updatedAgent;
   }
 
   async startAgent(id: string): Promise<Agent> {
@@ -143,11 +216,15 @@ export class AgentService {
     return this.setStatus(id, "stopped");
   }
 
-  getMessages(agentId: string): Message[] {
+  getMessages(agentId: string, sessionId?: string): Message[] {
     this.getAgent(agentId);
     return this.store
       .snapshot()
-      .messages.filter((message) => message.agentId === agentId)
+      .messages.filter((message) => {
+        if (message.agentId !== agentId) return false;
+        if (sessionId) return message.sessionId === sessionId;
+        return true;
+      })
       .sort((left, right) => left.createdAt.localeCompare(right.createdAt));
   }
 
@@ -166,13 +243,18 @@ export class AgentService {
       .sort((left, right) => left.createdAt.localeCompare(right.createdAt));
   }
 
-  getRuns(agentId: string): AgentRun[] {
+  getRuns(agentId: string, sessionId?: string): AgentRun[] {
     this.getAgent(agentId);
     return this.store
       .snapshot()
-      .runs.filter((run) => run.agentId === agentId)
+      .runs.filter((run) => {
+        if (run.agentId !== agentId) return false;
+        if (sessionId) return run.sessionId === sessionId;
+        return true;
+      })
       .sort((left, right) => right.createdAt.localeCompare(left.createdAt));
   }
+
 
   async sendMessage(
     agentId: string,
@@ -190,6 +272,7 @@ export class AgentService {
     const run: AgentRun = {
       id: runId,
       agentId,
+      sessionId: null,
       status: "queued",
       prompt: this.redact(prompt),
       output: null,
@@ -202,6 +285,7 @@ export class AgentService {
     const message: Message = {
       id: randomUUID(),
       agentId,
+      sessionId: null,
       runId,
       role: "user",
       content: prompt,
@@ -218,6 +302,9 @@ export class AgentService {
       if (storedAgent.status === "busy") {
         throw new HttpError(409, "This Agent is already running");
       }
+      const activeSessionId = storedAgent.activeSessionId ?? null;
+      run.sessionId = activeSessionId;
+      message.sessionId = activeSessionId;
       if (promptViolation) {
         const blockedAt = timestamp;
         const blockedRun = {
@@ -355,11 +442,15 @@ export class AgentService {
         });
       };
 
+      const session = this.store.snapshot().sessions.find((s) => s.id === run.sessionId);
+      const threadId = session ? session.codexThreadId : agentAtStart.codexThreadId;
+
       const result = await this.runner.run({
         agentId: agentAtStart.id,
+        sessionId: run.sessionId,
         workspacePath: agentAtStart.workspacePath,
         prompt: run.prompt,
-        threadId: agentAtStart.codexThreadId,
+        threadId,
         onStep,
       });
 
@@ -375,6 +466,7 @@ export class AgentService {
       await this.store.mutate((database) => {
         const storedRun = database.runs.find((item) => item.id === run.id);
         const agent = database.agents.find((item) => item.id === agentAtStart.id);
+        const storedSession = database.sessions.find((item) => item.id === run.sessionId);
         if (!storedRun || !agent) return;
         storedRun.status = "completed";
         storedRun.output = result.output;
@@ -384,6 +476,7 @@ export class AgentService {
         database.messages.push({
           id: randomUUID(),
           agentId: agent.id,
+          sessionId: run.sessionId,
           runId: run.id,
           role: "assistant",
           content: this.redact(result.output),
@@ -402,9 +495,14 @@ export class AgentService {
         });
         agent.status = "ready";
         agent.codexThreadId = result.threadId;
+        if (storedSession) {
+          storedSession.codexThreadId = result.threadId;
+          storedSession.updatedAt = completedAt;
+        }
         agent.lastError = null;
         agent.updatedAt = completedAt;
       });
+
     } catch (error) {
       const completedAt = now();
       const cancelled = error instanceof RunCancelledError;

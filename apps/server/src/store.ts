@@ -3,34 +3,76 @@ import path from "node:path";
 import type { Database } from "./types.js";
 
 const emptyDatabase = (): Database => ({
-  version: 2,
+  version: 3,
   agents: [],
+  sessions: [],
   messages: [],
   runs: [],
   runEvents: [],
 });
 
-function migrateDatabase(parsed: Partial<Database> & { version?: number }): Database {
-  if (parsed.version === 2) {
+function migrateDatabase(parsed: Partial<Database> & { version?: number; sessions?: unknown[] }): Database {
+  if (parsed.version === 3) {
     return {
-      version: 2,
+      version: 3,
       agents: Array.isArray(parsed.agents) ? parsed.agents : [],
+      sessions: Array.isArray(parsed.sessions) ? parsed.sessions : [],
       messages: Array.isArray(parsed.messages) ? parsed.messages : [],
       runs: Array.isArray(parsed.runs) ? parsed.runs : [],
       runEvents: Array.isArray(parsed.runEvents) ? parsed.runEvents : [],
     };
   }
-  if (parsed.version === 1) {
+  if (parsed.version === 2 || parsed.version === 1) {
+    const rawAgents = Array.isArray(parsed.agents) ? parsed.agents : [];
+    const rawSessions = Array.isArray(parsed.sessions) ? parsed.sessions : [];
+    const rawMessages = Array.isArray(parsed.messages) ? parsed.messages : [];
+    const rawRuns = Array.isArray(parsed.runs) ? parsed.runs : [];
+    const rawRunEvents = Array.isArray(parsed.runEvents) ? parsed.runEvents : [];
+
+    const sessions = [...rawSessions];
+    const agents = rawAgents.map((a) => {
+      let session = sessions.find((s) => s.agentId === a.id);
+      if (!session) {
+        session = {
+          id: a.activeSessionId || a.id + "-default-session",
+          agentId: a.id,
+          title: "Chat 1",
+          codexThreadId: a.codexThreadId ?? null,
+          createdAt: a.createdAt || new Date().toISOString(),
+          updatedAt: a.updatedAt || new Date().toISOString(),
+        };
+        sessions.push(session);
+      }
+      return {
+        ...a,
+        activeSessionId: a.activeSessionId ?? session.id,
+      };
+    });
+
+    const messages = rawMessages.map((m) => {
+      if (m.sessionId) return m;
+      const session = sessions.find((s) => s.agentId === m.agentId);
+      return { ...m, sessionId: session?.id ?? null };
+    });
+
+    const runs = rawRuns.map((r) => {
+      if (r.sessionId) return r;
+      const session = sessions.find((s) => s.agentId === r.agentId);
+      return { ...r, sessionId: session?.id ?? null };
+    });
+
     return {
-      version: 2,
-      agents: Array.isArray(parsed.agents) ? parsed.agents : [],
-      messages: Array.isArray(parsed.messages) ? parsed.messages : [],
-      runs: Array.isArray(parsed.runs) ? parsed.runs : [],
-      runEvents: [],
+      version: 3,
+      agents,
+      sessions,
+      messages,
+      runs,
+      runEvents: rawRunEvents,
     };
   }
   throw new Error("Unsupported database format");
 }
+
 
 export class JsonStore {
   private data: Database = emptyDatabase();

@@ -542,12 +542,172 @@ textarea {
   align-items: center;
   border-bottom: 1px solid var(--border);
   background: var(--surface);
+  gap: 12px;
 }
 
-.playground-topbar h2 {
-  margin: 0;
-  font-size: 13px;
+.playground-topbar-left {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+}
+
+.session-selector {
+  position: relative;
+}
+
+.session-selector-btn {
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 3px 8px;
+  font-size: 12px;
   font-weight: 600;
+  color: var(--ink);
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  transition: background-color 100ms ease, border-color 100ms ease;
+}
+
+.session-selector-btn:hover {
+  background: var(--surface-hover);
+  border-color: #a1a1aa;
+}
+
+.session-chevron {
+  font-size: 10px;
+  color: var(--muted);
+}
+
+.session-dropdown-menu {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  z-index: 70;
+  min-width: 240px;
+  background: #ffffff;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.08);
+  padding: 8px;
+  animation: slideDown 100ms ease;
+}
+
+@keyframes slideDown {
+  from {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.session-dropdown-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 4px 6px 8px;
+  border-bottom: 1px solid var(--border-subtle);
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.new-chat-btn {
+  background: #18181b;
+  color: #ffffff;
+  border: 0;
+  border-radius: var(--radius-sm);
+  padding: 2px 7px;
+  font-size: 11px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background-color 100ms ease;
+}
+
+.new-chat-btn:hover:not(:disabled) {
+  background: #27272a;
+}
+
+.new-chat-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.session-dropdown-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-height: 220px;
+  overflow-y: auto;
+  margin-top: 6px;
+}
+
+.session-dropdown-item {
+  width: 100%;
+  text-align: left;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  padding: 6px 8px;
+  cursor: pointer;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  transition: background-color 100ms ease;
+}
+
+.session-dropdown-item:hover {
+  background: var(--surface-hover);
+}
+
+.session-dropdown-item.active {
+  background: var(--surface-active);
+}
+
+.session-item-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 12px;
+}
+
+.session-item-row strong {
+  font-weight: 500;
+  color: var(--ink);
+}
+
+.session-item-row span {
+  font-size: 10px;
+  color: var(--muted);
+}
+
+.session-item-sub {
+  font-size: 10px;
+  color: var(--muted);
+}
+
+.playground-topbar-right {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.new-chat-quick-btn {
+  font-size: 11px;
+  padding: 2px 8px;
+  height: 26px;
+  color: var(--ink);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+}
+
+.new-chat-quick-btn:hover:not(:disabled) {
+  background: var(--surface-hover);
+  border-color: #a1a1aa;
 }
 
 .session-info {
@@ -558,6 +718,7 @@ textarea {
   align-items: center;
   gap: 6px;
 }
+
 
 .pulse {
   width: 6px;

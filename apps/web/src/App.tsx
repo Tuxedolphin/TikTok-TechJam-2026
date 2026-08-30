@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api, ApiError, setAuthToken } from "./api";
-import type { Agent, AgentRun, Message, RunEvent, SystemInfo } from "./types";
+import type { Agent, AgentRun, AgentSession, Message, RunEvent, SystemInfo } from "./types";
 
 const starterPrompts = [
   "Create a small TypeScript CLI that prints a weather summary from sample JSON.",
@@ -31,7 +31,6 @@ function StatusPill({ status }: { status: Agent["status"] }) {
   );
 }
 
-
 function Spinner() {
   return <span className="spinner" aria-label="Loading" />;
 }
@@ -39,6 +38,9 @@ function Spinner() {
 export default function App() {
   const [agents, setAgents] = useState<Agent[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [sessions, setSessions] = useState<AgentSession[]>([]);
+  const [selectedSessionId, setSelectedSessionId] = useState<string | null>(null);
+  const [sessionDropdownOpen, setSessionDropdownOpen] = useState(false);
   const [messages, setMessages] = useState<Message[]>([]);
   const [runs, setRuns] = useState<AgentRun[]>([]);
   const [system, setSystem] = useState<SystemInfo | null>(null);
@@ -56,24 +58,36 @@ export default function App() {
   const [authInput, setAuthInput] = useState("");
   const messageEnd = useRef<HTMLDivElement>(null);
   const telemetryRef = useRef<HTMLDivElement>(null);
+  const sessionDropdownRef = useRef<HTMLDivElement>(null);
   const selectedIdRef = useRef<string | null>(null);
+  const selectedSessionIdRef = useRef<string | null>(null);
   const mountedRef = useRef(true);
   const pollingRunIds = useRef(new Set<string>());
   selectedIdRef.current = selectedId;
+  selectedSessionIdRef.current = selectedSessionId;
 
   useEffect(() => {
     const handleClickOutside = (event: MouseEvent) => {
+      const target = event.target as Node;
       if (
         drawerOpen &&
         telemetryRef.current &&
-        !telemetryRef.current.contains(event.target as Node)
+        !telemetryRef.current.contains(target)
       ) {
         setDrawerOpen(false);
+      }
+      if (
+        sessionDropdownOpen &&
+        sessionDropdownRef.current &&
+        !sessionDropdownRef.current.contains(target)
+      ) {
+        setSessionDropdownOpen(false);
       }
     };
     document.addEventListener("mousedown", handleClickOutside);
     return () => document.removeEventListener("mousedown", handleClickOutside);
-  }, [drawerOpen]);
+  }, [drawerOpen, sessionDropdownOpen]);
+
 
   const latestStep = useMemo(() => {
 
@@ -95,6 +109,10 @@ export default function App() {
     [agents, selectedId],
   );
 
+  const currentSession = useMemo(() => {
+    return sessions.find((s) => s.id === selectedSessionId) ?? sessions[0] ?? null;
+  }, [sessions, selectedSessionId]);
+
   const refreshAgents = useCallback(async () => {
     const { agents: next } = await api.listAgents();
     setAgents(next);
@@ -105,15 +123,24 @@ export default function App() {
     );
   }, []);
 
-  const refreshMessages = useCallback(async (agentId: string) => {
-    const result = await api.messages(agentId);
+  const refreshSessions = useCallback(async (agentId: string) => {
+    const result = await api.sessions(agentId);
+    if (mountedRef.current && selectedIdRef.current === agentId) {
+      setSessions(result.sessions);
+      return result.sessions;
+    }
+    return [];
+  }, []);
+
+  const refreshMessages = useCallback(async (agentId: string, sessionId?: string) => {
+    const result = await api.messages(agentId, sessionId);
     if (mountedRef.current && selectedIdRef.current === agentId) {
       setMessages(result.messages);
     }
   }, []);
 
-  const refreshRuns = useCallback(async (agentId: string) => {
-    const result = await api.runs(agentId);
+  const refreshRuns = useCallback(async (agentId: string, sessionId?: string) => {
+    const result = await api.runs(agentId, sessionId);
     if (mountedRef.current && selectedIdRef.current === agentId) {
       setRuns(result.runs);
     }
@@ -144,12 +171,23 @@ export default function App() {
     setRuns([]);
     setTraceEvents([]);
     setShowSettings(false);
+    setSessionDropdownOpen(false);
     if (!selectedId) {
       setMessages([]);
+      setSessions([]);
+      setSelectedSessionId(null);
       return;
     }
-    void Promise.all([refreshMessages(selectedId), refreshRuns(selectedId)])
-      .then(([, nextRuns]) => {
+    void (async () => {
+      try {
+        const nextSessions = await refreshSessions(selectedId);
+        const targetAgent = agents.find((a) => a.id === selectedId);
+        const activeSessId = targetAgent?.activeSessionId || nextSessions[0]?.id || null;
+        setSelectedSessionId(activeSessId);
+        const [, nextRuns] = await Promise.all([
+          refreshMessages(selectedId, activeSessId ?? undefined),
+          refreshRuns(selectedId, activeSessId ?? undefined),
+        ]);
         if (selectedIdRef.current !== selectedId) return;
         const latest = nextRuns[0] ?? null;
         setActiveRun(latest);
@@ -158,11 +196,12 @@ export default function App() {
             setError(reason instanceof Error ? reason.message : String(reason)),
           );
         }
-      })
-      .catch((reason) =>
-        setError(reason instanceof Error ? reason.message : String(reason)),
-      );
-  }, [refreshMessages, selectedId]);
+      } catch (reason) {
+        setError(reason instanceof Error ? reason.message : String(reason));
+      }
+    })();
+  }, [refreshMessages, refreshRuns, refreshSessions, selectedId]);
+
 
   useEffect(() => {
     if (selected) {
@@ -263,6 +302,46 @@ export default function App() {
     }
   };
 
+  const handleSelectChat = async (sessionId: string) => {
+    if (!selectedId) return;
+    setSessionDropdownOpen(false);
+    setSelectedSessionId(sessionId);
+    setActiveRun(null);
+    setTraceEvents([]);
+    try {
+      const { agent: updatedAgent } = await api.selectSession(selectedId, sessionId);
+      setAgents((prev) => prev.map((a) => (a.id === updatedAgent.id ? updatedAgent : a)));
+      const [, nextRuns] = await Promise.all([
+        refreshMessages(selectedId, sessionId),
+        refreshRuns(selectedId, sessionId),
+      ]);
+      const latest = nextRuns[0] ?? null;
+      setActiveRun(latest);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason));
+    }
+  };
+
+  const handleNewChat = async () => {
+    if (!selectedId) return;
+    setSessionDropdownOpen(false);
+    setBusy(true);
+    try {
+      const { session, agent: updatedAgent } = await api.createSession(selectedId);
+      setSessions((prev) => [session, ...prev]);
+      setSelectedSessionId(session.id);
+      setAgents((prev) => prev.map((a) => (a.id === updatedAgent.id ? updatedAgent : a)));
+      setMessages([]);
+      setRuns([]);
+      setActiveRun(null);
+      setTraceEvents([]);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason));
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const pollRun = async (runId: string, agentId: string) => {
     if (pollingRunIds.current.has(runId)) return;
     pollingRunIds.current.add(runId);
@@ -279,7 +358,13 @@ export default function App() {
           setTraceEvents(eventsResult.events);
         }
         if (!["queued", "running"].includes(result.run.status)) {
-          await Promise.all([refreshMessages(agentId), refreshAgents(), refreshRuns(agentId)]);
+          const currentSessId = selectedSessionIdRef.current ?? undefined;
+          await Promise.all([
+            refreshMessages(agentId, currentSessId),
+            refreshAgents(),
+            refreshRuns(agentId, currentSessId),
+            refreshSessions(agentId),
+          ]);
           return;
         }
       }
@@ -309,13 +394,14 @@ export default function App() {
       await pollRun(result.run.id, selected.id);
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : String(reason));
-      const nextRuns = await refreshRuns(selected.id);
+      const currentSessId = selectedSessionIdRef.current ?? undefined;
+      const nextRuns = await refreshRuns(selected.id, currentSessId);
       const latest = nextRuns[0] ?? null;
       setActiveRun(latest);
       await refreshAgents();
-
     }
   };
+
 
   const unlock = async (event: React.FormEvent) => {
     event.preventDefault();
@@ -556,15 +642,72 @@ export default function App() {
 
             <section className="playground">
               <div className="playground-topbar">
-                <div>
+                <div className="playground-topbar-left">
                   <span className="eyebrow">Playground</span>
-                  <h2>Build something with your Agent</h2>
+                  <div className="session-selector" ref={sessionDropdownRef}>
+                    <button
+                      type="button"
+                      className="session-selector-btn"
+                      onClick={() => setSessionDropdownOpen(!sessionDropdownOpen)}
+                      title="Switch chat or view past chats"
+                    >
+                      <span className="session-title">{currentSession?.title ?? "Chat"}</span>
+                      <span className="session-chevron">▾</span>
+                    </button>
+
+                    {sessionDropdownOpen && (
+                      <div className="session-dropdown-menu">
+                        <div className="session-dropdown-header">
+                          <span>Chats for {selected.name}</span>
+                          <button
+                            type="button"
+                            className="new-chat-btn"
+                            onClick={handleNewChat}
+                            disabled={busy || (activeRun != null && ["queued", "running"].includes(activeRun.status))}
+                          >
+                            + New Chat
+                          </button>
+                        </div>
+                        <div className="session-dropdown-list">
+                          {sessions.map((s) => (
+                            <button
+                              key={s.id}
+                              type="button"
+                              className={"session-dropdown-item " + (s.id === selectedSessionId ? "active" : "")}
+                              onClick={() => handleSelectChat(s.id)}
+                            >
+                              <div className="session-item-row">
+                                <strong>{s.title}</strong>
+                                <span className="mono">{formatTime(s.createdAt)}</span>
+                              </div>
+                              <span className="session-item-sub">
+                                {s.codexThreadId ? "Context active" : "Fresh context"}
+                              </span>
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                  </div>
                 </div>
-                <div className="session-info">
-                  <span className="pulse" />
-                  {selected.codexThreadId ? "Session connected" : "New session"}
+
+                <div className="playground-topbar-right">
+                  <button
+                    type="button"
+                    className="button button-ghost new-chat-quick-btn"
+                    onClick={handleNewChat}
+                    disabled={busy || (activeRun != null && ["queued", "running"].includes(activeRun.status))}
+                    title="Start a new chat with a clean context window"
+                  >
+                    + New Chat
+                  </button>
+                  <div className="session-info">
+                    <span className="pulse" />
+                    {currentSession?.codexThreadId ? "Context active" : "New session"}
+                  </div>
                 </div>
               </div>
+
 
               <div className="messages">
                 {messages.length === 0 && !activeRun ? (

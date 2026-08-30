@@ -1,6 +1,15 @@
 export type AgentStatus = "ready" | "busy" | "stopped" | "error";
 export type RunStatus = "queued" | "running" | "completed" | "failed" | "cancelled";
 
+export interface AgentSession {
+  id: string;
+  agentId: string;
+  title: string;
+  codexThreadId: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
 export interface Agent {
   id: string;
   name: string;
@@ -9,6 +18,7 @@ export interface Agent {
   status: AgentStatus;
   workspacePath: string;
   codexThreadId: string | null;
+  activeSessionId: string | null;
   lastError: string | null;
   createdAt: string;
   updatedAt: string;
@@ -17,6 +27,7 @@ export interface Agent {
 export interface Message {
   id: string;
   agentId: string;
+  sessionId?: string | null;
   runId: string;
   role: "user" | "assistant";
   content: string;
@@ -26,6 +37,8 @@ export interface Message {
 export interface AgentRun {
   id: string;
   agentId: string;
+  sessionId?: string | null;
+
   status: RunStatus;
   prompt: string;
   output: string | null;
