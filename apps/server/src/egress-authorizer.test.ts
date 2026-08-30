@@ -160,6 +160,26 @@ describe("EgressAuthorizer", () => {
     expect(result.allowed).toBe(true);
   });
 
+  it("permits a private address only for platform hosts", async () => {
+    // allowPrivate switches off the proxy's SSRF guard, so it must never be
+    // reachable through a grant an agent's owner could create.
+    const authorizer = new EgressAuthorizer(
+      await makeStore([grant({ target: "attacker.example" })]),
+      baseOptions,
+    );
+    const platform = await authorizer.authorize({
+      agentPrincipalId: PRINCIPAL, host: "host.docker.internal", port: 3000, method: "CONNECT",
+    });
+    expect(platform).toMatchObject({ allowed: true, allowPrivate: true });
+
+    // Granted, allowed — but still not trusted to resolve privately.
+    const granted = await authorizer.authorize({
+      agentPrincipalId: PRINCIPAL, host: "attacker.example", port: 443, method: "CONNECT",
+    });
+    expect(granted.allowed).toBe(true);
+    expect(granted.allowPrivate).toBe(false);
+  });
+
   it("denies an unknown principal", async () => {
     const authorizer = new EgressAuthorizer(await makeStore([grant()]), baseOptions);
     const result = await authorizer.authorize({

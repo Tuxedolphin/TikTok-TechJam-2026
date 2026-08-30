@@ -209,7 +209,7 @@ export function summarizeRunPolicies(config: AppConfig): Record<string, unknown>
   return {
     // Whether containment is actually enforcing right now. Surfaced so the UI
     // can distinguish "nothing was blocked" from "nothing is being checked".
-    egressEnforcement: config.egressEnforcement && config.runtimeProvider === "container",
+    egressEnforcement: config.egressEnforcement,
     egressQuarantineThreshold: config.egressQuarantineThreshold,
     guardrailCanaryEnabled: config.guardrailCanaryToken.length > 0,
     runBudgetMaxInputTokens: config.runBudgetMaxInputTokens,

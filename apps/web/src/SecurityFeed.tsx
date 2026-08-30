@@ -60,7 +60,15 @@ function toLine(event: RunEvent): Line {
   };
 
   if (event.type === "egress.blocked") {
-    const host = event.title.replace("Blocked outbound connection to ", "");
+    // The host travels in the payload; parsing it back out of the title would
+    // break silently the moment that wording changed.
+    let host = "an outside address";
+    try {
+      const payload = JSON.parse(event.detail) as { host?: string };
+      if (payload.host) host = payload.host;
+    } catch {
+      // Fall back to the generic phrasing.
+    }
     return {
       ...base,
       verdict: "blocked",

@@ -116,7 +116,11 @@ export function loadConfig(environment: Record<string, unknown> = process.env) {
     containerPidsLimit: env.CONTAINER_PIDS_LIMIT,
     containerUser: env.CONTAINER_USER?.trim() || defaultContainerUser,
     runtimeInstanceId: env.RUNTIME_INSTANCE_ID,
-    egressEnforcement: env.EGRESS_ENFORCEMENT === "on",
+    // Enforcement is a property of the container topology, so it is only ever
+    // true when the container runtime is in use. Collapsing both conditions here
+    // keeps every consumer from having to remember the second one.
+    egressEnforcement:
+      env.EGRESS_ENFORCEMENT === "on" && env.RUNTIME_PROVIDER === "container",
     egressProxyPort: env.EGRESS_PROXY_PORT,
     egressProxyImage: env.EGRESS_PROXY_IMAGE,
     egressQuarantineThreshold: env.EGRESS_QUARANTINE_THRESHOLD,
