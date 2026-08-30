@@ -1,12 +1,22 @@
-import { describe, expect, it } from "vitest";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
+import { afterEach, describe, expect, it } from "vitest";
 import { createApp } from "./app.js";
 import { loadConfig } from "./config.js";
+import { IdentityService } from "./identity.js";
+import { JsonStore } from "./store.js";
 import type { AgentService } from "./agent-service.js";
 
 const service = {
   listAgents: () => [],
   systemInfo: async () => ({}),
 } as unknown as AgentService;
+
+const temporaryDirectories: string[] = [];
+afterEach(async () => {
+  await Promise.all(temporaryDirectories.splice(0).map((d) => rm(d, { recursive: true, force: true })));
+});
 
 describe("HTTP boundary", () => {
   it("protects API routes with the configured shared token", async () => {
@@ -115,6 +125,33 @@ describe("HTTP boundary", () => {
     expect(approveRes.statusCode).toBe(200);
     expect(approveRes.json()).toMatchObject({ approval: { id: approvalId, status: "approved" } });
 
+    await app.close();
+  });
+
+  it("denies an agent access to another user's resource server-side", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "launchpad-app-authz-"));
+    temporaryDirectories.push(root);
+    const store = new JsonStore(path.join(root, "db.json"));
+    await store.initialize();
+    await store.mutate((database) => {
+      database.principals.push({
+        id: "agent-1", kind: "agent", name: "A1", createdAt: new Date().toISOString(),
+      });
+    });
+    const identity = new IdentityService(store);
+    const app = await createApp(
+      loadConfig({ NODE_ENV: "test" }),
+      {} as unknown as AgentService,
+      identity,
+    );
+
+    const denied = await app.inject({
+      method: "GET",
+      url: "/api/resources/res-b",
+      headers: { "x-agent-principal-id": "agent-1" },
+    });
+    expect(denied.statusCode).toBe(403);
+    expect(denied.json().decision.ruleId).toBe("AUTHZ-OWNER-010");
     await app.close();
   });
 });

@@ -8,6 +8,9 @@ import type { AppConfig } from "./config.js";
 import { HttpError } from "./errors.js";
 import type { AgentService } from "./agent-service.js";
 import { handleGeminiResponsesAdapter } from "./gemini-adapter.js";
+import type { IdentityService } from "./identity.js";
+import type { EgressAuthorizer } from "./egress-authorizer.js";
+import type { EgressNetworkManager } from "./egress-network.js";
 
 const agentIdParams = z.object({ id: z.string().uuid() });
 const runIdParams = z.object({ id: z.string().uuid() });
@@ -41,12 +44,39 @@ const approvalQuery = z.object({
 const resolveApprovalBody = z.object({
   operatorName: z.string().trim().min(1).max(80).optional(),
 }).optional();
+const grantBody = z.object({
+  principalId: z.string().min(1).max(128),
+  scope: z.enum(["resource:read", "resource:write", "network:egress"]),
+  target: z.string().min(1).max(256),
+  ttlMinutes: z.number().int().positive().max(10_080).nullish(),
+});
+const grantQuery = z.object({ principalId: z.string().min(1).max(128).optional() });
+const grantIdParams = z.object({ id: z.string().uuid() });
+const egressProbeBody = z.object({
+  host: z
+    .string()
+    .trim()
+    .min(1)
+    .max(253)
+    .regex(/^[a-zA-Z0-9.-]+$/, "host must be a bare hostname"),
+});
+const egressAuthorizeBody = z.object({
+  agentPrincipalId: z.string().min(1).max(128),
+  host: z.string().min(1).max(253),
+  port: z.coerce.number().int().min(1).max(65535),
+  method: z.string().min(1).max(16),
+  secret: z.string().max(256).optional(),
+});
+const resourceIdParams = z.object({ id: z.string().min(1).max(128) });
 
 
 
 export async function createApp(
   config: AppConfig,
   service: AgentService,
+  identity?: IdentityService,
+  egressAuthorizer?: EgressAuthorizer,
+  egressNetwork?: EgressNetworkManager,
 ): Promise<FastifyInstance> {
   const app = Fastify({
     logger: {
@@ -98,7 +128,8 @@ export async function createApp(
 
   app.post("/api/agents", async (request, reply) => {
     const body = createAgentBody.parse(request.body);
-    const agent = await service.createAgent(body);
+    const actor = (request.headers["x-principal-id"] as string | undefined) ?? "user-a";
+    const agent = await service.createAgent(body, actor);
     return reply.code(201).send({ agent });
   });
 
@@ -171,6 +202,23 @@ export async function createApp(
     return { run: service.getRun(id) };
   });
 
+  if (egressNetwork) {
+    // Stages one real outbound connection from the agent's own network
+    // position so containment can be demonstrated in the product itself
+    // rather than only from a terminal.
+    app.post("/api/agents/:id/probe-egress", async (request) => {
+      const { id } = agentIdParams.parse(request.params);
+      const { host } = egressProbeBody.parse(request.body);
+      const agent = service.getAgent(id);
+      return egressNetwork.probeAsAgent(agent.principalId, host);
+    });
+  }
+
+  app.get("/api/agents/:id/events", async (request) => {
+    const { id } = agentIdParams.parse(request.params);
+    return { events: service.getAgentEvents(id) };
+  });
+
   app.get("/api/runs/:id/events", async (request) => {
     const { id } = runIdParams.parse(request.params);
     return { events: service.getRunEvents(id) };
@@ -200,11 +248,69 @@ export async function createApp(
     return { approval };
   });
 
+  if (identity) {
+    app.get("/api/principals", async () => ({ principals: identity.listPrincipals() }));
+
+    app.get("/api/grants", async (request) => {
+      const { principalId } = grantQuery.parse(request.query);
+      return { grants: identity.listGrants(principalId) };
+    });
+
+    app.post("/api/grants", async (request, reply) => {
+      const body = grantBody.parse(request.body);
+      const grantedBy = (request.headers["x-principal-id"] as string | undefined) ?? "user-a";
+      const grant = await identity.createGrant({
+        principalId: body.principalId,
+        scope: body.scope,
+        target: body.target,
+        ttlMinutes: body.ttlMinutes ?? null,
+        grantedBy,
+      });
+      return reply.code(201).send({ grant });
+    });
+
+    app.post("/api/grants/:id/revoke", async (request) => {
+      const { id } = grantIdParams.parse(request.params);
+      return { grant: await identity.revokeGrant(id) };
+    });
+
+    app.get("/api/resources/:id", async (request, reply) => {
+      const { id } = resourceIdParams.parse(request.params);
+      const agentPrincipalId = request.headers["x-agent-principal-id"] as string | undefined;
+      if (!agentPrincipalId) {
+        return reply.code(400).send({ error: "x-agent-principal-id header required" });
+      }
+      const { resource, decision } = await identity.readResourceAsAgent(id, agentPrincipalId);
+      if (!decision.allowed) {
+        return reply.code(403).send({ error: decision.reason, decision });
+      }
+      return { resource, decision };
+    });
+  }
+
+  if (egressAuthorizer) {
+    // Called by the egress proxy sidecar for EVERY outbound connection an
+    // agent container attempts. Answering slowly or failing here makes the
+    // proxy fail closed, which is the safe direction.
+    app.post("/api/egress/authorize", async (request) => {
+      const body = egressAuthorizeBody.parse(request.body);
+      const result = await egressAuthorizer.authorize(body);
+      return {
+        allowed: result.allowed,
+        ruleId: result.ruleId,
+        reason: result.reason,
+        allowPrivate: result.allowPrivate === true,
+      };
+    });
+  }
+
   app.post("/api/adapter/responses", async (request, reply) => {
     await handleGeminiResponsesAdapter(request, reply, config);
   });
 
-  if (config.nodeEnv === "production") {
+  // Docker Compose development still serves the built UI; only authentication
+  // behavior differs from production.
+  if (config.nodeEnv !== "test") {
     const webRoot = fileURLToPath(new URL("../../web/dist", import.meta.url));
     await app.register(fastifyStatic, {
       root: webRoot,

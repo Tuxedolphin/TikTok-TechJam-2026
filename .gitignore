@@ -14,3 +14,8 @@ coverage/
 deploy/volcengine/.terraform/
 deploy/volcengine/*.tfstate*
 deploy/volcengine/terraform.tfvars
+
+# Internal planning artifacts
+.superpowers/
+docs/superpowers/
+docs/hackathon-v2-*.xml

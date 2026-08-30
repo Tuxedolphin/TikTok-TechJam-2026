@@ -11,7 +11,9 @@ import type {
   ApprovalRequest,
   ApprovalStatus,
   CreateAgentInput,
+  Grant,
   Message,
+  PolicyDecision,
   RunEvent,
   RunEventSeverity,
   RunEventType,
@@ -20,6 +22,7 @@ import type {
 } from "./types.js";
 
 import { WorkspaceManager } from "./workspace.js";
+import type { EgressNetworkManager } from "./egress-network.js";
 import {
   estimateRunCostUsd,
   evaluateActionRisk,
@@ -34,6 +37,8 @@ import {
 const now = () => new Date().toISOString();
 
 const PREVIEW_LENGTH = 180;
+const MEMORY_MESSAGE_LIMIT = 4;
+const MEMORY_MESSAGE_CHAR_LIMIT = 600;
 
 export class AgentService {
   private readonly activeExecutions = new Map<string, Promise<void>>();
@@ -52,6 +57,8 @@ export class AgentService {
     private readonly store: JsonStore,
     private readonly workspaces: WorkspaceManager,
     private readonly runner: AgentRunner,
+    private readonly egress?: EgressNetworkManager,
+    private readonly onAgentStarted?: (agentId: string) => void,
   ) {}
 
   async initialize(): Promise<void> {
@@ -95,10 +102,11 @@ export class AgentService {
     return agent;
   }
 
-  async createAgent(input: CreateAgentInput): Promise<Agent> {
+  async createAgent(input: CreateAgentInput, actorPrincipalId = "user-a"): Promise<Agent> {
     const timestamp = now();
     const id = randomUUID();
     const initialSessionId = randomUUID();
+    const principalId = `agent-${id}`;
     const initialSession: AgentSession = {
       id: initialSessionId,
       agentId: id,
@@ -112,6 +120,8 @@ export class AgentService {
       name: input.name.trim(),
       description: input.description?.trim() ?? "",
       instructions: input.instructions?.trim() ?? "",
+      ownerId: actorPrincipalId,
+      principalId,
       status: "ready",
       workspacePath: this.workspaces.workspacePath(id),
       codexThreadId: null,
@@ -124,8 +134,91 @@ export class AgentService {
     await this.store.mutate((database) => {
       database.agents.push(agent);
       database.sessions.push(initialSession);
+      database.principals.push({
+        id: principalId,
+        kind: "agent",
+        name: input.name.trim(),
+        createdAt: timestamp,
+      });
     });
     return agent;
+  }
+
+  async recordPolicyDecision(
+    runId: string,
+    agentId: string,
+    decision: PolicyDecision,
+  ): Promise<void> {
+    await this.store.mutate((database) => {
+      this.appendRunEvent(database, {
+        runId,
+        agentId,
+        type: "policy.decision",
+        severity: decision.allowed ? "info" : "warning",
+        title: decision.ruleId,
+        detail: JSON.stringify(decision),
+        createdAt: now(),
+      });
+    });
+  }
+
+  async recordGrantEvent(
+    runId: string,
+    agentId: string,
+    type: "grant.created" | "grant.revoked",
+    grant: Grant,
+  ): Promise<void> {
+    await this.store.mutate((database) => {
+      this.appendRunEvent(database, {
+        runId,
+        agentId,
+        type,
+        severity: type === "grant.revoked" ? "warning" : "info",
+        title:
+          type === "grant.revoked"
+            ? `Revoked ${grant.scope} on ${grant.target}`
+            : `Granted ${grant.scope} on ${grant.target}`,
+        detail: JSON.stringify(grant),
+        createdAt: now(),
+      });
+    });
+  }
+
+  async recordEgressBlocked(
+    runId: string,
+    agentId: string,
+    host: string,
+    decision: PolicyDecision,
+    strikes: number,
+  ): Promise<void> {
+    await this.store.mutate((database) => {
+      this.appendRunEvent(database, {
+        runId,
+        agentId,
+        type: "egress.blocked",
+        severity: "error",
+        title: `Blocked outbound connection to ${host}`,
+        detail: JSON.stringify({ host, strikes, ...decision }),
+        createdAt: now(),
+      });
+    });
+  }
+
+  /**
+   * Stops an agent that keeps trying to reach hosts it has no grant for.
+   * Repeated denials are the signature of a hijacked agent probing for an
+   * exfiltration route, so containment escalates from blocking each attempt to
+   * halting the agent outright.
+   */
+  async quarantineAgent(agentId: string, reason: string): Promise<void> {
+    await this.cancelExecution(agentId);
+    await this.store.mutate((database) => {
+      const agent = database.agents.find((item) => item.id === agentId);
+      if (!agent) return;
+      agent.status = "stopped";
+      agent.lastError = reason;
+      agent.updatedAt = now();
+    });
   }
 
   async updateAgent(id: string, input: UpdateAgentInput): Promise<Agent> {
@@ -226,6 +319,10 @@ export class AgentService {
   }
 
   async startAgent(id: string): Promise<Agent> {
+    // Starting a quarantined agent is the operator clearing the incident, so
+    // its blocked-attempt history goes with it; otherwise the stale count sits
+    // at the threshold and the next single denial re-quarantines it at once.
+    this.onAgentStarted?.(id);
     return this.setStatus(id, "ready");
   }
 
@@ -253,6 +350,19 @@ export class AgentService {
       throw new HttpError(404, "Run not found");
     }
     return run;
+  }
+
+  /**
+   * Every event for an agent, including decisions recorded outside any run
+   * (issuing a grant, probing a resource). Those anchor to synthetic run ids,
+   * so a run-scoped query alone can never surface them.
+   */
+  getAgentEvents(agentId: string): RunEvent[] {
+    this.getAgent(agentId);
+    return this.store
+      .snapshot()
+      .runEvents.filter((event) => event.agentId === agentId)
+      .sort((left, right) => left.createdAt.localeCompare(right.createdAt));
   }
 
   getRunEvents(runId: string): RunEvent[] {
@@ -609,14 +719,39 @@ export class AgentService {
 
       const session = this.store.snapshot().sessions.find((s) => s.id === run.sessionId);
       const threadId = session ? session.codexThreadId : agentAtStart.codexThreadId;
+      const memory = this.buildSessionMemory(run);
+      const prompt = memory ? `${memory}\n\n## Current request\n${run.prompt}` : run.prompt;
+
+      if (memory) {
+        await this.store.mutate((database) => {
+          this.appendRunEvent(database, {
+            runId: run.id,
+            agentId: agentAtStart.id,
+            type: "run.memory_injected",
+            severity: "info",
+            title: "Session memory injected",
+            detail: "Added the previous " + MEMORY_MESSAGE_LIMIT + " messages from this chat as context.",
+            createdAt: now(),
+          });
+        });
+      }
+
+      // Under enforcement the agent gets no route off-box; its only path out
+      // is the proxy, which authorizes every connection against live grants.
+      let egressProxyUrl: string | undefined;
+      if (this.egress && this.config.runtimeProvider === "container") {
+        await this.egress.ensure();
+        egressProxyUrl = this.egress.proxyUrlFor(agentAtStart.principalId);
+      }
 
       const result = await this.runner.run({
         agentId: agentAtStart.id,
         sessionId: run.sessionId,
         workspacePath: agentAtStart.workspacePath,
-        prompt: run.prompt,
+        prompt,
         threadId,
         onStep,
+        egressProxyUrl,
       });
 
       if (stepViolation) {
@@ -712,6 +847,25 @@ export class AgentService {
     if (!this.config.guardrailCanaryToken) return null;
     if (!prompt.includes(this.config.guardrailCanaryToken)) return null;
     return "Prompt contains the configured canary token and was blocked before execution.";
+  }
+
+  private buildSessionMemory(run: AgentRun): string | null {
+    if (!run.sessionId) return null;
+    const messages = this.store
+      .snapshot()
+      .messages.filter((message) => message.sessionId === run.sessionId && message.runId !== run.id)
+      .sort((left, right) => left.createdAt.localeCompare(right.createdAt))
+      .slice(-MEMORY_MESSAGE_LIMIT);
+    if (messages.length === 0) return null;
+
+    const history = messages
+      .map((message) => {
+        const speaker = message.role === "user" ? "User" : "Assistant";
+        const text = message.content.replace(/\s+/g, " ").trim().slice(0, MEMORY_MESSAGE_CHAR_LIMIT);
+        return `${speaker}: ${text}`;
+      })
+      .join("\n");
+    return "## Session memory\nUse this prior conversation only as context; follow the current request below.\n" + history;
   }
 
   private redact(value: string): string {

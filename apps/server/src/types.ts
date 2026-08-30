@@ -16,6 +16,8 @@ export interface Agent {
   name: string;
   description: string;
   instructions: string;
+  ownerId: string;
+  principalId: string;
   status: AgentStatus;
   workspacePath: string;
   codexThreadId: string | null;
@@ -50,6 +52,7 @@ export type RunEventType =
   | "run.failed"
   | "run.blocked"
   | "run.cancelled"
+  | "run.memory_injected"
   | "step.command"
   | "step.tool_call"
   | "step.file_change"
@@ -57,7 +60,12 @@ export type RunEventType =
   | "step.auto_approved"
   | "step.approval_requested"
   | "step.approval_granted"
-  | "step.approval_denied";
+  | "step.approval_denied"
+  | "policy.decision"
+  | "grant.created"
+  | "grant.revoked"
+  | "grant.expired"
+  | "egress.blocked";
 
 export interface RunEvent {
   id: string;
@@ -102,14 +110,57 @@ export interface AgentRun {
   createdAt: string;
 }
 
+export type PrincipalKind = "human" | "agent";
+
+export interface Principal {
+  id: string;              // "user-a", "user-b", "agent-<agentId>"
+  kind: PrincipalKind;
+  name: string;
+  createdAt: string;
+}
+
+export type GrantScope = "resource:read" | "resource:write" | "network:egress";
+
+export interface Grant {
+  id: string;
+  principalId: string;     // agent principal receiving the grant
+  grantedBy: string;       // human principal id
+  scope: GrantScope;
+  target: string;          // resourceId for resource:*, hostname for network:egress
+  expiresAt: string | null; // ISO; null = no expiry
+  revokedAt: string | null;
+  createdAt: string;
+}
+
+export interface MockResource {
+  id: string;
+  ownerId: string;         // human principal id
+  name: string;
+  content: string;
+}
+
+export interface PolicyDecision {
+  allowed: boolean;
+  ruleId: string;          // e.g. "AUTHZ-OWNER-010", "AUTHZ-GRANT-011", "NET-EGRESS-020"
+  reason: string;
+  principalId: string | null;
+  grantId: string | null;
+}
+
+
+
+
 export interface Database {
-  version: 3;
+  version: 4;
   agents: Agent[];
   sessions: AgentSession[];
   messages: Message[];
   runs: AgentRun[];
   runEvents: RunEvent[];
   approvals: ApprovalRequest[];
+  principals: Principal[];
+  grants: Grant[];
+  resources: MockResource[];
 }
 
 export interface CreateAgentInput {
@@ -144,6 +195,12 @@ export interface RunnerRequest {
   prompt: string;
   threadId: string | null;
   onStep?: ((step: RunnerStepEvent) => Promise<void> | void) | undefined;
+  /**
+   * Set when egress enforcement is on. Its presence puts the container on the
+   * internal network with no route off-box, reachable outward only through
+   * this proxy. Absent, the container keeps the default bridge networking.
+   */
+  egressProxyUrl?: string | undefined;
 }
 
 export interface AgentRunner {

@@ -1,8 +1,43 @@
-# Volc Agent Launchpad
+# Agent Passport
 
-A production-grade AI Agent Governance Platform designed for secure autonomous coding. It wraps the Codex CLI and LLM execution loop with **Human-in-the-Loop (HITL) Action Approvals**, **Threat Modeling**, **Kernel-level Container/Process Freezing**, **Canary Tripwires**, and a **Correlated Audit Trace**. Backed by **Google Gemini API** (or any OpenAI-compatible provider).
+**Your coding agent just tried to send your credentials to an unknown server. Watch it fail.**
 
-Run it locally with Docker, Colima, or rootless Podman, or deploy it to Volcengine ECS.
+AI coding agents read untrusted content and then run commands. Prompt injection is unsolved, so the honest assumption is that any agent can be turned against you. Agent Passport does not try to make the model trustworthy — it makes the platform safe *while the model is hostile*.
+
+An agent here runs with **no route off the box**. Its only path to the network is a proxy that checks every single connection against grants you issue and can revoke at any moment.
+
+```
+1. Agent tries to reach example.com with NO grant   ->  403  blocked
+2. Operator issues a network:egress grant           ->  200  allowed
+3. Operator REVOKES the grant mid-flight            ->  403  revocation bites instantly
+4. Agent keeps probing for a way out                ->  quarantined, status: stopped
+5. Agent tries to skip the proxy entirely           ->  no route: the network itself refuses
+```
+
+That is real output from `npm run demo` — real containers, a real network, a real blocked exfiltration. Nothing is stubbed.
+
+## What this adds to the starter kit
+
+The Agent Launchpad starter kit already provided agent CRUD, the Playground, the Codex container runtime, human-in-the-loop approvals, a canary tripwire, budget breakers, and the trace timeline. **This project adds the parts that were missing:**
+
+- **Agent identity.** A human principal and an agent principal are different things. Every agent is owned by a user and acts as its own principal.
+- **Scoped, expiring, revocable grants.** An agent may read *this* resource, or reach *this* host, for *this* long. Decisions are re-checked on every single access — nothing is cached, so revocation is felt on the very next call rather than at token expiry.
+- **Enforced network containment.** Not pattern-matching on command text after the fact: the agent container has no route off-box, and a proxy authorizes every connection. A blocked host is unreachable, not merely disapproved.
+- **Containment escalation.** Repeated blocked attempts — the signature of a hijacked agent hunting for an exfil route — quarantine the agent automatically.
+- **A receipt for everything.** Every allow and every deny lands on the run timeline with a rule ID explaining itself.
+
+Full detail, including what is *not* solved: **[docs/AGENT-PASSPORT.md](docs/AGENT-PASSPORT.md)**.
+
+## Try the containment demo first
+
+```bash
+npm install
+npm run demo
+```
+
+Needs a container engine (Docker/OrbStack, Colima, or Podman). No API key required — it stages the attack against a real proxy on a real isolated network.
+
+For the full platform with a live agent, add a key and run `npm run poc`; egress enforcement is **on by default**, and the Passport panel in the UI shows grants, live expiry countdowns, and one-click revocation.
 
 ## Screenshots
 
@@ -14,17 +49,9 @@ Run it locally with Docker, Colima, or rootless Podman, or deploy it to Volcengi
 
 ![Create Agent form with name, description, and workspace instructions](docs/assets/create-agent.jpg)
 
-## Features
+## Inherited vs. added
 
-- **Human-in-the-Loop (HITL) Action Approval**: Intercepts high-risk operations (network egress, destructive file modifications, credential access) and pauses execution until operator review.
-- **Kernel-Level Execution Freezing**: Suspends running containers (`docker pause`) or host processes (`SIGSTOP`) at the OS level while awaiting human decisions.
-- **Threat Policy Engine**: Automated classification rules (`SEC-EGRESS-003`, `SEC-DESTRUCTIVE-001`, `SEC-CREDENTIALS-002`, `SEC-SUPPLY-004`, `SEC-PRIVILEGE-005`, `ALLOW-STANDARD-000`).
-- **Correlated Audit Trace**: Real-time event timeline linking policy evaluations, operator decisions, tool executions, and resource consumption.
-- **Canary Secret Tripwire**: Automatic detection and redaction of leaked credentials (`[redacted]`) with immediate agent quarantine.
-- **Token & Duration Circuit Breakers**: Budget limits preventing runaway spending and infinite execution loops.
-- **Multi-Session Context Isolation**: Independent conversation threads with segregated Codex contexts.
-- **Fastify Control Plane & React Web UI**: High-craft, minimalist developer cockpit with zero login friction.
-- **Disposable Container Sandboxes**: Ephemeral Docker/Colima/Podman runtimes with strict CPU, memory, and PID limits.
+Being precise about provenance: HITL approvals, kernel-level freezing, the canary tripwire, budget breakers, and the trace timeline came with the starter kit. The identity model, the grant system, the authorization evaluators, and the entire egress enforcement path are new here.
 
 ## Requirements
 
@@ -347,6 +374,7 @@ npm test
 
 ## Documentation
 
+- **[Agent Passport](docs/AGENT-PASSPORT.md)** — what is enforced, how it was verified, and what is not
 - [Architecture](docs/ARCHITECTURE.md)
 - [Local POC](docs/LOCAL_POC.md)
 - [Deployment](docs/DEPLOYMENT.md)

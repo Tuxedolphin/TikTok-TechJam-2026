@@ -5,6 +5,7 @@ import type { AppConfig } from "./config.js";
 import { buildCodexArgs, parseCodexEventLine } from "./codex-runner.js";
 import { RunCancelledError } from "./errors.js";
 import { RunPolicyViolationError } from "./run-policies.js";
+import { INTERNAL_NETWORK } from "./egress-network.js";
 import type {
   AgentRunner,
   RunUsage,
@@ -32,6 +33,25 @@ interface ParsedEvents {
   errors: string[];
 }
 
+/**
+ * Environment handed to the container engine. Deliberately an allowlist: the
+ * server's own process environment holds credentials that have no business
+ * reaching a `docker`/`podman` invocation.
+ */
+export function containerEngineEnvironment(config: AppConfig): NodeJS.ProcessEnv {
+  const environment: NodeJS.ProcessEnv = {
+    OPENROUTER_API_KEY: config.openRouterApiKey,
+    OPENAI_API_KEY: config.openRouterApiKey,
+    OPENROUTER_BASE_URL: config.openRouterBaseUrl,
+    OPENAI_BASE_URL: config.openRouterBaseUrl,
+    NO_COLOR: "1",
+  };
+  for (const name of ["PATH", "HOME", "TMPDIR", "LANG", "LC_ALL", "XDG_RUNTIME_DIR"] as const) {
+    if (process.env[name] !== undefined) environment[name] = process.env[name];
+  }
+  return environment;
+}
+
 export function containerName(agentId: string, instanceId = "default"): string {
   const safeInstance = instanceId.replace(/[^a-zA-Z0-9_.-]/g, "-").slice(0, 32);
   const safeAgent = agentId.replace(/[^a-zA-Z0-9_.-]/g, "-").slice(0, 48);
@@ -57,10 +77,25 @@ export function buildContainerRunArgs(
     "--label",
     "io.codejam.instance-id=" + config.runtimeInstanceId,
     ...(engineName === "podman" ? ["--userns", "keep-id"] : []),
-    "--network",
-    "bridge",
-    "--add-host",
-    "host.docker.internal:host-gateway",
+    // Under enforcement the agent joins an internal network with no route
+    // off-box: every outbound connection must go through the authorizing
+    // proxy, so a denied host is unreachable rather than merely disapproved.
+    ...(request.egressProxyUrl
+      ? [
+          "--network",
+          INTERNAL_NETWORK,
+          "--env",
+          "HTTP_PROXY=" + request.egressProxyUrl,
+          "--env",
+          "HTTPS_PROXY=" + request.egressProxyUrl,
+          "--env",
+          "http_proxy=" + request.egressProxyUrl,
+          "--env",
+          "https_proxy=" + request.egressProxyUrl,
+          "--env",
+          "NO_PROXY=localhost,127.0.0.1",
+        ]
+      : ["--network", "bridge", "--add-host", "host.docker.internal:host-gateway"]),
     "--security-opt",
     "no-new-privileges",
     "--cap-drop",
@@ -317,23 +352,6 @@ export class ContainerCodexRunner implements AgentRunner {
   }
 
   private childEnvironment(): NodeJS.ProcessEnv {
-    const environment: NodeJS.ProcessEnv = {
-      OPENROUTER_API_KEY: this.config.openRouterApiKey,
-      OPENAI_API_KEY: this.config.openRouterApiKey,
-      OPENROUTER_BASE_URL: this.config.openRouterBaseUrl,
-      OPENAI_BASE_URL: this.config.openRouterBaseUrl,
-      NO_COLOR: "1",
-    };
-    for (const name of [
-      "PATH",
-      "HOME",
-      "TMPDIR",
-      "LANG",
-      "LC_ALL",
-      "XDG_RUNTIME_DIR",
-    ] as const) {
-      if (process.env[name] !== undefined) environment[name] = process.env[name];
-    }
-    return environment;
+    return containerEngineEnvironment(this.config);
   }
 }

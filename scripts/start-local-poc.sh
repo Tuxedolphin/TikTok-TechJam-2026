@@ -177,6 +177,9 @@ export HOST="${HOST:-127.0.0.1}"
 export PORT="${PORT:-3000}"
 export CODEX_SANDBOX_MODE="$codex_sandbox_mode"
 export RUNTIME_PROVIDER=container
+# Agent containers get no route off-box; the authorizing proxy is their only
+# path out. Set EGRESS_ENFORCEMENT=off to fall back to plain bridge networking.
+export EGRESS_ENFORCEMENT="${EGRESS_ENFORCEMENT:-on}"
 export CONTAINER_ENGINE="$engine"
 export CONTAINER_RUNTIME_IMAGE="$runtime_image"
 

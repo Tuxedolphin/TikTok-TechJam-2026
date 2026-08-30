@@ -1,6 +1,28 @@
+import { existsSync } from "node:fs";
 import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { z } from "zod";
+
+function resolveServerDistPath(): string {
+  const currentDir = path.dirname(fileURLToPath(import.meta.url));
+  if (existsSync(path.join(currentDir, "egress-proxy-main.js"))) {
+    return currentDir;
+  }
+  const siblingDist = path.resolve(currentDir, "../dist");
+  if (existsSync(path.join(siblingDist, "egress-proxy-main.js"))) {
+    return siblingDist;
+  }
+  const cwdDist = path.resolve(process.cwd(), "dist");
+  if (existsSync(path.join(cwdDist, "egress-proxy-main.js"))) {
+    return cwdDist;
+  }
+  const rootDist = path.resolve(process.cwd(), "apps/server/dist");
+  if (existsSync(path.join(rootDist, "egress-proxy-main.js"))) {
+    return rootDist;
+  }
+  return siblingDist;
+}
 
 const envSchema = z.object({
   HOST: z.string().default("0.0.0.0"),
@@ -16,6 +38,14 @@ const envSchema = z.object({
   CODEX_TIMEOUT_MS: z.coerce.number().int().min(1_000).default(600_000),
   CODEX_MAX_OUTPUT_BYTES: z.coerce.number().int().min(65_536).default(2_097_152),
   RUNTIME_PROVIDER: z.enum(["local-process", "container"]).default("local-process"),
+  EGRESS_ENFORCEMENT: z
+    .enum(["off", "on"])
+    .default("on")
+    .describe("On by default: agent containers run with no route off-box and reach the network only through the authorizing proxy. Set to off to restore plain bridge networking."),
+  EGRESS_PROXY_PORT: z.coerce.number().int().min(1).max(65535).default(8888),
+  EGRESS_PROXY_IMAGE: z.string().min(1).default("node:22-alpine"),
+  EGRESS_QUARANTINE_THRESHOLD: z.coerce.number().int().min(1).default(3),
+  EGRESS_PROBE_IMAGE: z.string().min(1).default("curlimages/curl:latest"),
   CONTAINER_ENGINE: z.string().min(1).default("docker"),
   CONTAINER_RUNTIME_IMAGE: z.string().min(1).default("volc-agent-runtime:local"),
   CONTAINER_CPU_LIMIT: z.coerce.number().positive().default(2),
@@ -108,6 +138,16 @@ export function loadConfig(environment: Record<string, unknown> = process.env) {
     containerPidsLimit: env.CONTAINER_PIDS_LIMIT,
     containerUser: env.CONTAINER_USER?.trim() || defaultContainerUser,
     runtimeInstanceId: env.RUNTIME_INSTANCE_ID,
+    // Enforcement is a property of the container topology, so it is only ever
+    // true when the container runtime is in use. Collapsing both conditions here
+    // keeps every consumer from having to remember the second one.
+    egressEnforcement:
+      env.EGRESS_ENFORCEMENT === "on" && env.RUNTIME_PROVIDER === "container",
+    egressProxyPort: env.EGRESS_PROXY_PORT,
+    egressProxyImage: env.EGRESS_PROXY_IMAGE,
+    egressQuarantineThreshold: env.EGRESS_QUARANTINE_THRESHOLD,
+    egressProbeImage: env.EGRESS_PROBE_IMAGE,
+    serverDistPath: resolveServerDistPath(),
     authToken,
     geminiApiKey,
     openRouterApiKey,

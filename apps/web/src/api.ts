@@ -3,7 +3,12 @@ import type {
   AgentRun,
   AgentSession,
   ApprovalRequest,
+  Grant,
+  GrantScope,
   Message,
+  MockResource,
+  PolicyDecision,
+  Principal,
   RunEvent,
   SystemInfo,
 } from "./types";
@@ -23,10 +28,24 @@ export function setAuthToken(token: string): void {
   authToken = token.trim();
 }
 
+// The "human" principal driving the identity/delegation demo. Every request
+// is sent as this principal via the x-principal-id header so grant issuance,
+// revocation, and ownership checks reflect whoever is "acting as" in the UI.
+let currentPrincipalId = "user-a";
+
+export function getCurrentPrincipalId(): string {
+  return currentPrincipalId;
+}
+
+export function setCurrentPrincipalId(principalId: string): void {
+  currentPrincipalId = principalId;
+}
+
 async function request<T>(url: string, options?: RequestInit): Promise<T> {
   const headers = {
     ...(options?.body ? { "Content-Type": "application/json" } : {}),
     ...(authToken ? { Authorization: "Bearer " + authToken } : {}),
+    "x-principal-id": currentPrincipalId,
     ...options?.headers,
   };
   const response = await fetch(url, {
@@ -98,6 +117,13 @@ export const api = {
     ),
   run: (id: string) => request<{ run: AgentRun }>("/api/runs/" + id),
   runEvents: (id: string) => request<{ events: RunEvent[] }>("/api/runs/" + id + "/events"),
+  probeEgress: (id: string, host: string) =>
+    request<{ httpStatus: number | null; blocked: boolean; detail: string }>(
+      "/api/agents/" + id + "/probe-egress",
+      { method: "POST", body: JSON.stringify({ host }) },
+    ),
+  agentEvents: (id: string) =>
+    request<{ events: RunEvent[] }>("/api/agents/" + id + "/events"),
   listApprovals: (agentId?: string, status?: string) => {
     const params = new URLSearchParams();
     if (agentId) params.set("agentId", agentId);
@@ -116,5 +142,44 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ operatorName }),
     }),
+  listPrincipals: () => request<{ principals: Principal[] }>("/api/principals"),
+  listGrants: (principalId: string) =>
+    request<{ grants: Grant[] }>("/api/grants?principalId=" + encodeURIComponent(principalId)),
+  createGrant: (body: {
+    principalId: string;
+    scope: GrantScope;
+    target: string;
+    ttlMinutes?: number;
+  }) =>
+    request<{ grant: Grant }>("/api/grants", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+  revokeGrant: (id: string) =>
+    request<{ grant: Grant }>("/api/grants/" + id + "/revoke", {
+      method: "POST",
+    }),
+  // The whole point of this probe is to surface a 403 denial, not throw it
+  // away as an exception - so it bypasses request() and reads the body itself.
+  readResourceAsAgent: async (
+    resourceId: string,
+    agentPrincipalId: string,
+  ): Promise<{ resource: MockResource | null; decision: PolicyDecision }> => {
+    const response = await fetch("/api/resources/" + resourceId, {
+      headers: {
+        ...(authToken ? { Authorization: "Bearer " + authToken } : {}),
+        "x-agent-principal-id": agentPrincipalId,
+      },
+    });
+    const data = (await response.json().catch(() => ({}))) as {
+      resource?: MockResource | null;
+      decision?: PolicyDecision;
+      error?: string;
+    };
+    if (!data.decision) {
+      throw new ApiError(data.error ?? "Request failed", response.status);
+    }
+    return { resource: data.resource ?? null, decision: data.decision };
+  },
 };
 
