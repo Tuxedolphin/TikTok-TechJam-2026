@@ -69,7 +69,10 @@ describe("Gemini adapter routing", () => {
     try {
       const response = await realFetch(config.openRouterBaseUrl + "/responses", {
         method: "POST",
-        headers: { "content-type": "application/json" },
+        headers: {
+          authorization: "Bearer " + config.openRouterApiKey,
+          "content-type": "application/json",
+        },
         body: JSON.stringify({ input: [] }),
       });
       expect(response.status).toBe(200);
