@@ -210,4 +210,3 @@ export interface AgentRunner {
   resume?(agentId: string): Promise<boolean>;
   isAvailable(): Promise<boolean>;
 }
-
