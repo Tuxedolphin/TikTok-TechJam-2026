@@ -82,6 +82,11 @@ function migrateV4ToV5(v4: Database4Shape): Database {
 }
 
 function migrateDatabase(parsed: Partial<Database> & { version?: number; sessions?: unknown[]; approvals?: unknown[] }): Database {
+  // A sibling change (#28, approval attribution) also stamps `version: 5`,
+  // adding attribution fields to runs/grants/approvals. Two schemas share one
+  // version number, so this branch must not assume a v5 file was written by
+  // *this* code: every field is taken by shape, and `memories` defaults rather
+  // than being asserted, so a store written by that branch loads intact.
   if (parsed.version === 5) {
     return {
       version: 5,

@@ -117,4 +117,55 @@ describe("JsonStore", () => {
     expect(database.grants.map((grant) => grant.id)).toEqual(["grant-1"]);
     expect(database.resources.map((resource) => resource.id)).toEqual(["res-a"]);
   });
+
+  it("loads a v5 file written by the sibling attribution schema", async () => {
+    // #28 also stamps `version: 5`, with attribution fields this branch knows
+    // nothing about. Sharing a version number means neither migration reruns,
+    // so each side must load the other's file without losing data. Fields this
+    // branch does not model are simply carried through; `memories` defaults.
+    const root = await mkdtemp(path.join(tmpdir(), "launchpad-store-test-"));
+    temporaryDirectories.push(root);
+    const filePath = path.join(root, "db.json");
+    const siblingV5 = {
+      version: 5,
+      agents: [], sessions: [], messages: [], runEvents: [], principals: [], resources: [],
+      runs: [{
+        id: "run-1", agentId: "agent-1", status: "completed", prompt: "p",
+        output: null, error: null, usage: null,
+        startedAt: null, completedAt: null, createdAt: "2026-08-29T00:00:00.000Z",
+        initiatedByPrincipalId: "user-a", initiatedByDisplayName: "User A",
+      }],
+      grants: [{
+        id: "grant-1", principalId: "agent-1", grantedBy: "user-a",
+        scope: "network:egress", target: "example.com",
+        expiresAt: null, revokedAt: null, createdAt: "2026-08-29T00:00:00.000Z",
+        revokedBy: null,
+      }],
+      approvals: [{
+        id: "ap-1", runId: "run-1", agentId: "agent-1", actionType: "command",
+        actionDetail: "curl", ruleId: "SEC-EGRESS-003", reason: "r",
+        riskLevel: "high", status: "approved",
+        createdAt: "2026-08-29T00:00:00.000Z", resolvedAt: "2026-08-29T00:01:00.000Z",
+        resolvedByPrincipalId: "user-a", resolvedByDisplayName: "User A",
+        evidence: { decision: "approved" },
+      }],
+      // no `memories` key at all
+    };
+    await writeFile(filePath, JSON.stringify(siblingV5), "utf8");
+    const store = new JsonStore(filePath);
+    await store.initialize();
+    const database = store.snapshot();
+
+    expect(database.version).toBe(5);
+    expect(database.memories).toEqual([]);
+    // Nothing the sibling wrote may be dropped on the way through.
+    expect(database.grants).toHaveLength(1);
+    expect(database.approvals).toHaveLength(1);
+    expect(
+      (database.approvals[0] as unknown as { evidence?: unknown }).evidence,
+    ).toBeDefined();
+    expect(
+      (database.runs[0] as unknown as { initiatedByPrincipalId?: string }).initiatedByPrincipalId,
+    ).toBe("user-a");
+  });
 });
