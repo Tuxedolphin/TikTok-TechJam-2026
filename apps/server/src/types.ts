@@ -38,7 +38,9 @@ export interface Message {
 }
 
 export interface RunUsage {
+  /** All provider-reported input tokens, including the cached subset. */
   inputTokens?: number;
+  /** Input tokens served from cache; this is a subset of inputTokens. */
   cachedInputTokens?: number;
   outputTokens?: number;
   costUsd?: number | null;
@@ -209,8 +211,8 @@ export interface RunnerRequest {
 export interface AgentRunner {
   run(request: RunnerRequest): Promise<RunnerResult>;
   cancel(agentId: string): Promise<boolean>;
-  pause?(agentId: string): Promise<boolean>;
-  resume?(agentId: string): Promise<boolean>;
+  /** Required: a high-risk step is refused outright if the runtime cannot be frozen. */
+  pause(agentId: string): Promise<boolean>;
+  resume(agentId: string): Promise<boolean>;
   isAvailable(): Promise<boolean>;
 }
-

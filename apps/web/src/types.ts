@@ -107,9 +107,10 @@ export interface ApprovalRequest {
 }
 
 export interface SystemInfo {
-  openRouterConfigured: boolean;
-  openRouterBaseUrl: string;
-  openRouterModel: string | null;
+  modelConfigured: boolean;
+  modelProvider: "ark" | "openrouter" | "gemini";
+  modelBaseUrl: string;
+  modelName: string | null;
   codexAvailable: boolean;
   codexSandboxMode: string;
   runtimeProvider: "local-process" | "container";
@@ -122,6 +123,17 @@ export interface SystemInfo {
   runBudgetMaxOutputTokens: number | null;
   runBudgetMaxTotalTokens: number | null;
   runBudgetMaxDurationMs: number | null;
+  runBudgetEnforcement?: {
+    inputTokens: "observational";
+    cachedInputTokens: "observational";
+    outputTokens: "preventive";
+    totalTokens: "observational";
+    durationMs: "preventive";
+  };
+  runBudgetTokenSemantics?: {
+    cachedInputTokensIncludedInInput: true;
+    totalTokens: ["inputTokens", "outputTokens"];
+  };
 }
 
 export type PrincipalKind = "human" | "agent";

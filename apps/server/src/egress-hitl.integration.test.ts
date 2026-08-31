@@ -8,7 +8,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { once } from "node:events";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { AgentService } from "./agent-service.js";
 import { createApp } from "./app.js";
@@ -49,6 +49,14 @@ class HeldRunner implements AgentRunner {
   async cancel(): Promise<boolean> {
     this.rejectRun?.(new RunCancelledError());
     this.rejectRun = null;
+    return true;
+  }
+
+  async pause(): Promise<boolean> {
+    return true;
+  }
+
+  async resume(): Promise<boolean> {
     return true;
   }
 
@@ -409,7 +417,9 @@ describe("egress approval production path", () => {
     await resolveApproval(fixture, pending[0]!.id, "approve");
     await expect.poll(() => destination.requests).toHaveLength(1);
     expect(fixture.service.listApprovals(fixture.agentId, "pending")).toHaveLength(1);
+    expect(fixture.service.getAgent(fixture.agentId).status).toBe("waiting_approval");
     await resolveApproval(fixture, fixture.service.listApprovals(fixture.agentId, "pending")[0]!.id, "deny");
+    expect(fixture.service.getAgent(fixture.agentId).status).toBe("busy");
 
     const responses = await Promise.all(requests);
     expect(responses.map((response) => response.status).sort()).toEqual([200, 403]);
@@ -514,14 +524,12 @@ describe("egress approval production path", () => {
       }),
     ).resolves.toBe(false);
 
-    const approval = fixture.service.listApprovals(fixture.agentId)[0]!;
-    expect(approval.status).toBe("denied");
-    expect(fixture.service.listApprovals(fixture.agentId, "pending")).toHaveLength(0);
+    expect(fixture.service.listApprovals(fixture.agentId)).toHaveLength(0);
     expect(
       fixture.service
         .getRunEvents(runId)
-        .filter((event) => event.type === "step.approval_denied"),
-    ).toHaveLength(1);
+        .filter((event) => event.type === "step.approval_requested"),
+    ).toHaveLength(0);
   });
 
   it("cancels a held request before approval without opening the destination connection", async () => {

@@ -13,7 +13,7 @@ import { WorkspaceManager } from "./workspace.js";
 function platformHosts(config: AppConfig): string[] {
   const hosts = new Set<string>(["host.docker.internal"]);
   try {
-    hosts.add(new URL(config.openRouterBaseUrl).hostname);
+    hosts.add(new URL(config.modelBaseUrl).hostname);
   } catch {
     // A malformed base URL simply contributes no standing allowance.
   }
