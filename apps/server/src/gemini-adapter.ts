@@ -4,6 +4,18 @@ import type { AppConfig } from "./config.js";
 
 const thoughtSignatureStore = new Map<string, unknown>();
 let lastRequestTime = 0;
+
+function redactSecrets(value: string, config: AppConfig): string {
+  let output = value;
+  for (const secret of [
+    config.geminiApiKey,
+    config.geminiAdapterToken,
+    config.openRouterApiKey,
+  ]) {
+    if (secret) output = output.split(secret).join("[redacted]");
+  }
+  return output;
+}
 const MIN_REQUEST_INTERVAL_MS = 4200; // Cap pacing strictly at 14.3 RPM (under Google 15 RPM limit)
 
 export async function handleGeminiResponsesAdapter(
@@ -162,7 +174,7 @@ export async function handleGeminiResponsesAdapter(
 
   if (!response.ok) {
     const errorText = await response.text();
-    return reply.code(response.status).send({ error: errorText });
+    return reply.code(response.status).send({ error: redactSecrets(errorText, config) });
   }
 
   const geminiResult = (await response.json()) as {
@@ -193,7 +205,12 @@ export async function handleGeminiResponsesAdapter(
 
   let seq = 0;
   const sendEvent = (event: Record<string, unknown>) => {
-    reply.raw.write("data: " + JSON.stringify({ ...event, sequence_number: seq++ }) + "\n\n");
+    const payload = JSON.stringify(
+      { ...event, sequence_number: seq++ },
+      (_key, value) =>
+        typeof value === "string" ? redactSecrets(value, config) : value,
+    );
+    reply.raw.write("data: " + payload + "\n\n");
   };
 
   sendEvent({
