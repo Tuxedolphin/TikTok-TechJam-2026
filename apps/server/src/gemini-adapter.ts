@@ -1,9 +1,22 @@
 import type { FastifyReply, FastifyRequest } from "fastify";
-import { randomUUID } from "node:crypto";
+import { randomUUID, timingSafeEqual } from "node:crypto";
 import type { AppConfig } from "./config.js";
 
 const thoughtSignatureStore = new Map<string, unknown>();
 let lastRequestTime = 0;
+
+function redactSecrets(value: string, config: AppConfig): string {
+  let output = value;
+  for (const secret of [
+    config.geminiApiKey,
+    config.openRouterApiKey,
+    config.adapterApiKey,
+    config.runtimeApiKey,
+  ]) {
+    if (secret) output = output.split(secret).join("[redacted]");
+  }
+  return output;
+}
 const MIN_REQUEST_INTERVAL_MS = 4200; // Cap pacing strictly at 14.3 RPM (under Google 15 RPM limit)
 
 export async function handleGeminiResponsesAdapter(
@@ -11,8 +24,19 @@ export async function handleGeminiResponsesAdapter(
   reply: FastifyReply,
   config: AppConfig,
 ): Promise<void> {
+  const authorization = request.headers.authorization ?? "";
+  const candidate = authorization.startsWith("Bearer ") ? authorization.slice(7) : "";
+  const expectedBuffer = Buffer.from(config.adapterApiKey);
+  const candidateBuffer = Buffer.from(candidate);
+  const authenticated =
+    candidateBuffer.length === expectedBuffer.length &&
+    timingSafeEqual(candidateBuffer, expectedBuffer);
+  if (!authenticated) {
+    return reply.code(401).send({ error: "Invalid adapter credential" });
+  }
+
   const body = (request.body || {}) as Record<string, unknown>;
-  const apiKey = config.geminiApiKey || config.openRouterApiKey;
+  const apiKey = config.geminiApiKey;
   if (!apiKey) {
     return reply.code(401).send({ error: "No GEMINI_API_KEY configured" });
   }
@@ -162,7 +186,7 @@ export async function handleGeminiResponsesAdapter(
 
   if (!response.ok) {
     const errorText = await response.text();
-    return reply.code(response.status).send({ error: errorText });
+    return reply.code(response.status).send({ error: redactSecrets(errorText, config) });
   }
 
   const geminiResult = (await response.json()) as {
@@ -193,7 +217,12 @@ export async function handleGeminiResponsesAdapter(
 
   let seq = 0;
   const sendEvent = (event: Record<string, unknown>) => {
-    reply.raw.write("data: " + JSON.stringify({ ...event, sequence_number: seq++ }) + "\n\n");
+    const payload = JSON.stringify(
+      { ...event, sequence_number: seq++ },
+      (_key, value) =>
+        typeof value === "string" ? redactSecrets(value, config) : value,
+    );
+    reply.raw.write("data: " + payload + "\n\n");
   };
 
   sendEvent({

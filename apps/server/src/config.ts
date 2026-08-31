@@ -1,3 +1,4 @@
+import { randomBytes } from "node:crypto";
 import { existsSync } from "node:fs";
 import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
@@ -107,6 +108,8 @@ export function loadConfig(environment: Record<string, unknown> = process.env) {
     : env.OPENROUTER_BASE_URL.trim().replace(/\/+$/, "") ||
       env.ARK_BASE_URL?.trim().replace(/\/+$/, "") ||
       "https://openrouter.ai/api/v1";
+  const adapterApiKey = randomBytes(32).toString("base64url");
+  const runtimeApiKey = isGeminiMode ? adapterApiKey : openRouterApiKey;
   const loopbackHosts = new Set(["127.0.0.1", "::1", "localhost"]);
   if (env.NODE_ENV === "production" && !loopbackHosts.has(env.HOST)) {
     if (authToken.length < 24 || authToken.startsWith("replace-")) {
@@ -151,6 +154,8 @@ export function loadConfig(environment: Record<string, unknown> = process.env) {
     authToken,
     geminiApiKey,
     openRouterApiKey,
+    adapterApiKey,
+    runtimeApiKey,
     openRouterModel,
     openRouterBaseUrl,
     guardrailCanaryToken: env.GUARDRAIL_CANARY_TOKEN?.trim() ?? "",
