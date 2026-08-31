@@ -93,10 +93,10 @@ Configure your API key in `.env` (copied from `.env.example`):
 
 ```bash
 # Option A: With Gemini in .env (Recommended)
-npm run poc
+HOST=127.0.0.1 npm run poc
 
 # Option B: Pass via CLI environment variable
-GEMINI_API_KEY=your-gemini-api-key npm run poc
+HOST=127.0.0.1 GEMINI_API_KEY=your-gemini-api-key npm run poc
 ```
 
 The first run installs Node.js dependencies and builds the Runtime image. The
@@ -141,7 +141,7 @@ Run the same `npm run poc` command to continue later.
 Force Podman when multiple engines are installed:
 
 ```bash
-CONTAINER_ENGINE=podman GEMINI_API_KEY=your-gemini-api-key npm run poc
+HOST=127.0.0.1 CONTAINER_ENGINE=podman GEMINI_API_KEY=your-gemini-api-key npm run poc
 ```
 
 Colima uses `CONTAINER_ENGINE=docker` because it exposes the Docker CLI.
@@ -157,7 +157,18 @@ Create and edit the configuration:
 ./scripts/bootstrap-local.sh
 ```
 
-Required values in `.env`:
+Compose runs the server in production mode, where the process binds `0.0.0.0`
+inside its container. Only the published port decides who can reach it, so
+Compose publishes on `127.0.0.1` by default and the bootstrap command creates a
+URL-safe `APP_AUTH_TOKEN` when `.env` does not already contain a valid one. To
+serve the demo to another machine, set `PUBLIC_BIND=0.0.0.0`; that token is then
+the only thing standing between the internet and your Agents. To rotate it later, replace that value in `.env` with the output of:
+
+```bash
+node -e 'console.log(require("node:crypto").randomBytes(24).toString("base64url"))'
+```
+
+Required provider values in `.env`:
 
 ```dotenv
 # Option A: Google Gemini API (Recommended)

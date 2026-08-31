@@ -14,10 +14,10 @@ Requirements:
 
 ```bash
 # With Gemini:
-GEMINI_API_KEY=your-gemini-key npm run poc
+HOST=127.0.0.1 GEMINI_API_KEY=your-gemini-key npm run poc
 
 # Or with OpenRouter fallback:
-# OPENROUTER_API_KEY=your-key OPENROUTER_MODEL=openai/gpt-4o-mini npm run poc
+# HOST=127.0.0.1 OPENROUTER_API_KEY=your-key OPENROUTER_MODEL=openai/gpt-4o-mini npm run poc
 ```
 
 Open <http://localhost:3000>. Press `Ctrl+C` to stop the server and remove this
@@ -107,6 +107,7 @@ podman run --rm docker.io/library/alpine:3.20 echo PODMAN_OK
 `podman info` must report `rootless: true`. Start the POC:
 
 ```bash
+HOST=127.0.0.1 \
 CONTAINER_ENGINE=podman \
 GEMINI_API_KEY=your-gemini-api-key \
 npm run poc
@@ -119,6 +120,7 @@ build.
 ## Common options
 
 ```bash
+HOST=127.0.0.1 \
 CONTAINER_RUNTIME_APT_PACKAGES='ca-certificates git ripgrep curl python3 build-essential' \
 GEMINI_API_KEY=your-gemini-api-key \
 npm run poc
