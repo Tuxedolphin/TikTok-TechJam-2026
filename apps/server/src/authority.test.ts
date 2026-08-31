@@ -44,6 +44,23 @@ describe("isNarrowerThan", () => {
     ).toBe(true);
   });
 
+  it("never exchanges resource authority for network authority", () => {
+    // Holding write access to everything must not confer the ability to make
+    // outbound connections; the two are different kinds of power.
+    expect(
+      isNarrowerThan(
+        { scope: "network:egress", target: "attacker.example", expiresAt: null },
+        { scope: "resource:write", target: "*", expiresAt: null },
+      ),
+    ).toBe(false);
+    expect(
+      isNarrowerThan(
+        { scope: "resource:read", target: "res-a", expiresAt: null },
+        { scope: "network:egress", target: "*", expiresAt: null },
+      ),
+    ).toBe(false);
+  });
+
   it("rejects a different target", () => {
     expect(
       isNarrowerThan(

@@ -30,14 +30,28 @@ export interface GrantShape {
 }
 
 /**
- * Scopes ordered by the power they confer. A grant may be exchanged for one at
- * the same level or lower, never higher.
+ * Scopes are only comparable within a family. Reading and writing a resource
+ * are the same kind of authority at different strengths, but reaching the
+ * network is a different kind entirely -- holding write access to a resource
+ * must never be exchangeable for the ability to make outbound connections.
  */
-const SCOPE_RANK: Record<GrantScope, number> = {
-  "resource:read": 1,
-  "network:egress": 2,
-  "resource:write": 3,
+const SCOPE_FAMILY: Record<GrantScope, string> = {
+  "resource:read": "resource",
+  "resource:write": "resource",
+  "network:egress": "network",
 };
+
+/** Strength within a family; a grant may be exchanged downward, never upward. */
+const SCOPE_STRENGTH: Record<GrantScope, number> = {
+  "resource:read": 1,
+  "resource:write": 2,
+  "network:egress": 1,
+};
+
+function scopeIsNarrower(child: GrantScope, parent: GrantScope): boolean {
+  if (SCOPE_FAMILY[child] !== SCOPE_FAMILY[parent]) return false;
+  return SCOPE_STRENGTH[child] <= SCOPE_STRENGTH[parent];
+}
 
 function targetCovers(parentTarget: string, childTarget: string): boolean {
   if (parentTarget === childTarget) return true;
@@ -63,7 +77,7 @@ function expiryWithin(parentExpiry: string | null, childExpiry: string | null): 
  * scope, target, and lifetime.
  */
 export function isNarrowerThan(child: GrantShape, parent: GrantShape): boolean {
-  if (SCOPE_RANK[child.scope] > SCOPE_RANK[parent.scope]) return false;
+  if (!scopeIsNarrower(child.scope, parent.scope)) return false;
   if (!targetCovers(parent.target, child.target)) return false;
   return expiryWithin(parent.expiresAt, child.expiresAt);
 }
