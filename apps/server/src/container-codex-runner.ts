@@ -2,13 +2,12 @@ import { execFile, spawn, type ChildProcess } from "node:child_process";
 import { createInterface } from "node:readline";
 import { promisify } from "node:util";
 import type { AppConfig } from "./config.js";
-import { buildCodexArgs, parseCodexEventLine } from "./codex-runner.js";
+import { buildCodexArgs, parseCodexEventLine, type ParsedEvents } from "./codex-runner.js";
 import { RunCancelledError } from "./errors.js";
 import { RunPolicyViolationError } from "./run-policies.js";
 import { INTERNAL_NETWORK } from "./egress-network.js";
 import type {
   AgentRunner,
-  RunUsage,
   RunnerRequest,
   RunnerResult,
 } from "./types.js";
@@ -24,13 +23,6 @@ interface ActiveContainer {
   outputExceeded: boolean;
   settled: Promise<void>;
   termination: Promise<void> | null;
-}
-
-interface ParsedEvents {
-  messages: string[];
-  threadId: string | null;
-  usage: RunUsage | null;
-  errors: string[];
 }
 
 /**
@@ -326,7 +318,7 @@ export class ContainerCodexRunner implements AgentRunner {
         throw new Error("Codex output exceeded CODEX_MAX_OUTPUT_BYTES");
       }
       if (exitCode !== 0) {
-        const detail = parsed.errors.at(-1) ?? stderr.trim() ?? "No error detail";
+        const detail = parsed.errors.at(-1) || stderr.trim() || "No error detail";
         throw new Error(
           this.config.containerEngine +
             " Runtime exited with code " +

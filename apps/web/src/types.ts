@@ -53,6 +53,8 @@ export interface AgentRun {
     outputTokens?: number;
     costUsd?: number | null;
   } | null;
+  startedAt: string | null;
+  completedAt: string | null;
   createdAt: string;
 }
 
@@ -73,6 +75,7 @@ export type RunEventType =
   | "step.approval_requested"
   | "step.approval_granted"
   | "step.approval_denied"
+  | "step.risk_observed"
   | "policy.decision"
   | "grant.created"
   | "grant.revoked"

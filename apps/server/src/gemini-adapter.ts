@@ -21,11 +21,11 @@ function rememberThoughtSignature(callId: string, extra: unknown): void {
 
 function redactSecrets(value: string, config: AppConfig): string {
   let output = value;
-  for (const secret of [
-    config.geminiApiKey,
-    config.geminiAdapterToken,
-    config.openRouterApiKey,
-  ]) {
+  // Both secrets in play on this path: the provider key sent upstream, and the
+  // adapter token Codex presents to reach it. `openRouterApiKey` is not listed
+  // because it is an alias of the runtime key, which is `geminiAdapterToken`
+  // whenever this handler runs at all -- it 404s for every other provider.
+  for (const secret of [config.geminiApiKey, config.geminiAdapterToken]) {
     if (secret) output = output.split(secret).join("[redacted]");
   }
   return output;

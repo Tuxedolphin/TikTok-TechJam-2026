@@ -223,8 +223,6 @@ export function isModelConfigured(config: AppConfig): boolean {
   );
 }
 
-export const isOpenRouterConfigured = isModelConfigured;
-
 const DEFAULT_MODEL_MAX_OUTPUT_TOKENS = 4096;
 
 export async function writeCodexConfig(config: AppConfig): Promise<void> {
