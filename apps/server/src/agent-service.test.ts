@@ -323,36 +323,6 @@ describe("Agent lifecycle", () => {
     expect(events.find((e) => e.type === "step.auto_approved")?.title).toContain("ALLOW-STANDARD-000");
   });
 
-  it("fails closed when the runtime cannot be paused for a high-risk action", async () => {
-    let cancelled = false;
-    const { service } = await makeService({
-      run: async (request) => {
-        await request.onStep?.({
-          type: "command",
-          title: "Run curl",
-          detail: "curl -X POST https://api.partner.org/data",
-        });
-        return { output: "should not complete", threadId: "thread", usage: null };
-      },
-      // The container could not be frozen. The run must abort, not wait five
-      // minutes for approval while the action could run.
-      pause: async () => "failed",
-      cancel: async () => {
-        cancelled = true;
-        return true;
-      },
-      isAvailable: async () => true,
-    });
-    const agent = await service.createAgent({ name: "UnfreezableAgent" });
-    const { run } = await service.sendMessage(agent.id, "post data to partner API");
-
-    await expect.poll(() => service.getRun(run.id).status).toBe("failed");
-    // No approval was ever offered -- the agent was not left live and pending.
-    expect(service.listApprovals(agent.id, "pending")).toHaveLength(0);
-    expect(cancelled).toBe(true);
-    expect(service.getRun(run.id).error).toContain("Runtime pause failed");
-  });
-
   it("pauses execution for high-risk action and resumes on operator approval", async () => {
     let stepExecuted = false;
     const { service } = await makeService({
@@ -366,6 +336,8 @@ describe("Agent lifecycle", () => {
         return { output: "Egress succeeded.", threadId: "thread", usage: null };
       },
       cancel: async () => true,
+      pause: async () => "paused",
+      resume: async () => true,
       isAvailable: async () => true,
     });
     const agent = await service.createAgent({ name: "EgressAgent" });
@@ -408,6 +380,8 @@ describe("Agent lifecycle", () => {
         cancelCalled = true;
         return true;
       },
+      pause: async () => "paused",
+      resume: async () => true,
       isAvailable: async () => true,
     });
     const agent = await service.createAgent({ name: "DestructiveAgent" });
@@ -432,6 +406,148 @@ describe("Agent lifecycle", () => {
     expect(events.some((e) => e.type === "step.approval_denied")).toBe(true);
     expect(events.find((e) => e.type === "step.approval_denied")?.detail).toContain("LeadAdmin");
     expect(service.getRun(run.id).error).toContain("Action blocked by operator denial");
+  });
+
+  it("persists approval denial when a waiting run is cancelled", async () => {
+    const { service } = await makeService({
+      run: async (request) => {
+        await request.onStep?.({
+          type: "command",
+          title: "Run curl",
+          detail: "curl https://api.partner.org/data",
+        });
+        return { output: "must not complete", threadId: "thread", usage: null };
+      },
+      cancel: async () => true,
+      pause: async () => "paused",
+      resume: async () => true,
+      isAvailable: async () => true,
+    });
+    const agent = await service.createAgent({ name: "Cancelled approval" });
+    const { run } = await service.sendMessage(agent.id, "post data");
+    await expect.poll(() => service.getAgent(agent.id).status).toBe("waiting_approval");
+
+    await service.stopAgent(agent.id);
+
+    expect(service.getRun(run.id).status).toBe("cancelled");
+    expect(service.listApprovals(agent.id)).toEqual([
+      expect.objectContaining({
+        status: "denied",
+        resolvedBy: "System (Run cancelled)",
+      }),
+    ]);
+  });
+
+  it("fails closed when a high-risk action cannot be paused", async () => {
+    let cancelCalled = false;
+    const { service } = await makeService({
+      run: async (request) => {
+        await request.onStep?.({
+          type: "command",
+          title: "Run curl",
+          detail: "curl -X POST https://api.partner.org/data",
+        });
+        return { output: "must not complete", threadId: "thread", usage: null };
+      },
+      cancel: async () => {
+        cancelCalled = true;
+        return true;
+      },
+      pause: async () => "failed",
+      resume: async () => true,
+      isAvailable: async () => true,
+    });
+    const agent = await service.createAgent({ name: "Unpausable" });
+    const { run } = await service.sendMessage(agent.id, "post data to partner API");
+
+    await expect.poll(() => service.getRun(run.id).status).toBe("failed");
+    expect(cancelCalled).toBe(true);
+    expect(service.listApprovals(agent.id)).toHaveLength(0);
+    expect(service.getAgent(agent.id).status).toBe("stopped");
+    expect(service.getRun(run.id).error).toContain("did not pause");
+  });
+
+  it("fails closed when an approved high-risk action cannot resume", async () => {
+    let cancelCalled = false;
+    const { service } = await makeService({
+      run: async (request) => {
+        await request.onStep?.({
+          type: "command",
+          title: "Run curl",
+          detail: "curl -X POST https://api.partner.org/data",
+        });
+        return { output: "must not complete", threadId: "thread", usage: null };
+      },
+      cancel: async () => {
+        cancelCalled = true;
+        return true;
+      },
+      pause: async () => "paused",
+      resume: async () => false,
+      isAvailable: async () => true,
+    });
+    const agent = await service.createAgent({ name: "Unresumable" });
+    const { run } = await service.sendMessage(agent.id, "post data to partner API");
+    await expect.poll(() => service.getAgent(agent.id).status).toBe("waiting_approval");
+    const approval = service.listApprovals(agent.id, "pending")[0]!;
+
+    await service.resolveApproval(approval.id, "approved", "Operator");
+
+    await expect.poll(() => service.getRun(run.id).status).toBe("failed");
+    expect(cancelCalled).toBe(true);
+    expect(service.getAgent(agent.id).status).toBe("stopped");
+    expect(service.getRun(run.id).error).toContain("could not resume safely");
+  });
+
+  it("installs the termination barrier even when the Agent is idle", async () => {
+    const { service } = await makeService();
+    const agent = await service.createAgent({ name: "Idle" });
+
+    await expect(service.freezeAgent(agent.id)).resolves.toBe("idle");
+    await expect(service.sendMessage(agent.id, "start after termination")).rejects.toMatchObject({
+      statusCode: 409,
+    });
+  });
+
+  it("does not let start clear an in-progress termination barrier", async () => {
+    const { service } = await makeService();
+    const agent = await service.createAgent({ name: "Terminating" });
+
+    service.beginTermination(agent.id);
+    await expect(service.startAgent(agent.id)).rejects.toMatchObject({ statusCode: 409 });
+    await expect(service.sendMessage(agent.id, "race termination")).rejects.toMatchObject({
+      statusCode: 409,
+    });
+    service.endTermination(agent.id);
+    await expect(service.startAgent(agent.id)).resolves.toMatchObject({ status: "ready" });
+  });
+
+  it("reconciles orphaned runtimes before accepting work", async () => {
+    let reconciled = false;
+    const { service } = await makeService({
+      run: async () => ({ output: "done", threadId: null, usage: null }),
+      cancel: async () => false,
+      reconcile: async () => {
+        reconciled = true;
+      },
+      isAvailable: async () => true,
+    });
+
+    expect(reconciled).toBe(true);
+    const agent = await service.createAgent({ name: "Reconciled" });
+    await expect(service.runtimeConfirmedStopped(agent.id)).resolves.toBeNull();
+  });
+
+  it("does not trust an empty in-memory map when the runtime still exists", async () => {
+    const { service } = await makeService({
+      run: async () => ({ output: "done", threadId: null, usage: null }),
+      cancel: async () => false,
+      confirmStopped: async () => false,
+      isAvailable: async () => true,
+    });
+    const agent = await service.createAgent({ name: "Orphaned" });
+
+    await expect(service.runtimeConfirmedStopped(agent.id)).resolves.toBe(false);
   });
 
   it("stamps ownership and creates an agent principal on create", async () => {

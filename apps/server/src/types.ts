@@ -217,6 +217,10 @@ export interface AgentRunner {
   pause?(agentId: string): Promise<"paused" | "idle" | "failed">;
   resume?(agentId: string): Promise<boolean>;
   isRunning?(agentId: string): boolean;
+  /** Remove runtime processes/containers left behind by a prior server process. */
+  reconcile?(): Promise<void>;
+  /** Tear down all runtimes owned by this server during graceful shutdown. */
+  terminateAll?(): Promise<void> | void;
   /** Independent engine check: is this agent's runtime confirmed gone? null = cannot confirm. */
   confirmStopped?(agentId: string): Promise<boolean | null>;
   isAvailable(): Promise<boolean>;

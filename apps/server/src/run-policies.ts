@@ -1,4 +1,5 @@
 import type { AppConfig } from "./config.js";
+import { isNarrowerThan } from "./authority.js";
 import { HttpError } from "./errors.js";
 import type {
   ActionRiskLevel,
@@ -10,7 +11,14 @@ import type {
   RunUsage,
 } from "./types.js";
 
-export type RunPolicyKind = "canary" | "budget" | "approval" | "authz" | "egress" | "anomaly";
+export type RunPolicyKind =
+  | "canary"
+  | "budget"
+  | "approval"
+  | "containment"
+  | "authz"
+  | "egress"
+  | "anomaly";
 
 export interface ActionRiskAssessment {
   riskLevel: ActionRiskLevel;
@@ -228,6 +236,34 @@ export function summarizeRunPolicies(config: AppConfig): Record<string, unknown>
   };
 }
 
+export function isGrantChainLive(
+  grant: Grant,
+  grants: Grant[],
+  nowIso: string,
+  visiting = new Set<string>(),
+): boolean {
+  if (visiting.has(grant.id)) return false;
+  if (grant.revokedAt !== null || (grant.expiresAt !== null && grant.expiresAt <= nowIso)) {
+    return false;
+  }
+
+  const parentGrantId = grant.parentGrantId ?? null;
+  if (parentGrantId === null) return true;
+
+  const parent = grants.find((candidate) => candidate.id === parentGrantId);
+  if (!parent || parent.principalId !== grant.grantedBy) return false;
+  if (!isNarrowerThan(
+    { scope: grant.scope, target: grant.target, expiresAt: grant.expiresAt },
+    { scope: parent.scope, target: parent.target, expiresAt: parent.expiresAt },
+  )) {
+    return false;
+  }
+
+  const nextVisiting = new Set(visiting);
+  nextVisiting.add(grant.id);
+  return isGrantChainLive(parent, grants, nowIso, nextVisiting);
+}
+
 function activeGrant(
   grants: Grant[], principalId: string, scope: GrantScope, target: string, nowIso: string,
 ): { grant: Grant | null; ruleId: string } {
@@ -236,9 +272,7 @@ function activeGrant(
     (g) => g.principalId === principalId && g.scope === scope && g.target === target,
   );
   if (matching.length === 0) return { grant: null, ruleId: noGrantRuleId };
-  const live = matching.find(
-    (g) => g.revokedAt === null && (g.expiresAt === null || g.expiresAt > nowIso),
-  );
+  const live = matching.find((g) => isGrantChainLive(g, grants, nowIso));
   if (live) return { grant: live, ruleId: noGrantRuleId };
   // Every matching grant is spent: say which way, since "you revoked this" and
   // "this timed out" mean different things to whoever reads the timeline.

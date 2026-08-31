@@ -76,7 +76,9 @@ const shutdown = async (signal: string) => {
   // Agent processes run in their own process group so a freeze reaches their
   // descendants; that also means they do not die with this server unless we
   // say so. Take them down explicitly rather than leaking orphans.
-  (runner as { terminateAll?: () => void }).terminateAll?.();
+  await Promise.resolve(runner.terminateAll?.()).catch((error: unknown) => {
+    app.log.error({ error }, "Runtime teardown failed during shutdown");
+  });
   await egressNetwork?.shutdown();
   process.exit(0);
 };

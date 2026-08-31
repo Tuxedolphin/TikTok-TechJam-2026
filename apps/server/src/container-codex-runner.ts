@@ -131,6 +131,8 @@ export function buildContainerRunArgs(
     String(config.containerPidsLimit),
     "--user",
     config.containerUser,
+    // Secret values stay in the engine child's environment; passing only the
+    // names prevents them from appearing in ps or /proc/<pid>/cmdline.
     "--env",
     "OPENROUTER_API_KEY",
     "--env",
@@ -183,12 +185,57 @@ export class ContainerCodexRunner implements AgentRunner {
 
   async cancel(agentId: string): Promise<boolean> {
     const active = this.active.get(agentId);
-    if (!active) return false;
+    if (!active) {
+      const orphaned = await this.runtimeContainerIds(agentId);
+      if (orphaned.length === 0) return false;
+      await this.removeContainerIds(orphaned);
+      return true;
+    }
 
     active.cancelled = true;
     await this.removeContainer(active);
     await active.settled;
     return true;
+  }
+
+  /** Remove labeled runtimes left behind by a previous server process. */
+  async reconcile(): Promise<void> {
+    const orphaned = await this.runtimeContainerIds();
+    if (orphaned.length > 0) await this.removeContainerIds(orphaned);
+  }
+
+  /** Tear down every active container before the server/proxy exits. */
+  async terminateAll(): Promise<void> {
+    const active = [...this.active.values()];
+    for (const runtime of active) runtime.cancelled = true;
+    const removals = await Promise.allSettled(active.map((runtime) => this.removeContainer(runtime)));
+    await Promise.allSettled(active.map((runtime) => runtime.settled));
+    const failure = removals.find((result) => result.status === "rejected");
+    if (failure?.status === "rejected") throw failure.reason;
+  }
+
+  private async runtimeContainerIds(agentId?: string): Promise<string[]> {
+    const filters = [
+      "--filter",
+      "label=io.codejam.launchpad=agent-runtime",
+      "--filter",
+      `label=io.codejam.instance-id=${this.config.runtimeInstanceId}`,
+      ...(agentId ? ["--filter", `label=io.codejam.agent-id=${agentId}`] : []),
+    ];
+    const { stdout } = await execFileAsync(
+      this.config.containerEngine,
+      ["ps", "-aq", ...filters],
+      { timeout: 8_000, env: this.childEnvironment() },
+    );
+    return stdout.toString().split(/\s+/).filter(Boolean);
+  }
+
+  private async removeContainerIds(ids: string[]): Promise<void> {
+    await execFileAsync(
+      this.config.containerEngine,
+      ["rm", "--force", ...ids],
+      { timeout: 8_000, env: this.childEnvironment() },
+    );
   }
 
   async pause(agentId: string): Promise<"paused" | "idle" | "failed"> {
@@ -219,14 +266,8 @@ export class ContainerCodexRunner implements AgentRunner {
    * is reported as "unconfirmed" (null) rather than a false all-clear.
    */
   async confirmStopped(agentId: string): Promise<boolean | null> {
-    const name = containerName(agentId, this.config.runtimeInstanceId);
     try {
-      const { stdout } = await execFileAsync(
-        this.config.containerEngine,
-        ["ps", "-a", "--filter", `name=^${name}$`, "--format", "{{.Names}}"],
-        { timeout: 5_000, env: this.childEnvironment() },
-      );
-      return stdout.trim() === "";
+      return (await this.runtimeContainerIds(agentId)).length === 0;
     } catch {
       return null;
     }
@@ -243,12 +284,7 @@ export class ContainerCodexRunner implements AgentRunner {
       );
       return true;
     } catch {
-      try {
-        active.child.kill("SIGCONT");
-        return true;
-      } catch {
-        return false;
-      }
+      return false;
     }
   }
 
@@ -260,10 +296,15 @@ export class ContainerCodexRunner implements AgentRunner {
         { timeout: 8_000, env: this.childEnvironment() },
       )
         .then(() => undefined)
-        .catch(() => {
+        .catch((error: unknown) => {
           active.child.kill("SIGTERM");
           const forceKill = setTimeout(() => active.child.kill("SIGKILL"), 3_000);
           forceKill.unref();
+          throw new Error(
+            `Failed to remove Runtime container ${active.containerName}: ${
+              error instanceof Error ? error.message : String(error)
+            }`,
+          );
         });
     }
     return active.termination;
@@ -273,6 +314,12 @@ export class ContainerCodexRunner implements AgentRunner {
     if (this.active.has(request.agentId)) {
       throw new Error("Agent already has an active Runtime container");
     }
+    // A prior timeout/output-limit cleanup may have failed after the engine
+    // child exited. Reconcile this agent again before reusing its deterministic
+    // container name; if removal still fails, reject instead of spawning into
+    // a stale runtime or surfacing a misleading name-conflict later.
+    const orphaned = await this.runtimeContainerIds(request.agentId);
+    if (orphaned.length > 0) await this.removeContainerIds(orphaned);
 
     const child = spawn(
       this.config.containerEngine,
@@ -328,7 +375,7 @@ export class ContainerCodexRunner implements AgentRunner {
           totalBytes += Buffer.byteLength(line, "utf8") + 1;
           if (totalBytes > this.config.codexMaxOutputBytes) {
             active.outputExceeded = true;
-            void this.removeContainer(active);
+            void this.removeContainer(active).catch(() => undefined);
             break;
           }
           if (line.trim()) {
@@ -338,7 +385,7 @@ export class ContainerCodexRunner implements AgentRunner {
       } catch (err) {
         stdoutError = err instanceof Error ? err : new Error(String(err));
         active.cancelled = true;
-        void this.removeContainer(active);
+        void this.removeContainer(active).catch(() => undefined);
       }
     })();
 
@@ -350,7 +397,7 @@ export class ContainerCodexRunner implements AgentRunner {
     const timeout = setTimeout(() => {
       active.timedOut = true;
       active.budgetExceeded = isBudgetTimeout;
-      void this.removeContainer(active);
+      void this.removeContainer(active).catch(() => undefined);
     }, effectiveTimeoutMs);
     timeout.unref();
 

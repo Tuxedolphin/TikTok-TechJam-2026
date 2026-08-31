@@ -169,6 +169,34 @@ describe("egress proxy drain", () => {
     await pending;
   });
 
+  it("cancels authorization that was already in flight when draining", async () => {
+    let releaseAuthorization!: () => void;
+    const authorizationGate = new Promise<void>((resolve) => {
+      releaseAuthorization = resolve;
+    });
+    let authorizationStarted!: () => void;
+    const started = new Promise<void>((resolve) => {
+      authorizationStarted = resolve;
+    });
+    const proxy = createEgressProxy({
+      allowPrivateAddresses: true,
+      authorize: async () => {
+        authorizationStarted();
+        await authorizationGate;
+        return allow;
+      },
+    });
+    const proxyPort = await listen(proxy);
+    const outcome = proxyFetch(proxyPort, "http://127.0.0.1:9/", "agent-1")
+      .then((result) => result.status)
+      .catch(() => -1);
+
+    await started;
+    expect(proxy.closePrincipalConnections("agent-1")).toBeGreaterThanOrEqual(1);
+    releaseAuthorization();
+    await expect(outcome).resolves.not.toBe(200);
+  });
+
   it("gates the drain control endpoint on the control token", async () => {
     const proxy = createEgressProxy({ authorize: async () => allow, controlToken: "s3cr3t" });
     const proxyPort = await listen(proxy);

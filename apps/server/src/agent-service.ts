@@ -42,6 +42,8 @@ export class AgentService {
   private readonly activeExecutions = new Map<string, Promise<void>>();
   private readonly cancellationRequests = new Set<string>();
   private readonly terminationBarriers = new Set<string>();
+  private readonly terminationsInProgress = new Set<string>();
+  private readonly approvalSetups = new Map<string, Promise<void>>();
   private readonly pendingApprovals = new Map<
     string,
     {
@@ -61,6 +63,7 @@ export class AgentService {
   ) {}
 
   async initialize(): Promise<void> {
+    await this.runner.reconcile?.();
     await this.store.initialize();
     await this.workspaces.initialize();
     await this.store.mutate((database) => {
@@ -212,18 +215,28 @@ export class AgentService {
    * termination believed the agent idle. Admission now checks this set.
    */
   beginTermination(agentId: string): void {
+    if (this.terminationsInProgress.has(agentId)) {
+      throw new HttpError(409, "This Agent is already being terminated");
+    }
+    this.terminationsInProgress.add(agentId);
     this.terminationBarriers.add(agentId);
+  }
+
+  endTermination(agentId: string): void {
+    this.terminationsInProgress.delete(agentId);
   }
 
   async freezeAgent(
     agentId: string,
   ): Promise<"paused" | "idle" | "blocked" | "failed" | "unsupported"> {
     this.getAgent(agentId);
+    // Install the barrier before checking active state: an admitted execution
+    // may still be between queue persistence and active-map registration.
+    this.terminationBarriers.add(agentId);
     if (!this.activeExecutions.has(agentId)) return "idle";
 
     // The barrier closes the race where termination arrives after a run is
     // queued but before the runner process or container has been created.
-    this.terminationBarriers.add(agentId);
     // `pause` is optional on AgentRunner, so a live run under a runner with no
     // freeze control is a different fact from a freeze that was attempted and
     // failed. Both refuse containment; the receipt should not report the
@@ -367,10 +380,17 @@ export class AgentService {
   }
 
   async startAgent(id: string): Promise<Agent> {
-    // Starting a quarantined agent is the operator clearing the incident, so
-    // its blocked-attempt history goes with it; otherwise the stale count sits
-    // at the threshold and the next single denial re-quarantines it at once.
+    // Starting a quarantined agent is the operator clearing the incident, but
+    // never while termination is still producing and persisting its evidence.
+    // Otherwise start could clear the admission barrier after verification and
+    // launch work behind a receipt that already claims containment.
+    if (this.terminationsInProgress.has(id)) {
+      throw new HttpError(409, "This Agent is being terminated");
+    }
     const agent = await this.setStatus(id, "ready");
+    if (this.terminationsInProgress.has(id)) {
+      throw new HttpError(409, "This Agent is being terminated");
+    }
     this.terminationBarriers.delete(id);
     this.onAgentStarted?.(id);
     return agent;
@@ -542,7 +562,7 @@ export class AgentService {
       if (!storedAgent) {
         throw new HttpError(404, "Agent not found");
       }
-      if (storedAgent.status === "stopped") {
+      if (storedAgent.status === "stopped" || storedAgent.authorityBlocked) {
         throw new HttpError(409, "Start the Agent before sending a message");
       }
       if (storedAgent.status === "busy") {
@@ -713,52 +733,98 @@ export class AgentService {
           } catch {
             pauseResult = "failed";
           }
-          if (pauseResult === "failed") {
+          if (pauseResult !== "paused") {
             stepViolation = new RunPolicyViolationError(
-              "approval",
+              "containment",
               409,
-              `Runtime pause failed; the high-risk action was cancelled before approval (${risk.ruleId}).`,
+              `Human approval could not be enforced because the Runtime did not pause (${pauseResult ?? "unsupported"}).`,
             );
             await this.runner.cancel(agentAtStart.id).catch(() => false);
             throw stepViolation;
           }
 
-          await this.store.mutate((database) => {
-            database.approvals.push(approvalReq);
-            const agent = database.agents.find((item) => item.id === agentAtStart.id);
-            if (agent) {
-              agent.status = "waiting_approval";
-              agent.updatedAt = timestamp;
-            }
-            this.appendRunEvent(database, {
-              runId: run.id,
-              agentId: agentAtStart.id,
-              type: "step.approval_requested",
-              severity: "warning",
-              title: `High-Risk Action Intercepted (${risk.ruleId})`,
-              detail: `Human approval required: ${this.redact(step.detail)}. Policy: ${risk.reason}`,
-              createdAt: timestamp,
-            });
-          });
+          if (this.cancellationRequests.has(agentAtStart.id)) {
+            await this.runner.cancel(agentAtStart.id).catch(() => false);
+            throw new RunCancelledError();
+          }
 
-          const approved = await new Promise<boolean>((resolve) => {
-            const timeout = setTimeout(() => {
-              void this.resolveApproval(approvalId, "denied", "System (Approval timed out)");
-            }, 300_000);
-            this.pendingApprovals.set(approvalId, { resolve, timeout, request: approvalReq });
-          });
+          let approvedPromise!: Promise<boolean>;
+          const setup = (async () => {
+            approvedPromise = new Promise<boolean>((resolve) => {
+              const timeout = setTimeout(() => {
+                void this.resolveApproval(approvalId, "denied", "System (Approval timed out)");
+              }, 300_000);
+              this.pendingApprovals.set(approvalId, { resolve, timeout, request: approvalReq });
+            });
+            try {
+              await this.store.mutate((database) => {
+                database.approvals.push(approvalReq);
+                const agent = database.agents.find((item) => item.id === agentAtStart.id);
+                if (agent) {
+                  agent.status = "waiting_approval";
+                  agent.updatedAt = timestamp;
+                }
+                this.appendRunEvent(database, {
+                  runId: run.id,
+                  agentId: agentAtStart.id,
+                  type: "step.approval_requested",
+                  severity: "warning",
+                  title: `High-Risk Action Intercepted (${risk.ruleId})`,
+                  detail: `Human approval required: ${this.redact(step.detail)}. Policy: ${risk.reason}`,
+                  createdAt: timestamp,
+                });
+              });
+            } catch (error) {
+              const pending = this.pendingApprovals.get(approvalId);
+              if (pending) {
+                clearTimeout(pending.timeout);
+                this.pendingApprovals.delete(approvalId);
+                pending.resolve(false);
+              }
+              throw error;
+            }
+          })();
+          this.approvalSetups.set(agentAtStart.id, setup);
+          try {
+            await setup;
+          } finally {
+            if (this.approvalSetups.get(agentAtStart.id) === setup) {
+              this.approvalSetups.delete(agentAtStart.id);
+            }
+          }
+
+          const approved = await approvedPromise;
 
           if (!approved) {
+            if (this.cancellationRequests.has(agentAtStart.id)) {
+              throw new RunCancelledError();
+            }
             stepViolation = new RunPolicyViolationError(
               "approval",
               403,
               `Action blocked by operator denial (${risk.ruleId}): ${step.detail}`,
             );
-            void this.runner.cancel(agentAtStart.id);
+            await this.runner.cancel(agentAtStart.id).catch(() => false);
             throw stepViolation;
           }
 
-          await this.runner.resume?.(agentAtStart.id);
+          let resumed = false;
+          try {
+            resumed = this.runner.resume
+              ? await this.runner.resume(agentAtStart.id)
+              : false;
+          } catch {
+            resumed = false;
+          }
+          if (!resumed) {
+            stepViolation = new RunPolicyViolationError(
+              "containment",
+              409,
+              "The approved Runtime could not resume safely.",
+            );
+            await this.runner.cancel(agentAtStart.id).catch(() => false);
+            throw stepViolation;
+          }
         } else if (step.type === "command" || step.type === "tool_call") {
           await this.store.mutate((database) => {
             this.appendRunEvent(database, {
@@ -943,6 +1009,9 @@ export class AgentService {
       if (!agent) {
         throw new HttpError(404, "Agent not found");
       }
+      if (status === "ready" && this.terminationsInProgress.has(id)) {
+        throw new HttpError(409, "This Agent is being terminated");
+      }
       if (status === "ready" && agent.status === "busy") {
         throw new HttpError(409, "Stop the active run before starting this Agent");
       }
@@ -958,12 +1027,12 @@ export class AgentService {
 
   private async cancelExecution(agentId: string): Promise<void> {
     this.cancellationRequests.add(agentId);
-    for (const [approvalId, pending] of this.pendingApprovals.entries()) {
-      if (pending.request.agentId === agentId) {
-        clearTimeout(pending.timeout);
-        this.pendingApprovals.delete(approvalId);
-        pending.resolve(false);
-      }
+    await this.approvalSetups.get(agentId)?.catch(() => undefined);
+    const pendingIds = [...this.pendingApprovals.entries()]
+      .filter(([, pending]) => pending.request.agentId === agentId)
+      .map(([approvalId]) => approvalId);
+    for (const approvalId of pendingIds) {
+      await this.resolveApproval(approvalId, "denied", "System (Run cancelled)");
     }
     try {
       await this.runner.cancel(agentId);

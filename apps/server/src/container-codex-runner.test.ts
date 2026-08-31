@@ -167,8 +167,10 @@ fi
     const records = (await readFile(recordPath, "utf8")).trim().split("\n");
     expect(records[0]).toMatch(/^version\|<unset>\|<unset>$/);
     expect(records[1]).toMatch(/^image\|<unset>\|<unset>$/);
-    expect(records[2]).toBe(`run|${config.geminiAdapterToken}|${config.geminiAdapterToken}`);
-    expect(records[2]).not.toContain(config.geminiApiKey);
+    expect(records[2]).toMatch(/^ps\|<unset>\|<unset>$/);
+    const runRecord = records.find((record) => record.startsWith("run|"));
+    expect(runRecord).toBe(`run|${config.geminiAdapterToken}|${config.geminiAdapterToken}`);
+    expect(runRecord).not.toContain(config.geminiApiKey);
   });
 
   it("handles empty credentials without synthesizing secret-bearing argv values", () => {
@@ -193,6 +195,34 @@ fi
     expect(args).toContain("OPENROUTER_API_KEY");
     expect(args).toContain("OPENAI_API_KEY");
   });
+
+  it.skipIf(process.platform === "win32")(
+    "propagates an orphaned container removal failure",
+    async () => {
+      const root = await mkdtemp(path.join(tmpdir(), "launchpad-engine-test-"));
+      temporaryDirectories.push(root);
+      const engine = path.join(root, "engine.sh");
+      await writeFile(
+        engine,
+        [
+          "#!/bin/sh",
+          "if [ \"$1\" = ps ]; then echo orphan-container; exit 0; fi",
+          "if [ \"$1\" = rm ]; then echo removal-failed >&2; exit 1; fi",
+          "exit 0",
+          "",
+        ].join("\n"),
+      );
+      await chmod(engine, 0o700);
+      const config = loadConfig({
+        NODE_ENV: "test",
+        RUNTIME_PROVIDER: "container",
+        CONTAINER_ENGINE: engine,
+        RUNTIME_INSTANCE_ID: "test-instance",
+      });
+      const runner = new ContainerCodexRunner(config);
+      await expect(runner.cancel("agent-id")).rejects.toThrow("removal-failed");
+    },
+  );
 
   it("resumes a thread inside the mounted Runtime workspace", () => {
     const config = loadConfig({

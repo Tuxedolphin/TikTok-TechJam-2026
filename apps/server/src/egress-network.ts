@@ -49,7 +49,7 @@ export class EgressNetworkManager {
     }
   }
 
-  private async containerRunning(name: string): Promise<boolean> {
+  private async containerRunning(name: string): Promise<boolean | null> {
     try {
       const status = await this.engine([
         "inspect",
@@ -59,7 +59,7 @@ export class EgressNetworkManager {
       ]);
       return status === "true";
     } catch {
-      return false;
+      return null;
     }
   }
 
@@ -78,7 +78,7 @@ export class EgressNetworkManager {
   }
 
   private async provision(): Promise<void> {
-    if (this.readyForCurrentProcess && (await this.containerRunning(PROXY_CONTAINER))) return;
+    if (this.readyForCurrentProcess && (await this.containerRunning(PROXY_CONTAINER)) === true) return;
 
     if (!(await this.networkExists(INTERNAL_NETWORK))) {
       await this.engine(["network", "create", "--internal", INTERNAL_NETWORK]);
@@ -148,8 +148,13 @@ export class EgressNetworkManager {
         // The container may not be emitting yet; the running check below is
         // what distinguishes "still starting" from "died on startup".
       }
-      if (!(await this.containerRunning(PROXY_CONTAINER))) {
-        throw new Error(`Egress proxy exited before listening: ${logs.trim().slice(-400)}`);
+      const running = await this.containerRunning(PROXY_CONTAINER);
+      if (running !== true) {
+        throw new Error(
+          running === false
+            ? `Egress proxy exited before listening: ${logs.trim().slice(-400)}`
+            : "Could not confirm whether the egress proxy is running.",
+        );
       }
       await new Promise((resolve) => setTimeout(resolve, 200));
     }
@@ -201,13 +206,13 @@ export class EgressNetworkManager {
         "--network",
         INTERNAL_NETWORK,
         "--env",
-        `http_proxy=${proxy}`,
+        "http_proxy",
         "--env",
-        `https_proxy=${proxy}`,
+        "https_proxy",
         "--env",
-        `HTTP_PROXY=${proxy}`,
+        "HTTP_PROXY",
         "--env",
-        `HTTPS_PROXY=${proxy}`,
+        "HTTPS_PROXY",
         this.config.egressProbeImage,
         "-s",
         "-o",
@@ -217,7 +222,12 @@ export class EgressNetworkManager {
         "--max-time",
         "12",
         url,
-      ]);
+      ], {
+        http_proxy: proxy,
+        https_proxy: proxy,
+        HTTP_PROXY: proxy,
+        HTTPS_PROXY: proxy,
+      });
       const httpStatus = Number(stdout.trim());
       if (!Number.isInteger(httpStatus) || httpStatus === 0) {
         return {
@@ -266,7 +276,9 @@ export class EgressNetworkManager {
    * "nothing was flowing".
    */
   async drainPrincipal(agentPrincipalId: string): Promise<number | null> {
-    if (!(await this.containerRunning(PROXY_CONTAINER))) return 0;
+    const running = await this.containerRunning(PROXY_CONTAINER);
+    if (running === false) return 0;
+    if (running === null) return null;
     const controlUrl = `http://${PROXY_CONTAINER}:${this.config.egressProxyPort}/__egress_control/drain`;
     try {
       // Run a shell inside the container so it expands the token from its own

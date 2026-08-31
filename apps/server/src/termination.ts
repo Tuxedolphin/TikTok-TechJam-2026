@@ -1,10 +1,23 @@
+import { constants } from "node:fs";
 import {
   createHash,
+  createPrivateKey,
+  createPublicKey,
   generateKeyPairSync,
+  randomUUID,
   sign as signBytes,
   verify as verifyBytes,
 } from "node:crypto";
-import { chmod, mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import {
+  chmod,
+  lstat,
+  mkdir,
+  open,
+  rename,
+  unlink,
+  writeFile,
+  type FileHandle,
+} from "node:fs/promises";
 import path from "node:path";
 
 export type TerminationStepName = "freeze" | "revoke" | "kill" | "verify";
@@ -51,97 +64,194 @@ export function receiptKeyId(publicKeyPem: string): string {
   return createHash("sha256").update(publicKeyPem).digest("hex").slice(0, 16);
 }
 
-/** Signs a probe and verifies it, proving the two PEMs are a matching pair. */
-function keyPairMatches(privateKeyPem: string, publicKeyPem: string): boolean {
+type KeyPairState = "absent" | "partial" | "complete";
+
+const INITIALIZATION_RETRY_MS = 10;
+const INITIALIZATION_TIMEOUT_MS = 10_000;
+
+function errorCode(error: unknown): string | undefined {
+  return (error as NodeJS.ErrnoException).code;
+}
+
+async function pathExists(filePath: string): Promise<boolean> {
   try {
-    const probe = Buffer.from("receipt-key-selfcheck");
-    return verifyBytes(null, probe, publicKeyPem, signBytes(null, probe, privateKeyPem));
-  } catch {
-    return false;
+    await lstat(filePath);
+    return true;
+  } catch (error) {
+    if (errorCode(error) === "ENOENT") return false;
+    throw error;
+  }
+}
+
+async function keyPairState(privateKeyPath: string, publicKeyPath: string): Promise<KeyPairState> {
+  const [privateKeyExists, publicKeyExists] = await Promise.all([
+    pathExists(privateKeyPath),
+    pathExists(publicKeyPath),
+  ]);
+  if (!privateKeyExists && !publicKeyExists) return "absent";
+  if (!privateKeyExists || !publicKeyExists) return "partial";
+  return "complete";
+}
+
+async function readKeyFile(filePath: string, privateKey: boolean): Promise<string> {
+  const noFollow = constants.O_NOFOLLOW ?? 0;
+  const file = await open(filePath, constants.O_RDONLY | noFollow);
+  try {
+    const stats = await file.stat();
+    if (!stats.isFile()) throw new Error(`Receipt signing key is not a regular file: ${filePath}`);
+
+    if (privateKey) {
+      const getuid = process.getuid;
+      if (getuid && stats.uid !== getuid()) {
+        throw new Error("Receipt signing private key is not owned by the current user.");
+      }
+      const mode = stats.mode & 0o7777;
+      if ((mode & 0o077) !== 0 || (mode & 0o7000) !== 0) {
+        await file.chmod(0o600);
+      }
+    }
+
+    return await file.readFile("utf8");
+  } finally {
+    await file.close();
+  }
+}
+
+function validateReceiptKeyPair(privateKeyPem: string, publicKeyPem: string): void {
+  try {
+    const privateKey = createPrivateKey(privateKeyPem);
+    const publicKey = createPublicKey(publicKeyPem);
+    if (privateKey.asymmetricKeyType !== "ed25519" || publicKey.asymmetricKeyType !== "ed25519") {
+      throw new Error("Receipt signing keys must be Ed25519 keys.");
+    }
+
+    const derivedPublicKey = createPublicKey(privateKey).export({ type: "spki", format: "der" });
+    const configuredPublicKey = publicKey.export({ type: "spki", format: "der" });
+    if (!Buffer.from(derivedPublicKey).equals(Buffer.from(configuredPublicKey))) {
+      throw new Error("Receipt signing private key does not correspond to the public key.");
+    }
+  } catch (error) {
+    if (error instanceof Error && error.message === "Receipt signing private key does not correspond to the public key.") {
+      throw error;
+    }
+    throw new Error("Receipt signing key pair is invalid or mismatched.", { cause: error });
+  }
+}
+
+async function loadExistingReceiptKeyPair(
+  privateKeyPath: string,
+  publicKeyPath: string,
+): Promise<ReceiptKeyPair> {
+  const [privateKeyPem, publicKeyPem] = await Promise.all([
+    readKeyFile(privateKeyPath, true),
+    readKeyFile(publicKeyPath, false),
+  ]);
+  validateReceiptKeyPair(privateKeyPem, publicKeyPem);
+  return { privateKeyPem, publicKeyPem, keyId: receiptKeyId(publicKeyPem) };
+}
+
+async function waitForInitialization(lockPath: string): Promise<void> {
+  const deadline = Date.now() + INITIALIZATION_TIMEOUT_MS;
+  while (await pathExists(lockPath)) {
+    if (Date.now() >= deadline) {
+      throw new Error("Timed out waiting for receipt signing key initialization.");
+    }
+    await new Promise((resolve) => setTimeout(resolve, INITIALIZATION_RETRY_MS));
+  }
+}
+
+async function acquireInitializationLock(lockPath: string): Promise<FileHandle> {
+  const deadline = Date.now() + INITIALIZATION_TIMEOUT_MS;
+  while (true) {
+    try {
+      return await open(lockPath, "wx", 0o600);
+    } catch (error) {
+      if (errorCode(error) !== "EEXIST") throw error;
+      if (Date.now() >= deadline) {
+        throw new Error("Timed out waiting for receipt signing key initialization.");
+      }
+      await new Promise((resolve) => setTimeout(resolve, INITIALIZATION_RETRY_MS));
+    }
+  }
+}
+
+async function removeIfPresent(filePath: string): Promise<void> {
+  try {
+    await unlink(filePath);
+  } catch (error) {
+    if (errorCode(error) !== "ENOENT") throw error;
+  }
+}
+
+async function createReceiptKeyPair(
+  privateKeyPath: string,
+  publicKeyPath: string,
+): Promise<ReceiptKeyPair> {
+  const { privateKey, publicKey } = generateKeyPairSync("ed25519");
+  const privateKeyPem = privateKey.export({ type: "pkcs8", format: "pem" }).toString();
+  const publicKeyPem = publicKey.export({ type: "spki", format: "pem" }).toString();
+  const suffix = `${process.pid}-${randomUUID()}`;
+  const privateKeyTempPath = `${privateKeyPath}.tmp-${suffix}`;
+  const publicKeyTempPath = `${publicKeyPath}.tmp-${suffix}`;
+
+  try {
+    await writeFile(privateKeyTempPath, privateKeyPem, {
+      encoding: "utf8",
+      flag: "wx",
+      mode: 0o600,
+    });
+    await chmod(privateKeyTempPath, 0o600);
+    await writeFile(publicKeyTempPath, publicKeyPem, {
+      encoding: "utf8",
+      flag: "wx",
+      mode: 0o644,
+    });
+    await rename(privateKeyTempPath, privateKeyPath);
+    await rename(publicKeyTempPath, publicKeyPath);
+    return await loadExistingReceiptKeyPair(privateKeyPath, publicKeyPath);
+  } finally {
+    await removeIfPresent(privateKeyTempPath);
+    await removeIfPresent(publicKeyTempPath);
   }
 }
 
 export async function loadOrCreateReceiptKeyPair(dataDirectory: string): Promise<ReceiptKeyPair> {
   const privateKeyPath = path.join(dataDirectory, "receipt-signing-private.pem");
   const publicKeyPath = path.join(dataDirectory, "receipt-signing-public.pem");
+  const lockPath = path.join(dataDirectory, "receipt-signing-initialization.lock");
   await mkdir(dataDirectory, { recursive: true });
 
-  // A key that signs receipts is only meaningful if the two files are a real
-  // pair and the private key is not world-readable. Validate both, and refuse
-  // to run on a mismatched or exposed key rather than signing forgeable
-  // evidence.
-  const existing = await readKeyPair(privateKeyPath, publicKeyPath);
-  if (existing) {
-    if (!keyPairMatches(existing.privateKeyPem, existing.publicKeyPem)) {
-      throw new Error(
-        "Receipt signing keys do not correspond; refusing to sign. " +
-          `Remove ${privateKeyPath} and ${publicKeyPath} to regenerate.`,
-      );
+  while (true) {
+    const state = await keyPairState(privateKeyPath, publicKeyPath);
+    if (state === "complete") {
+      return loadExistingReceiptKeyPair(privateKeyPath, publicKeyPath);
     }
-    // Repair permissions in case a restore left the private key readable.
-    await chmod(privateKeyPath, 0o600).catch(() => undefined);
-    return {
-      privateKeyPem: existing.privateKeyPem,
-      publicKeyPem: existing.publicKeyPem,
-      keyId: receiptKeyId(existing.publicKeyPem),
-    };
-  }
+    if (state === "partial") {
+      if (await pathExists(lockPath)) {
+        await waitForInitialization(lockPath);
+        continue;
+      }
+      throw new Error("Receipt signing key pair is incomplete; refusing to rotate trust.");
+    }
 
-  const { privateKey, publicKey } = generateKeyPairSync("ed25519");
-  const privateKeyPem = privateKey.export({ type: "pkcs8", format: "pem" }).toString();
-  const publicKeyPem = publicKey.export({ type: "spki", format: "pem" }).toString();
-
-  // Write to temp files then rename into place, so a concurrent or interrupted
-  // initialization can never leave a half-written or mismatched pair. The
-  // private key is created exclusively; losing that race means another process
-  // won, so fall back to reading its keys.
-  const tmpPrivate = `${privateKeyPath}.${process.pid}.tmp`;
-  const tmpPublic = `${publicKeyPath}.${process.pid}.tmp`;
-  try {
-    await writeFile(tmpPrivate, privateKeyPem, { encoding: "utf8", mode: 0o600 });
-    await writeFile(tmpPublic, publicKeyPem, { encoding: "utf8", mode: 0o644 });
-    await writeFile(privateKeyPath, privateKeyPem, { encoding: "utf8", mode: 0o600, flag: "wx" });
-    await rename(tmpPublic, publicKeyPath);
-    await rename(tmpPrivate, privateKeyPath);
-  } catch (error) {
-    await Promise.all([
-      unlinkQuietly(tmpPrivate),
-      unlinkQuietly(tmpPublic),
-    ]);
-    if ((error as NodeJS.ErrnoException).code === "EEXIST") {
-      const raced = await readKeyPair(privateKeyPath, publicKeyPath);
-      if (raced && keyPairMatches(raced.privateKeyPem, raced.publicKeyPem)) {
-        return {
-          privateKeyPem: raced.privateKeyPem,
-          publicKeyPem: raced.publicKeyPem,
-          keyId: receiptKeyId(raced.publicKeyPem),
-        };
+    const lock = await acquireInitializationLock(lockPath);
+    try {
+      const lockedState = await keyPairState(privateKeyPath, publicKeyPath);
+      if (lockedState === "complete") {
+        return loadExistingReceiptKeyPair(privateKeyPath, publicKeyPath);
+      }
+      if (lockedState === "partial") {
+        throw new Error("Receipt signing key pair is incomplete; refusing to rotate trust.");
+      }
+      return await createReceiptKeyPair(privateKeyPath, publicKeyPath);
+    } finally {
+      try {
+        await lock.close();
+      } finally {
+        await removeIfPresent(lockPath);
       }
     }
-    throw error;
   }
-  return { privateKeyPem, publicKeyPem, keyId: receiptKeyId(publicKeyPem) };
-}
-
-async function readKeyPair(
-  privateKeyPath: string,
-  publicKeyPath: string,
-): Promise<{ privateKeyPem: string; publicKeyPem: string } | null> {
-  try {
-    const [privateKeyPem, publicKeyPem] = await Promise.all([
-      readFile(privateKeyPath, "utf8"),
-      readFile(publicKeyPath, "utf8"),
-    ]);
-    return { privateKeyPem, publicKeyPem };
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-    return null;
-  }
-}
-
-async function unlinkQuietly(filePath: string): Promise<void> {
-  const { unlink } = await import("node:fs/promises");
-  await unlink(filePath).catch(() => undefined);
 }
 
 export function signReceipt(receipt: UnsignedReceipt, privateKey: string): string {

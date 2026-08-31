@@ -196,6 +196,19 @@ describe("IdentityService", () => {
     expect(service.listGrants("agent-1")).toHaveLength(1);
   });
 
+  it("refuses to delegate agent authority into a human principal", async () => {
+    const service = await makeService();
+    await service.createGrant({
+      principalId: "agent-1", grantedBy: "user-a",
+      scope: "network:egress", target: "example.com",
+    });
+    await expect(service.createGrant({
+      principalId: "user-b", grantedBy: "agent-1",
+      scope: "network:egress", target: "example.com", ttlMinutes: 5,
+    })).rejects.toMatchObject({ statusCode: 403 });
+    expect(service.listGrants("user-b")).toHaveLength(0);
+  });
+
   it("refuses a wildcard target so policy and enforcement cannot disagree", async () => {
     const service = await makeService();
     await expect(service.createGrant({

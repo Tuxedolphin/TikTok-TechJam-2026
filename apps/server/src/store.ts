@@ -73,6 +73,23 @@ function migrateV3ToV4(v3: Database3Shape): Database {
 
 function migrateDatabase(parsed: Partial<Database> & { version?: number; sessions?: unknown[]; approvals?: unknown[] }): Database {
   if (parsed.version === 4) {
+    const principals = Array.isArray(parsed.principals) ? parsed.principals : [];
+    const agentPrincipals = new Set(
+      principals.filter((principal) => principal.kind === "agent").map((principal) => principal.id),
+    );
+    const migratedAt = new Date().toISOString();
+    const grants = (Array.isArray(parsed.grants) ? parsed.grants : []).map((grant) => {
+      const parentGrantId = grant.parentGrantId ?? null;
+      // Version 4 predates explicit lineage. Any agent-issued grant without a
+      // parent is an unverifiable legacy root (including the self-clone bypass),
+      // so fail it closed during load rather than blessing it forever.
+      const unsafeLegacyRoot = parentGrantId === null && agentPrincipals.has(grant.grantedBy);
+      return {
+        ...grant,
+        parentGrantId,
+        revokedAt: unsafeLegacyRoot && grant.revokedAt === null ? migratedAt : grant.revokedAt,
+      };
+    });
     return {
       version: 4,
       agents: Array.isArray(parsed.agents) ? parsed.agents : [],
@@ -81,8 +98,8 @@ function migrateDatabase(parsed: Partial<Database> & { version?: number; session
       runs: Array.isArray(parsed.runs) ? parsed.runs : [],
       runEvents: Array.isArray(parsed.runEvents) ? parsed.runEvents : [],
       approvals: Array.isArray(parsed.approvals) ? parsed.approvals : [],
-      principals: Array.isArray(parsed.principals) ? parsed.principals : [],
-      grants: Array.isArray(parsed.grants) ? parsed.grants : [],
+      principals,
+      grants,
       resources: Array.isArray(parsed.resources) ? parsed.resources : [],
     };
   }

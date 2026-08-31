@@ -1,7 +1,11 @@
 import { randomUUID } from "node:crypto";
 import { HttpError } from "./errors.js";
 import { authorizeGrantRequest, type AuthorityDecision } from "./authority.js";
-import { evaluateResourceAccess, RunPolicyViolationError } from "./run-policies.js";
+import {
+  evaluateResourceAccess,
+  isGrantChainLive,
+  RunPolicyViolationError,
+} from "./run-policies.js";
 import { latestRunFor, type JsonStore } from "./store.js";
 import type { Grant, GrantScope, MockResource, PolicyDecision, Principal } from "./types.js";
 
@@ -70,6 +74,16 @@ export class IdentityService {
         }
         const actor = database.principals.find((principal) => principal.id === input.grantedBy);
         if (!actor) throw new HttpError(404, `Unknown grantor ${input.grantedBy}`);
+        const beneficiaryPrincipal = database.principals.find(
+          (principal) => principal.id === input.principalId,
+        );
+        if (actor.kind === "agent" && beneficiaryPrincipal?.kind !== "agent") {
+          throw new AuthorityDeniedError({
+            allowed: false,
+            ruleId: "AUTHORITY-NARROWING-032",
+            reason: "Agents may delegate authority only to another agent principal.",
+          });
+        }
 
         const beneficiary = database.agents.find(
           (agent) => agent.principalId === input.principalId,
@@ -87,8 +101,7 @@ export class IdentityService {
             ? database.grants.filter(
                 (held) =>
                   held.principalId === input.grantedBy &&
-                  held.revokedAt === null &&
-                  (held.expiresAt === null || held.expiresAt > now.toISOString()),
+                  isGrantChainLive(held, database.grants, now.toISOString()),
               )
             : [],
         });
@@ -239,6 +252,34 @@ export class IdentityService {
     return { resource: decision.allowed ? resource : null, decision };
   }
 
+}
+
+export function cascadeGrantRevocation(
+  grants: Grant[],
+  grantId: string,
+  revokedAt = new Date().toISOString(),
+): string[] {
+  const descendants = new Set<string>([grantId]);
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (const grant of grants) {
+      const parentGrantId = grant.parentGrantId ?? null;
+      if (parentGrantId !== null && descendants.has(parentGrantId) && !descendants.has(grant.id)) {
+        descendants.add(grant.id);
+        changed = true;
+      }
+    }
+  }
+
+  const revoked: string[] = [];
+  for (const grant of grants) {
+    if (descendants.has(grant.id) && grant.revokedAt === null) {
+      grant.revokedAt = revokedAt;
+      revoked.push(grant.id);
+    }
+  }
+  return revoked;
 }
 
 class AuthorityDeniedError extends Error {

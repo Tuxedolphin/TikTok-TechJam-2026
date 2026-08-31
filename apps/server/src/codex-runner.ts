@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { spawn, type ChildProcess } from "node:child_process";
+import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { createInterface } from "node:readline";
 import { promisify } from "node:util";
 import type { AppConfig } from "./config.js";
@@ -60,9 +60,13 @@ export async function parseCodexEventLine(
     parsed.threadId = event.thread_id;
   }
 
-  if (event.type === "item.completed" && event.item && typeof event.item === "object") {
+  if (event.item && typeof event.item === "object") {
     const item = event.item as Record<string, unknown>;
-    if (item.type === "agent_message" && typeof item.text === "string") {
+    if (
+      event.type === "item.completed" &&
+      item.type === "agent_message" &&
+      typeof item.text === "string"
+    ) {
       parsed.messages.push(item.text);
       await onStep?.({
         type: "message",
@@ -70,16 +74,15 @@ export async function parseCodexEventLine(
         detail: item.text.slice(0, 160),
         rawPayload: item,
       });
-    } else if (item.type === "command_execution") {
+    } else if (event.type === "item.started" && item.type === "command_execution") {
       const cmd = typeof item.command === "string" ? item.command : "command";
-      const exitCode = typeof item.exit_code === "number" ? ` (exit ${item.exit_code})` : "";
       await onStep?.({
         type: "command",
-        title: "Executed shell command",
-        detail: `${cmd}${exitCode}`,
+        title: "Starting shell command",
+        detail: cmd,
         rawPayload: item,
       });
-    } else if (item.type === "file_change") {
+    } else if (event.type === "item.completed" && item.type === "file_change") {
       const filePath = typeof item.path === "string" ? item.path : "file";
       await onStep?.({
         type: "file_change",
@@ -87,7 +90,10 @@ export async function parseCodexEventLine(
         detail: filePath,
         rawPayload: item,
       });
-    } else if (item.type === "mcp_tool_call" || item.type === "tool_call") {
+    } else if (
+      event.type === "item.started" &&
+      (item.type === "mcp_tool_call" || item.type === "tool_call")
+    ) {
       const name =
         typeof item.tool === "string"
           ? item.tool
@@ -100,7 +106,7 @@ export async function parseCodexEventLine(
           : JSON.stringify(item.input ?? item.arguments ?? "");
       await onStep?.({
         type: "tool_call",
-        title: `Invoked tool ${name}`,
+        title: `Starting tool ${name}`,
         detail: inputStr.slice(0, 160),
         rawPayload: item,
       });
@@ -137,8 +143,18 @@ export async function parseCodexEventLine(
  * Signals the child's whole process group (negative pid) so descendants get it
  * too, falling back to the direct child. Returns whether a signal was delivered.
  */
-function signalGroup(child: ChildProcess, signal: NodeJS.Signals): boolean {
+export function signalProcessTree(child: ChildProcess, signal: NodeJS.Signals): boolean {
   if (typeof child.pid === "number") {
+    if (process.platform === "win32") {
+      // Windows has no SIGSTOP/SIGCONT equivalent. Kill requests still need to
+      // reach the complete process tree rather than only the direct Codex child.
+      if (signal === "SIGSTOP" || signal === "SIGCONT") return false;
+      const result = spawnSync("taskkill", ["/PID", String(child.pid), "/T", "/F"], {
+        windowsHide: true,
+        stdio: "ignore",
+      });
+      return result.status === 0;
+    }
     try {
       process.kill(-child.pid, signal);
       return true;
@@ -198,7 +214,7 @@ export class CodexRunner implements AgentRunner {
     const active = this.active.get(agentId);
     if (!active || active.cancelled) return "idle";
     try {
-      return signalGroup(active.child, "SIGSTOP") ? "paused" : "failed";
+      return signalProcessTree(active.child, "SIGSTOP") ? "paused" : "failed";
     } catch {
       return "failed";
     }
@@ -246,7 +262,7 @@ export class CodexRunner implements AgentRunner {
   terminateAll(): void {
     for (const [agentId, active] of this.active.entries()) {
       if (typeof active.child.pid === "number") this.lastGroupPid.set(agentId, active.child.pid);
-      signalGroup(active.child, "SIGKILL");
+      signalProcessTree(active.child, "SIGKILL");
     }
     this.active.clear();
   }
@@ -255,8 +271,7 @@ export class CodexRunner implements AgentRunner {
     const active = this.active.get(agentId);
     if (!active || active.cancelled) return false;
     try {
-      signalGroup(active.child, "SIGCONT");
-      return true;
+      return signalProcessTree(active.child, "SIGCONT");
     } catch {
       return false;
     }
@@ -393,6 +408,10 @@ export class CodexRunner implements AgentRunner {
       };
     } finally {
       clearTimeout(timeout);
+      // The direct Codex process may exit before a tool descendant. Always send
+      // one final group kill before clearing the timer/map so child exit cannot
+      // cancel the only signal that would reach the remainder of the tree.
+      signalProcessTree(active.child, "SIGKILL");
       if (active.forceKillTimer) clearTimeout(active.forceKillTimer);
       if (typeof child.pid === "number") this.lastGroupPid.set(request.agentId, child.pid);
       this.active.delete(request.agentId);
@@ -403,10 +422,9 @@ export class CodexRunner implements AgentRunner {
     child: ChildProcess;
     forceKillTimer: NodeJS.Timeout | null;
   }): void {
-    if (active.child.exitCode !== null || active.child.signalCode !== null) return;
-    signalGroup(active.child, "SIGTERM");
+    signalProcessTree(active.child, "SIGTERM");
     if (!active.forceKillTimer) {
-      active.forceKillTimer = setTimeout(() => signalGroup(active.child, "SIGKILL"), 3_000);
+      active.forceKillTimer = setTimeout(() => signalProcessTree(active.child, "SIGKILL"), 3_000);
       active.forceKillTimer.unref();
     }
   }

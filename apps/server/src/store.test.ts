@@ -81,4 +81,40 @@ describe("JsonStore", () => {
     expect(database.agents[0]?.principalId).toBe("agent-agent-1");
     expect(database.grants).toEqual([]);
   });
+
+  it("fails closed legacy agent-issued grants that have no parent lineage", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "launchpad-store-test-"));
+    temporaryDirectories.push(root);
+    const filePath = path.join(root, "db.json");
+    const createdAt = "2026-08-30T00:00:00.000Z";
+    await writeFile(filePath, JSON.stringify({
+      version: 4,
+      agents: [], sessions: [], messages: [], runs: [], runEvents: [], approvals: [], resources: [],
+      principals: [
+        { id: "user-a", kind: "human", name: "User", createdAt },
+        { id: "agent-1", kind: "agent", name: "Agent", createdAt },
+      ],
+      grants: [
+        {
+          id: "human-root", principalId: "agent-1", grantedBy: "user-a",
+          scope: "network:egress", target: "example.com", expiresAt: null,
+          revokedAt: null, createdAt,
+        },
+        {
+          id: "legacy-clone", principalId: "agent-1", grantedBy: "agent-1",
+          scope: "network:egress", target: "example.com", expiresAt: null,
+          revokedAt: null, createdAt,
+        },
+      ],
+    }), "utf8");
+
+    const store = new JsonStore(filePath);
+    await store.initialize();
+    const grants = store.snapshot().grants;
+    expect(grants.find((grant) => grant.id === "human-root")).toMatchObject({
+      parentGrantId: null,
+      revokedAt: null,
+    });
+    expect(grants.find((grant) => grant.id === "legacy-clone")?.revokedAt).not.toBeNull();
+  });
 });
