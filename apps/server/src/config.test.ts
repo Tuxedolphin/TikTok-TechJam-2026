@@ -28,3 +28,42 @@ describe("egress enforcement configuration", () => {
     expect(config.egressEnforcement).toBe(false);
   });
 });
+
+describe("Gemini adapter credentials", () => {
+  it("gives the Runtime a dedicated adapter token instead of the provider key", () => {
+    const config = loadConfig({
+      NODE_ENV: "test",
+      APP_AUTH_TOKEN: "browser-token",
+      GEMINI_API_KEY: "google-provider-key",
+      GEMINI_ADAPTER_TOKEN: "runtime-only-token-1234567890",
+    });
+
+    expect(config.geminiAdapterToken).toBe("runtime-only-token-1234567890");
+    expect(config.openRouterApiKey).toBe(config.geminiAdapterToken);
+    expect(config.openRouterApiKey).not.toBe(config.geminiApiKey);
+    expect(config.openRouterApiKey).not.toBe(config.authToken);
+  });
+
+  it("generates a URL-safe Runtime credential when none is configured", () => {
+    const config = loadConfig({ NODE_ENV: "test", GEMINI_API_KEY: "google-provider-key" });
+
+    expect(config.geminiAdapterToken).toMatch(/^[A-Za-z0-9._~-]{24,}$/);
+    expect(config.openRouterApiKey).toBe(config.geminiAdapterToken);
+    expect(config.openRouterApiKey).not.toBe(config.geminiApiKey);
+  });
+
+  it("disables Gemini mode for placeholder provider credentials", () => {
+    const config = loadConfig({
+      NODE_ENV: "test",
+      GEMINI_API_KEY: "replace-with-your-gemini-key",
+      GEMINI_ADAPTER_TOKEN: "runtime-only-token-1234567890",
+      OPENROUTER_API_KEY: "openrouter-provider-key",
+      OPENROUTER_MODEL: "openai/test",
+    });
+
+    expect(config.geminiApiKey).toBe("");
+    expect(config.geminiAdapterToken).toBe("");
+    expect(config.openRouterApiKey).toBe("openrouter-provider-key");
+    expect(config.openRouterBaseUrl).toBe("https://openrouter.ai/api/v1");
+  });
+});
