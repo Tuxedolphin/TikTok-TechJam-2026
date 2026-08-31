@@ -134,6 +134,106 @@ describe("Gemini adapter upstream failure reporting", () => {
     }
   });
 
+  it("does not blame the key for a payload error that mentions one", async () => {
+    skipPacing();
+    // Every Google 400 carries "status": "INVALID_ARGUMENT", so a credential
+    // test that scans the whole body for "invalid" always matches and the
+    // adapter starts misreporting request bugs as dead keys.
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        new Response(
+          JSON.stringify([
+            {
+              error: {
+                code: 400,
+                message: 'Invalid JSON payload received. Unknown name "api_key": Cannot find field.',
+                status: "INVALID_ARGUMENT",
+              },
+            },
+          ]),
+          { status: 400, headers: { "content-type": "application/json" } },
+        ),
+      ),
+    );
+    const { app, token } = await harness();
+    try {
+      const response = await app.inject({
+        method: "POST",
+        url: "/api/adapter/responses",
+        headers: { authorization: "Bearer " + token },
+        payload,
+      });
+      expect(response.statusCode).toBe(400);
+      expect(response.body).not.toMatch(/rejected the API key/i);
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("reports a stall during the body read as a timeout too", async () => {
+    skipPacing();
+    const timeout = () => Object.assign(new Error("aborted"), { name: "TimeoutError" });
+    // Headers arrive promptly and the body then stalls; the deadline fires
+    // while the response is still streaming.
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue({
+        ok: true,
+        status: 200,
+        text: async () => {
+          throw timeout();
+        },
+        json: async () => {
+          throw timeout();
+        },
+      }),
+    );
+    const { app, token } = await harness();
+    try {
+      const response = await app.inject({
+        method: "POST",
+        url: "/api/adapter/responses",
+        headers: { authorization: "Bearer " + token },
+        payload,
+      });
+      expect(response.statusCode).toBe(504);
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("names a safety block rather than calling it an empty turn", async () => {
+    skipPacing();
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        new Response(
+          JSON.stringify({
+            choices: [{ message: { content: "" }, finish_reason: "content_filter" }],
+          }),
+          { status: 200, headers: { "content-type": "application/json" } },
+        ),
+      ),
+    );
+    const { app, token } = await harness();
+    try {
+      const response = await app.inject({
+        method: "POST",
+        url: "/api/adapter/responses",
+        headers: { authorization: "Bearer " + token },
+        payload,
+      });
+      // "filter" alone would match the echoed finish_reason, which explains
+      // nothing; the message has to say what actually happened.
+      expect(response.body).toMatch(/safety/i);
+      // Raising the token cap does nothing for a filtered response.
+      expect(response.body).not.toMatch(/RUN_BUDGET_MAX_OUTPUT_TOKENS/);
+    } finally {
+      await app.close();
+    }
+  });
+
   it("arms a deadline on the upstream call", async () => {
     skipPacing();
     const upstream = vi.fn().mockResolvedValue(

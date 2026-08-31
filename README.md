@@ -297,7 +297,7 @@ track's core acceptance list.
 | Meaningful middleware capability, selected and designed by the team | Agent identity, scoped/expiring/revocable grants, and enforced network containment — [docs/AGENT-PASSPORT.md](docs/AGENT-PASSPORT.md) |
 | Executes in a backend/Runtime/infrastructure path, not the UI | Proxy authorizes every connection before the socket opens; the container has no route off-box |
 | Repository sufficient to understand and reproduce | This README, [Architecture](docs/ARCHITECTURE.md), [Local POC](docs/LOCAL_POC.md) |
-| `npm run check` passes | Typecheck, build, and 181 tests; see [Validation](#validation) |
+| `npm run check` passes | Typecheck, build, and 185 tests; see [Validation](#validation) |
 | No secret in source, history, logs, traces, or demo output | Canary tripwire plus adapter-level redaction; provider keys never reach the browser or the engine's argv |
 | *Optional:* delegated permission scoped, revocable, enforced outside the UI | `npm run demo:identity` — grant, delegate, revoke, and watch the cascade bite |
 | *Optional:* correlated trace across policy and infrastructure events | Trace tab; every allow and deny lands with a rule ID |
@@ -362,7 +362,7 @@ terraform fmt -check -recursive deploy/volcengine
 docker compose config
 ```
 
-All 181 automated unit and integration tests run via:
+All 185 automated unit and integration tests run via:
 ```bash
 npm test
 ```
