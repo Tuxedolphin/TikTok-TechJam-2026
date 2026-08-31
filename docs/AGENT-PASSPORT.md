@@ -11,7 +11,7 @@ Every capability answers one question: what can a hijacked agent actually do?
 | Exfiltrate over the network | No route off-box; the proxy authorizes every connection | `egress-network.ts`, `egress-proxy.ts` |
 | Keep probing for a way out | Quarantine after repeated denials | `egress-authorizer.ts` |
 | Hide what it did | Every decision is a trace event | `recordPolicyDecision`, `recordEgressBlocked` |
-| Carry a planted belief into a later session | Memory provenance, expiry, quarantine, and bounded recall | `memory.ts` |
+| Carry a planted belief into a later session ([OWASP ASI06](https://genai.owasp.org/2025/12/09/owasp-top-10-for-agentic-applications-the-benchmark-for-agentic-security-in-the-age-of-autonomous-ai/)) | Memory provenance, expiry, quarantine, and bounded recall | `memory.ts` |
 | Continue after termination | Freeze, authority barrier, revoke, kill, and state verification | `terminator.ts`, `termination.ts` |
 
 ## What "enforced" means here
@@ -121,5 +121,6 @@ Enforcement applies to the container runtime. `RUNTIME_PROVIDER=local-process` r
 - **Non-HTTP TCP is refused outright.** `git+ssh` and raw sockets do not traverse an HTTP proxy. Under default-deny that is the correct outcome, not a bug — but it does constrain what agents can do.
 - **The topology is verified on Docker/OrbStack only.** Rootless Podman is documented as unable to route an internal network to the host; re-run the measurements before trusting another engine.
 - **Quarantine is per-process.** Strike counts live in memory and reset when the server restarts.
+- **We do not detect poisoned memories; we make them powerless.** [OWASP Agent Memory Guard](https://owasp.org/www-project-agent-memory-guard/) pursues detection — hashing baselines, anomaly signals. That is a different bet. Ours is that detection fails, so a planted belief must arrive labeled, bounded, and unable to confer authority. The two are complementary, and we implement only the second.
 - **Memory trust is derived from provenance, not content.** We do not detect a poisoned belief by reading it — that is the same losing game as detecting injection. The claim is that a planted belief arrives labeled, cannot become a permission, and can be pulled from circulation. The timeline links a recalled memory to a blocked step in the same run; that is correlation, not proof the model acted because of it.
 - **The resources the authz layer guards are mock fixtures.** `res-a` / `res-b` demonstrate ownership isolation; wiring grants to real workspace files is the natural next step and is not done.

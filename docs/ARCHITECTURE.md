@@ -1,5 +1,10 @@
 # Architecture
 
+> **This page documents the starter-kit components.** For the middleware this
+> project adds — the three attenuated stores (reach, belief, authority), the
+> trust boundary, and what never feeds what — see
+> **[the one-page architecture](assets/architecture.md)**.
+
 Volc Agent Launchpad is a single-node control plane for hackathon use.
 
 ```mermaid
@@ -77,6 +82,10 @@ the stored Codex thread, and escalate termination after a grace period.
 | Glass Box | `AgentRunner`, `AgentRun` | Emit and display correlated execution events. |
 | Bouncer | API routes, Agent ownership | Add identity and server-side authorization. |
 | Kill Switch | `AgentRunner` | Add threat-specific policy or a stronger sandbox. |
+
+Storage note: `data/launchpad.json` is schema version 5. `memories` was added
+in v5 alongside `grants` (v4); migrations are additive and every earlier
+on-disk version lifts forward.
 
 The current container or ECS instance is the POC trust boundary. Ordinary
 containers are not hardened multi-tenant isolation.
