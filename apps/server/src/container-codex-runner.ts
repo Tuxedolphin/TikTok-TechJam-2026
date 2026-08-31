@@ -175,14 +175,9 @@ export class ContainerCodexRunner implements AgentRunner {
         ["pause", active.containerName],
         { timeout: 5_000, env: this.childEnvironment() },
       );
-      return true;
+      return await this.containerPaused(active.containerName);
     } catch {
-      try {
-        active.child.kill("SIGSTOP");
-        return true;
-      } catch {
-        return false;
-      }
+      return false;
     }
   }
 
@@ -195,15 +190,19 @@ export class ContainerCodexRunner implements AgentRunner {
         ["unpause", active.containerName],
         { timeout: 5_000, env: this.childEnvironment() },
       );
-      return true;
+      return !(await this.containerPaused(active.containerName));
     } catch {
-      try {
-        active.child.kill("SIGCONT");
-        return true;
-      } catch {
-        return false;
-      }
+      return false;
     }
+  }
+
+  private async containerPaused(name: string): Promise<boolean> {
+    const { stdout } = await execFileAsync(
+      this.config.containerEngine,
+      ["inspect", "--format", "{{.State.Paused}}", name],
+      { timeout: 5_000, env: this.childEnvironment() },
+    );
+    return stdout.trim() === "true";
   }
 
   private removeContainer(active: ActiveContainer): Promise<void> {

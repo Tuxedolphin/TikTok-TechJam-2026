@@ -645,6 +645,22 @@ export class AgentService {
             resolvedBy: null,
           };
 
+          let paused = false;
+          try {
+            paused = (await this.runner.pause?.(agentAtStart.id)) ?? false;
+          } catch {
+            paused = false;
+          }
+          if (!paused) {
+            stepViolation = new RunPolicyViolationError(
+              "runtime_control",
+              409,
+              `Runtime pause failed; high-risk action was cancelled before approval (${risk.ruleId}).`,
+            );
+            await this.runner.cancel(agentAtStart.id).catch(() => false);
+            throw stepViolation;
+          }
+
           await this.store.mutate((database) => {
             database.approvals.push(approvalReq);
             const agent = database.agents.find((item) => item.id === agentAtStart.id);
@@ -663,8 +679,6 @@ export class AgentService {
             });
           });
 
-          await this.runner.pause?.(agentAtStart.id);
-
           const approved = await new Promise<boolean>((resolve) => {
             const timeout = setTimeout(() => {
               void this.resolveApproval(approvalId, "denied", "System (Approval timed out)");
@@ -678,11 +692,25 @@ export class AgentService {
               403,
               `Action blocked by operator denial (${risk.ruleId}): ${step.detail}`,
             );
-            void this.runner.cancel(agentAtStart.id);
+            await this.runner.cancel(agentAtStart.id).catch(() => false);
             throw stepViolation;
           }
 
-          await this.runner.resume?.(agentAtStart.id);
+          let resumed = false;
+          try {
+            resumed = (await this.runner.resume?.(agentAtStart.id)) ?? false;
+          } catch {
+            resumed = false;
+          }
+          if (!resumed) {
+            stepViolation = new RunPolicyViolationError(
+              "runtime_control",
+              409,
+              `Runtime resume failed after approval; execution was cancelled (${risk.ruleId}).`,
+            );
+            await this.runner.cancel(agentAtStart.id).catch(() => false);
+            throw stepViolation;
+          }
         } else if (step.type === "command" || step.type === "tool_call") {
           await this.store.mutate((database) => {
             this.appendRunEvent(database, {
