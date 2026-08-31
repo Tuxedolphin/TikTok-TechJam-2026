@@ -37,8 +37,6 @@ import {
 const now = () => new Date().toISOString();
 
 const PREVIEW_LENGTH = 180;
-const MEMORY_MESSAGE_LIMIT = 4;
-const MEMORY_MESSAGE_CHAR_LIMIT = 600;
 
 export class AgentService {
   private readonly activeExecutions = new Map<string, Promise<void>>();
@@ -719,22 +717,6 @@ export class AgentService {
 
       const session = this.store.snapshot().sessions.find((s) => s.id === run.sessionId);
       const threadId = session ? session.codexThreadId : agentAtStart.codexThreadId;
-      const memory = this.buildSessionMemory(run);
-      const prompt = memory ? `${memory}\n\n## Current request\n${run.prompt}` : run.prompt;
-
-      if (memory) {
-        await this.store.mutate((database) => {
-          this.appendRunEvent(database, {
-            runId: run.id,
-            agentId: agentAtStart.id,
-            type: "run.memory_injected",
-            severity: "info",
-            title: "Session memory injected",
-            detail: "Added the previous " + MEMORY_MESSAGE_LIMIT + " messages from this chat as context.",
-            createdAt: now(),
-          });
-        });
-      }
 
       // Under enforcement the agent gets no route off-box; its only path out
       // is the proxy, which authorizes every connection against live grants.
@@ -748,7 +730,7 @@ export class AgentService {
         agentId: agentAtStart.id,
         sessionId: run.sessionId,
         workspacePath: agentAtStart.workspacePath,
-        prompt,
+        prompt: run.prompt,
         threadId,
         onStep,
         egressProxyUrl,
@@ -847,25 +829,6 @@ export class AgentService {
     if (!this.config.guardrailCanaryToken) return null;
     if (!prompt.includes(this.config.guardrailCanaryToken)) return null;
     return "Prompt contains the configured canary token and was blocked before execution.";
-  }
-
-  private buildSessionMemory(run: AgentRun): string | null {
-    if (!run.sessionId) return null;
-    const messages = this.store
-      .snapshot()
-      .messages.filter((message) => message.sessionId === run.sessionId && message.runId !== run.id)
-      .sort((left, right) => left.createdAt.localeCompare(right.createdAt))
-      .slice(-MEMORY_MESSAGE_LIMIT);
-    if (messages.length === 0) return null;
-
-    const history = messages
-      .map((message) => {
-        const speaker = message.role === "user" ? "User" : "Assistant";
-        const text = message.content.replace(/\s+/g, " ").trim().slice(0, MEMORY_MESSAGE_CHAR_LIMIT);
-        return `${speaker}: ${text}`;
-      })
-      .join("\n");
-    return "## Session memory\nUse this prior conversation only as context; follow the current request below.\n" + history;
   }
 
   private redact(value: string): string {

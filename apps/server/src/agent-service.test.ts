@@ -88,29 +88,6 @@ describe("Agent lifecycle", () => {
     expect(service.getAgent(agent.id).codexThreadId).toBe("fake-thread");
   });
 
-  it("injects recent messages from the active session into the next run", async () => {
-    const prompts: string[] = [];
-    const { service } = await makeService({
-      run: async (request) => {
-        prompts.push(request.prompt);
-        return { output: "done", threadId: "thread", usage: null };
-      },
-      cancel: async () => false,
-      isAvailable: async () => true,
-    });
-    const agent = await service.createAgent({ name: "Rememberer" });
-
-    const first = await service.sendMessage(agent.id, "My project is called Atlas");
-    await expect.poll(() => service.getRun(first.run.id).status).toBe("completed");
-    const second = await service.sendMessage(agent.id, "What is my project called?");
-    await expect.poll(() => service.getRun(second.run.id).status).toBe("completed");
-
-    expect(prompts[1]).toContain("## Session memory");
-    expect(prompts[1]).toContain("User: My project is called Atlas");
-    expect(prompts[1]).toContain("## Current request\nWhat is my project called?");
-    expect(service.getRunEvents(second.run.id).some((event) => event.type === "run.memory_injected")).toBe(true);
-  });
-
   it("atomically accepts only one concurrent run per Agent", async () => {
     let finish!: (result: RunnerResult) => void;
     const pending = new Promise<RunnerResult>((resolve) => {
