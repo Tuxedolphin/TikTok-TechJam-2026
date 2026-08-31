@@ -72,11 +72,16 @@ the stored Codex thread, and escalate termination after a grace period.
 
 ## Extension seams
 
-| Track | Primary seam | Expected change |
+The challenge names these as recommended middleware directions, not a menu to
+pick exactly one from; teams may combine or invent. See
+[CHALLENGE-BRIEF.md](CHALLENGE-BRIEF.md).
+
+| Direction | Primary seam | Expected change |
 | --- | --- | --- |
-| Glass Box | `AgentRunner`, `AgentRun` | Emit and display correlated execution events. |
-| Bouncer | API routes, Agent ownership | Add identity and server-side authorization. |
-| Kill Switch | `AgentRunner` | Add threat-specific policy or a stronger sandbox. |
+| Trace and audit | `AgentRunner`, `AgentRun` | Emit and display correlated execution events. |
+| Identity and authorization | API routes, Agent ownership | Add identity and server-side authorization. |
+| Threat modeling and safety | `AgentRunner` | Add threat-specific policy or a stronger sandbox. |
+| Provider abstraction | `runner-factory`, adapters | Route Codex to another Responses-compatible endpoint. |
 
 The current container or ECS instance is the POC trust boundary. Ordinary
 containers are not hardened multi-tenant isolation.

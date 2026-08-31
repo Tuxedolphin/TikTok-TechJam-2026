@@ -58,7 +58,10 @@ Being precise about provenance: the approval UI, canary tripwire, budget breaker
 - Node.js 22+
 - npm 10+
 - Docker, Colima, or Podman
-- A Google Gemini API key (from Google AI Studio) or an OpenAI-compatible API key (e.g. OpenRouter)
+- A model API key — any one of:
+  - **BytePlus ModelArk** (`ARK_API_KEY` plus an `ep-` endpoint ID) — the starter kit's own provider, and the path to use if you were issued an Ark key
+  - **Google Gemini** (from Google AI Studio), reached through the internal Responses adapter
+  - Any **OpenAI-compatible** endpoint, such as OpenRouter
 
 Codex CLI is included in the Runtime image and is not required on the host.
 
@@ -97,7 +100,15 @@ HOST=127.0.0.1 npm run poc
 
 # Option B: Pass via CLI environment variable
 HOST=127.0.0.1 GEMINI_API_KEY=your-gemini-api-key npm run poc
+
+# Option C: BytePlus ModelArk, the starter kit's own provider
+HOST=127.0.0.1 ARK_API_KEY=your-ark-api-key ARK_MODEL=ep-your-endpoint-id npm run poc
 ```
+
+`ARK_API_KEY` must be an Ark *model* API key rather than an account AK/SK, and
+`ARK_MODEL` is the endpoint ID beginning with `ep-`; the wrong credential
+returns 401 from the Ark Responses API. Set `MODEL_PROVIDER` explicitly when
+`.env` holds credentials for more than one provider.
 
 The first run installs Node.js dependencies and builds the Runtime image. The
 script automatically selects Docker, Colima, or Podman.
@@ -370,6 +381,7 @@ npm test
 ## Documentation
 
 - **[Agent Passport](docs/AGENT-PASSPORT.md)** — what is enforced, how it was verified, and what is not
+- [Challenge brief](docs/CHALLENGE-BRIEF.md) — Track 1 requirements, deliverables, and rubric
 - [Architecture](docs/ARCHITECTURE.md)
 - [Local POC](docs/LOCAL_POC.md)
 - [Deployment](docs/DEPLOYMENT.md)
