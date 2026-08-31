@@ -647,7 +647,7 @@ export class AgentService {
 
           let paused = false;
           try {
-            paused = (await this.runner.pause?.(agentAtStart.id)) ?? false;
+            paused = await this.runner.pause(agentAtStart.id);
           } catch {
             paused = false;
           }
@@ -698,7 +698,7 @@ export class AgentService {
 
           let resumed = false;
           try {
-            resumed = (await this.runner.resume?.(agentAtStart.id)) ?? false;
+            resumed = await this.runner.resume(agentAtStart.id);
           } catch {
             resumed = false;
           }
