@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import type { AppConfig } from "./config.js";
 import { isOpenRouterConfigured } from "./config.js";
 import { HttpError, RunCancelledError } from "./errors.js";
-import { JsonStore } from "./store.js";
+import { JsonStore, latestRunFor } from "./store.js";
 import type {
   Agent,
   AgentRun,
@@ -197,6 +197,34 @@ export class AgentService {
         severity: "error",
         title: `Blocked outbound connection to ${host}`,
         detail: JSON.stringify({ host, strikes, ...decision }),
+        createdAt: now(),
+      });
+    });
+  }
+
+  /**
+   * Suspends the agent's execution at the OS level without tearing it down.
+   * Used before revoking authority so an in-flight action cannot complete in
+   * the window between the revoke landing and the container actually dying.
+   */
+  async freezeAgent(agentId: string): Promise<boolean> {
+    this.getAgent(agentId);
+    return (await this.runner.pause?.(agentId)) ?? false;
+  }
+
+  /** Records the outcome of a termination on the agent's timeline. */
+  async recordTermination(agentId: string, receipt: unknown): Promise<void> {
+    const summary = receipt as { contained?: boolean; signature?: string };
+    await this.store.mutate((database) => {
+      this.appendRunEvent(database, {
+        runId: latestRunFor(database.runs, agentId)?.id ?? `termination-${agentId}`,
+        agentId,
+        type: "agent.terminated",
+        severity: summary.contained ? "success" : "error",
+        title: summary.contained
+          ? "Agent terminated and containment verified"
+          : "Agent termination incomplete",
+        detail: JSON.stringify(receipt),
         createdAt: now(),
       });
     });

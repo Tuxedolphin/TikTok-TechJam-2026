@@ -5,6 +5,7 @@ import { loadConfig, writeCodexConfig, type AppConfig } from "./config.js";
 import { EgressAuthorizer } from "./egress-authorizer.js";
 import { EgressNetworkManager } from "./egress-network.js";
 import { IdentityService } from "./identity.js";
+import { AgentTerminator } from "./terminator.js";
 import { createRunner } from "./runner-factory.js";
 import { JsonStore } from "./store.js";
 import { WorkspaceManager } from "./workspace.js";
@@ -55,7 +56,10 @@ egressAuthorizer = config.egressEnforcement
     })
   : undefined;
 
-const app = await createApp(config, service, identity, egressAuthorizer, egressNetwork);
+const terminator = new AgentTerminator(store, service, identity, config.authToken, egressNetwork);
+const app = await createApp(
+  config, service, identity, egressAuthorizer, egressNetwork, terminator,
+);
 
 const shutdown = async (signal: string) => {
   app.log.info({ signal }, "Shutting down");

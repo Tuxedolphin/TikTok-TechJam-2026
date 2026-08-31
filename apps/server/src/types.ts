@@ -64,7 +64,8 @@ export type RunEventType =
   | "grant.created"
   | "grant.revoked"
   | "grant.expired"
-  | "egress.blocked";
+  | "egress.blocked"
+  | "agent.terminated";
 
 export interface RunEvent {
   id: string;

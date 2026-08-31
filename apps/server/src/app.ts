@@ -11,6 +11,7 @@ import { handleGeminiResponsesAdapter } from "./gemini-adapter.js";
 import type { IdentityService } from "./identity.js";
 import { egressProxySecret, type EgressAuthorizer } from "./egress-authorizer.js";
 import type { EgressNetworkManager } from "./egress-network.js";
+import type { AgentTerminator } from "./terminator.js";
 
 const agentIdParams = z.object({ id: z.string().uuid() });
 const runIdParams = z.object({ id: z.string().uuid() });
@@ -70,6 +71,7 @@ function attestedAgentPrincipal(
   return principal;
 }
 
+const terminateBody = z.object({ reason: z.string().trim().max(200).optional() });
 const egressProbeBody = z.object({
   host: z
     .string()
@@ -95,6 +97,7 @@ export async function createApp(
   identity?: IdentityService,
   egressAuthorizer?: EgressAuthorizer,
   egressNetwork?: EgressNetworkManager,
+  terminator?: AgentTerminator,
 ): Promise<FastifyInstance> {
   const app = Fastify({
     logger: {
@@ -229,6 +232,24 @@ export async function createApp(
       const { host } = egressProbeBody.parse(request.body);
       const agent = service.getAgent(id);
       return egressNetwork.probeAsAgent(agent.principalId, host);
+    });
+  }
+
+  if (terminator) {
+    // Terminating is deliberately a human-only action: an attested agent must
+    // not be able to kill a peer, and the receipt must name a real operator.
+    app.post("/api/agents/:id/terminate", async (request, reply) => {
+      const { id } = agentIdParams.parse(request.params);
+      if (attestedAgentPrincipal(request, config.authToken)) {
+        return reply.code(403).send({ error: "Agents may not terminate agents." });
+      }
+      const body = terminateBody.parse(request.body ?? {});
+      const actor = (request.headers["x-principal-id"] as string | undefined) ?? "user-a";
+      const receipt = await terminator.terminate(
+        id,
+        body.reason ?? `Terminated by ${actor}`,
+      );
+      return { receipt };
     });
   }
 
