@@ -1,5 +1,6 @@
 import { createServer, request as httpRequest, type Server } from "node:http";
 import { once } from "node:events";
+import { connect as netConnect } from "node:net";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   createEgressProxy,
@@ -440,5 +441,36 @@ describe("egress proxy", () => {
     const blocked = await proxyFetch(proxyPort, "http://attacker.example/", "agent-1");
     expect(blocked.status).toBe(403);
     expect(seen).toEqual(["127.0.0.1", "attacker.example"]);
+  });
+
+  it("tears down an established tunnel when its grant is revoked", async () => {
+    // The finding this closes: a tunnel authorized once kept flowing after the
+    // grant was revoked, because authorization was per-connection only.
+    let allowed = true;
+    const upstreamPort = await listen(createServer(() => {}));
+    const proxy = createEgressProxy({
+      authorize: async () => (allowed ? allow : deny),
+      allowPrivateAddresses: true,
+      reauthorizeIntervalMs: 50,
+    });
+    const proxyPort = await listen(proxy);
+
+    const client = netConnect(proxyPort, "127.0.0.1");
+    await once(client, "connect");
+    client.write(
+      `CONNECT 127.0.0.1:${upstreamPort} HTTP/1.1\r\n` +
+        `Proxy-Authorization: Basic ${Buffer.from("agent-1:token").toString("base64")}\r\n\r\n`,
+    );
+    const [established] = await once(client, "data");
+    expect(String(established)).toContain("200 Connection Established");
+
+    // Still open while the grant stands.
+    await new Promise((resolve) => setTimeout(resolve, 120));
+    expect(client.destroyed).toBe(false);
+
+    // Revoke: the next re-check must close the live tunnel.
+    allowed = false;
+    await once(client, "close");
+    expect(client.destroyed).toBe(true);
   });
 });
