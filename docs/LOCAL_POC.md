@@ -26,6 +26,23 @@ instance's remaining Runtime containers.
 Force an engine with `CONTAINER_ENGINE=docker` or
 `CONTAINER_ENGINE=podman`. Colima uses the Docker CLI.
 
+### Gemini adapter routing
+
+Gemini requests return to the Fastify adapter before the server contacts
+Google. The address is selected from `RUNTIME_PROVIDER`:
+
+- `container` uses `http://host.docker.internal:<port>/api/adapter`. Disposable
+  Docker, Docker Desktop, Colima, and Podman Runtime containers receive the
+  explicit `host.docker.internal:host-gateway` mapping. With egress enforcement,
+  traffic uses the authorized proxy sidecar, which has the same mapping; with
+  enforcement off, the mapping is attached directly to the Runtime container.
+- `local-process` uses `http://127.0.0.1:<port>/api/adapter`. This is the profile
+  for Codex started directly on the development host.
+
+The explicit mapping is required by native Linux Docker and keeps behavior
+consistent with Docker Desktop and Colima. Rootless Podman uses the same alias
+rather than relying on its engine-specific `host.containers.internal` name.
+
 ## Data and Runtime
 
 Persistent state defaults to:

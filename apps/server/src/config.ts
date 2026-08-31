@@ -102,8 +102,10 @@ export function loadConfig(environment: Record<string, unknown> = process.env) {
   const openRouterModel = isGeminiMode
     ? env.GEMINI_MODEL?.trim() || env.OPENROUTER_MODEL?.trim() || "gemini-3.5-flash-lite"
     : env.OPENROUTER_MODEL?.trim() ?? env.ARK_MODEL?.trim() ?? "";
+  const geminiAdapterHost =
+    env.RUNTIME_PROVIDER === "container" ? "host.docker.internal" : "127.0.0.1";
   const openRouterBaseUrl = isGeminiMode
-    ? "http://host.docker.internal:" + env.PORT + "/api/adapter"
+    ? "http://" + geminiAdapterHost + ":" + env.PORT + "/api/adapter"
     : env.OPENROUTER_BASE_URL.trim().replace(/\/+$/, "") ||
       env.ARK_BASE_URL?.trim().replace(/\/+$/, "") ||
       "https://openrouter.ai/api/v1";
