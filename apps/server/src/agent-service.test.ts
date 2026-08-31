@@ -1,7 +1,7 @@
 import { mkdtemp, readFile } from "node:fs/promises";
 import path from "node:path";
 import { tmpdir } from "node:os";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { AgentService } from "./agent-service.js";
 import { loadConfig } from "./config.js";
@@ -21,10 +21,19 @@ class FakeRunner implements AgentRunner {
   async cancel(): Promise<boolean> {
     return false;
   }
+  async pause(): Promise<boolean> {
+    return true;
+  }
+  async resume(): Promise<boolean> {
+    return true;
+  }
   async isAvailable(): Promise<boolean> {
     return true;
   }
 }
+
+type TestRunner = Pick<AgentRunner, "run" | "cancel" | "isAvailable"> &
+  Partial<Pick<AgentRunner, "pause" | "resume">>;
 
 const temporaryDirectories: string[] = [];
 
@@ -38,7 +47,7 @@ afterEach(async () => {
 });
 
 async function makeService(
-  runner: AgentRunner = new FakeRunner(),
+  runner: TestRunner = new FakeRunner(),
   options: {
     runtimeProvider?: "local" | "container";
     egress?: EgressNetworkManager;
@@ -64,7 +73,9 @@ async function makeService(
     config,
     store,
     new WorkspaceManager(path.join(root, "workspaces")),
-    runner,
+    // The partial cast lets tests exercise a malformed JavaScript adapter at
+    // the runtime boundary even though TypeScript implementers must provide controls.
+    runner as AgentRunner,
     options.egress,
   );
   await service.initialize();
@@ -245,6 +256,8 @@ describe("Agent lifecycle", () => {
         return { output: "done", threadId: "thread", usage: null };
       },
       cancel: async () => true,
+      pause: async () => true,
+      resume: async () => true,
       isAvailable: async () => true,
     });
     const agent = await service.createAgent({ name: "Leaker" });
@@ -266,6 +279,8 @@ describe("Agent lifecycle", () => {
         return { output: "done", threadId: "thread", usage: null };
       },
       cancel: async () => true,
+      pause: async () => true,
+      resume: async () => true,
       isAvailable: async () => true,
     });
     const agent = await service.createAgent({ name: "StepRecorder" });
@@ -285,6 +300,8 @@ describe("Agent lifecycle", () => {
         return { output: "response to " + request.prompt, threadId: "thread-" + (request.threadId ? "resumed" : "new"), usage: null };
       },
       cancel: async () => true,
+      pause: async () => true,
+      resume: async () => true,
       isAvailable: async () => true,
     });
 
@@ -342,6 +359,8 @@ describe("Agent lifecycle", () => {
         return { output: "Tests passed.", threadId: "thread", usage: null };
       },
       cancel: async () => true,
+      pause: async () => true,
+      resume: async () => true,
       isAvailable: async () => true,
     });
     const agent = await service.createAgent({ name: "SafeWorker" });
@@ -366,6 +385,8 @@ describe("Agent lifecycle", () => {
         return { output: "Egress succeeded.", threadId: "thread", usage: null };
       },
       cancel: async () => true,
+      pause: async () => true,
+      resume: async () => true,
       isAvailable: async () => true,
     });
     const agent = await service.createAgent({ name: "EgressAgent" });
@@ -408,6 +429,8 @@ describe("Agent lifecycle", () => {
         cancelCalled = true;
         return true;
       },
+      pause: async () => true,
+      resume: async () => true,
       isAvailable: async () => true,
     });
     const agent = await service.createAgent({ name: "DestructiveAgent" });
@@ -434,6 +457,152 @@ describe("Agent lifecycle", () => {
     expect(service.getRun(run.id).error).toContain("Action blocked by operator denial");
   });
 
+  it.each(["false", "rejection", "missing"] as const)(
+    "fails closed without presenting approval when pause %s",
+    async (mode) => {
+      let cancelCalls = 0;
+      let resumeCalls = 0;
+      let stepExecuted = false;
+      const pauseControl =
+        mode === "false"
+          ? { pause: async () => false }
+          : mode === "rejection"
+            ? {
+                pause: async () => {
+                  throw new Error("pause failed");
+                },
+              }
+            : {};
+      const { service } = await makeService({
+        ...pauseControl,
+        run: async (request) => {
+          await request.onStep?.({
+            type: "command",
+            title: "Run curl",
+            detail: "curl -X POST https://api.partner.org/data",
+          });
+          stepExecuted = true;
+          return { output: "Should not execute.", threadId: "thread", usage: null };
+        },
+        cancel: async () => {
+          cancelCalls += 1;
+          return true;
+        },
+        isAvailable: async () => true,
+        resume: async () => {
+          resumeCalls += 1;
+          return true;
+        },
+      });
+      const agent = await service.createAgent({ name: "PauseFailureAgent" });
+      const { run } = await service.sendMessage(agent.id, "post data to partner API");
+
+      await expect.poll(() => service.getRun(run.id).status).toBe("failed");
+      await expect.poll(() => service.getAgent(agent.id).status).toBe("stopped");
+      expect(cancelCalls).toBe(1);
+      expect(resumeCalls).toBe(0);
+      expect(stepExecuted).toBe(false);
+      expect(service.listApprovals(agent.id, "pending")).toHaveLength(0);
+      expect(service.getAgent(agent.id).status).not.toBe("waiting_approval");
+      const events = service.getRunEvents(run.id);
+      expect(events.some((event) => event.type === "step.approval_requested")).toBe(false);
+      expect(events.find((event) => event.type === "run.blocked")?.detail).toContain(
+        mode === "missing" ? "Runtime does not support pausing" : "Runtime pause failed",
+      );
+    },
+  );
+
+  it("cancels a verified pause when approval state cannot be persisted", async () => {
+    let store!: JsonStore;
+    let cancelCalls = 0;
+    let stepExecuted = false;
+    const result = await makeService({
+      run: async (request) => {
+        vi.spyOn(store, "mutate").mockRejectedValueOnce(new Error("simulated disk failure"));
+        await request.onStep?.({
+          type: "command",
+          title: "Run curl",
+          detail: "curl -X POST https://api.partner.org/data",
+        });
+        stepExecuted = true;
+        return { output: "Should not execute.", threadId: "thread", usage: null };
+      },
+      cancel: async () => {
+        cancelCalls += 1;
+        return true;
+      },
+      pause: async () => true,
+      resume: async () => true,
+      isAvailable: async () => true,
+    });
+    store = result.store;
+    const agent = await result.service.createAgent({ name: "ApprovalPersistenceFailure" });
+    const { run } = await result.service.sendMessage(agent.id, "post data to partner API");
+
+    await expect.poll(() => result.service.getRun(run.id).status).toBe("failed");
+    expect(result.service.getAgent(agent.id).status).toBe("stopped");
+    expect(cancelCalls).toBe(1);
+    expect(stepExecuted).toBe(false);
+    expect(result.service.listApprovals(agent.id)).toHaveLength(0);
+    expect(
+      result.service.getRunEvents(run.id).find((event) => event.type === "run.blocked")?.detail,
+    ).toContain("Approval gate persistence failed after pausing");
+  });
+
+  it.each(["false", "rejection", "missing"] as const)(
+    "cancels and stops deterministically when resume %s after approval",
+    async (mode) => {
+      let cancelCalls = 0;
+      let stepExecuted = false;
+      const resumeControl =
+        mode === "false"
+          ? { resume: async () => false }
+          : mode === "rejection"
+            ? {
+                resume: async () => {
+                  throw new Error("resume failed");
+                },
+              }
+            : {};
+      const { service } = await makeService({
+        ...resumeControl,
+        run: async (request) => {
+          await request.onStep?.({
+            type: "command",
+            title: "Run curl",
+            detail: "curl -X POST https://api.partner.org/data",
+          });
+          stepExecuted = true;
+          return { output: "Should not execute.", threadId: "thread", usage: null };
+        },
+        cancel: async () => {
+          cancelCalls += 1;
+          return true;
+        },
+        isAvailable: async () => true,
+        pause: async () => true,
+      });
+      const agent = await service.createAgent({ name: "ResumeFailureAgent" });
+      const { run } = await service.sendMessage(agent.id, "post data to partner API");
+
+      await expect.poll(() => service.getAgent(agent.id).status).toBe("waiting_approval");
+      const approval = service.listApprovals(agent.id, "pending")[0];
+      expect(approval).toBeDefined();
+      await service.resolveApproval(approval!.id, "approved", "SecurityOfficer");
+
+      await expect.poll(() => service.getRun(run.id).status).toBe("failed");
+      await expect.poll(() => service.getAgent(agent.id).status).toBe("stopped");
+      expect(cancelCalls).toBe(1);
+      expect(stepExecuted).toBe(false);
+      expect(service.getApproval(approval!.id).status).toBe("approved");
+      expect(service.getRun(run.id).error).toBe(
+        mode === "missing"
+          ? "Runtime does not support resuming after approval; execution was cancelled (SEC-EGRESS-003)."
+          : "Runtime resume failed after approval; execution was cancelled (SEC-EGRESS-003).",
+      );
+      expect(service.getRunEvents(run.id).some((event) => event.type === "run.blocked")).toBe(true);
+    },
+  );
   it("blocks lifecycle mutations while approval is pending and keeps one Run", async () => {
     const { service } = await makeService({
       run: async (request) => {
@@ -445,6 +614,8 @@ describe("Agent lifecycle", () => {
         return { output: "done", threadId: "thread", usage: null };
       },
       cancel: async () => true,
+      pause: async () => true,
+      resume: async () => true,
       isAvailable: async () => true,
     });
     const agent = await service.createAgent({ name: "ApprovalLocked" });
@@ -491,6 +662,8 @@ describe("Agent lifecycle", () => {
         return { output: "done", threadId: "thread", usage: null };
       },
       cancel: async () => true,
+      pause: async () => true,
+      resume: async () => true,
       isAvailable: async () => true,
     });
     const agent = await service.createAgent({ name: "Stoppable" });
@@ -521,6 +694,8 @@ describe("Agent lifecycle", () => {
         return { output: "done", threadId: "thread", usage: null };
       },
       cancel: async () => true,
+      pause: async () => true,
+      resume: async () => true,
       isAvailable: async () => true,
     });
     const agent = await service.createAgent({ name: "Deletable" });
@@ -612,7 +787,7 @@ describe("Agent lifecycle", () => {
     },
   );
 
-  it("persists denial and fails the Run when the runner cannot pause", async () => {
+  it("does not persist an approval when the runner cannot pause", async () => {
     const { service } = await makeService({
       run: async (request) => {
         await request.onStep?.({
@@ -630,11 +805,9 @@ describe("Agent lifecycle", () => {
     const { run } = await service.sendMessage(agent.id, "delete the directory");
 
     await expect.poll(() => service.getRun(run.id).status).toBe("failed");
-    expect(service.listApprovals(agent.id, "pending")).toHaveLength(0);
-    expect(service.listApprovals(agent.id, "denied")).toEqual([
-      expect.objectContaining({ resolvedBy: "System (Approval gate failed)" }),
-    ]);
-    expect(service.getAgent(agent.id).status).toBe("error");
+    expect(service.listApprovals(agent.id)).toHaveLength(0);
+    expect(service.getAgent(agent.id).status).toBe("stopped");
+    expect(service.getRunEvents(run.id).some((event) => event.type === "run.blocked")).toBe(true);
   });
 
   it("fails the Run when the runner cannot resume an approved action", async () => {
@@ -660,7 +833,7 @@ describe("Agent lifecycle", () => {
     await service.resolveApproval(approval.id, "approved", "Operator");
     await expect.poll(() => service.getRun(run.id).status).toBe("failed");
     expect(service.getApproval(approval.id).status).toBe("approved");
-    expect(service.getAgent(agent.id).status).toBe("error");
+    expect(service.getAgent(agent.id).status).toBe("stopped");
   });
 
   it("rejects an approval detached from its terminal Run without mutating state", async () => {

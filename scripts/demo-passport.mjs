@@ -21,7 +21,7 @@ const config = loadConfig({ NODE_ENV: "test", DATA_DIR: root, WORKSPACE_ROOT: pa
 const store = new JsonStore(path.join(root, "db.json"));
 await store.initialize();
 const workspaces = new WorkspaceManager(path.join(root, "ws"));
-const runner = { run: async () => ({ output: "", threadId: null, usage: null }), cancel: async () => false, isAvailable: async () => true };
+const runner = { run: async () => ({ output: "", threadId: null, usage: null }), cancel: async () => false, pause: async () => true, resume: async () => true, isAvailable: async () => true };
 const service = new AgentService(config, store, workspaces, runner);
 await service.initialize();
 // Wired exactly as index.ts does, so this demo reflects production behaviour.

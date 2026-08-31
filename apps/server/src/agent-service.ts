@@ -701,6 +701,33 @@ export class AgentService {
             resolvedBy: null,
           };
 
+          const pause = (this.runner as Partial<AgentRunner>).pause;
+          if (typeof pause !== "function") {
+            stepViolation = new RunPolicyViolationError(
+              "runtime_control",
+              409,
+              `Runtime does not support pausing; high-risk action was cancelled before approval (${risk.ruleId}).`,
+            );
+            await this.runner.cancel(agentAtStart.id).catch(() => false);
+            throw stepViolation;
+          }
+
+          let paused = false;
+          try {
+            paused = await pause.call(this.runner, agentAtStart.id);
+          } catch {
+            paused = false;
+          }
+          if (!paused) {
+            stepViolation = new RunPolicyViolationError(
+              "runtime_control",
+              409,
+              `Runtime pause failed; high-risk action was cancelled before approval (${risk.ruleId}).`,
+            );
+            await this.runner.cancel(agentAtStart.id).catch(() => false);
+            throw stepViolation;
+          }
+
           let resolveDecision!: (approved: boolean) => void;
           const approvalDecision = new Promise<boolean>((resolve) => {
             resolveDecision = resolve;
@@ -736,16 +763,21 @@ export class AgentService {
                 createdAt: timestamp,
               });
             });
-            const paused = await this.runner.pause?.(agentAtStart.id);
-            if (paused === false) {
-              throw new Error("Runner could not pause for operator approval");
-            }
           } catch (error) {
-            await this.denyPendingApprovals(
-              agentAtStart.id,
-              "System (Approval gate failed)",
+            const pending = this.pendingApprovals.get(approvalId);
+            if (pending) {
+              clearTimeout(pending.timeout);
+              this.pendingApprovals.delete(approvalId);
+              pending.resolve(false);
+            }
+            await this.runner.cancel(agentAtStart.id).catch(() => false);
+            if (error instanceof RunCancelledError) throw error;
+            stepViolation = new RunPolicyViolationError(
+              "runtime_control",
+              409,
+              `Approval gate persistence failed after pausing; execution was cancelled (${risk.ruleId}).`,
             );
-            throw error;
+            throw stepViolation;
           }
 
           const approved = await approvalDecision;
@@ -759,13 +791,30 @@ export class AgentService {
               403,
               `Action blocked by operator denial (${risk.ruleId}): ${step.detail}`,
             );
-            void this.runner.cancel(agentAtStart.id);
+            await this.runner.cancel(agentAtStart.id).catch(() => false);
             throw stepViolation;
           }
 
-          const resumed = await this.runner.resume?.(agentAtStart.id);
-          if (resumed === false) {
-            throw new Error("Runner could not resume after operator approval");
+          const resume = (this.runner as Partial<AgentRunner>).resume;
+          let resumed = false;
+          let resumeFailure = "Runtime resume failed after approval";
+          if (typeof resume === "function") {
+            try {
+              resumed = await resume.call(this.runner, agentAtStart.id);
+            } catch {
+              resumed = false;
+            }
+          } else {
+            resumeFailure = "Runtime does not support resuming after approval";
+          }
+          if (!resumed) {
+            stepViolation = new RunPolicyViolationError(
+              "runtime_control",
+              409,
+              `${resumeFailure}; execution was cancelled (${risk.ruleId}).`,
+            );
+            await this.runner.cancel(agentAtStart.id).catch(() => false);
+            throw stepViolation;
           }
         } else if (step.type === "command" || step.type === "tool_call") {
           await this.store.mutate((database) => {

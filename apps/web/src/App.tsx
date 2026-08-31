@@ -1097,7 +1097,7 @@ export default function App() {
                       <div className="telemetry-bar-left">
                         <span className={"status-tag status-" + (selected?.status === "waiting_approval" ? "waiting_approval" : activeRun.status)}>
                           {["queued", "running"].includes(activeRun.status) && selected?.status !== "waiting_approval" && <Spinner />}
-                          {selected?.status === "waiting_approval" ? "⚠️ Approval Needed" : activeRun.status}
+                          {selected?.status === "waiting_approval" ? "⏸ Runtime Frozen · Approval Needed" : activeRun.status}
                         </span>
                         <div className="telemetry-step-preview">
                           {selected?.status === "waiting_approval" && pendingApprovals.length > 0 ? (
