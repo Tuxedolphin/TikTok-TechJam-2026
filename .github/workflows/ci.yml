@@ -1,0 +1,97 @@
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+  workflow_dispatch:
+
+# A newer push to the same branch makes the older run irrelevant.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  NODE_VERSION: "22"
+
+jobs:
+  check:
+    name: Typecheck, build, test
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+      - run: npm ci
+      # `check` is typecheck -> build -> test in that order, because one test
+      # asserts the built UI is served and would fail on a clean checkout if
+      # test ran first.
+      - run: npm run check
+
+  config:
+    name: Compose, scripts, hygiene
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      # .env.example is the file a judge copies first. If Compose cannot parse
+      # it, the very first documented command fails.
+      - name: Validate docker-compose against .env.example
+        run: LAUNCHPAD_ENV_FILE=.env.example docker compose config --quiet
+
+      - name: Shell syntax
+        run: bash -n scripts/bootstrap-local.sh scripts/start-local-poc.sh
+
+      - name: Reject trailing whitespace and merge markers
+        run: |
+          git diff --check "$(git rev-list --max-parents=0 HEAD | tail -1)" HEAD
+          if git grep -nE '^(<<<<<<<|>>>>>>>) ' -- . ; then
+            echo "::error::merge conflict markers are committed"
+            exit 1
+          fi
+
+      - name: Dependency audit
+        run: npm audit --audit-level=high
+
+  demos:
+    name: Demo scripts (real containers)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+      - run: npm ci
+      - run: npm run build -w @launchpad/server
+
+      # Pulled up front so the proxy's startup grace period is not racing a
+      # cold image pull on a fresh runner.
+      - name: Pre-pull runtime images
+        run: |
+          docker pull node:22-alpine
+          docker pull curlimages/curl:latest
+
+      # These print observations rather than asserting them, so a green run
+      # means "the path executed end to end", not "containment was proven".
+      # Read the output when changing the egress path.
+      - name: Identity, grants, revocation
+        run: node scripts/demo-passport.mjs
+
+      - name: Egress containment against real containers
+        run: node scripts/demo-egress.mjs
+
+      - name: Clean up stray containers and networks
+        if: always()
+        run: |
+          docker rm -f launchpad-egress-proxy 2>/dev/null || true
+          docker network rm launchpad-egress-internal 2>/dev/null || true
+          docker network rm launchpad-egress-uplink 2>/dev/null || true

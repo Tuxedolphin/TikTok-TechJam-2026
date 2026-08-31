@@ -70,8 +70,21 @@ export interface EgressAuthorizerOptions {
  * Grants are read fresh on every call — no caching — so revoking one takes
  * effect on the agent's very next connection rather than at token expiry.
  */
+/**
+ * How many of one agent's requests may sit held awaiting a decision at once.
+ *
+ * Each held request persists an approval and installs a five-minute timer, and
+ * a strike is only counted when a decision *resolves*. Without a cap, an agent
+ * firing N ungranted requests creates N pending approvals before quarantine can
+ * see a single strike -- the operator's queue is flooded and the one decision
+ * that matters is buried. Beyond the cap we deny immediately and record the
+ * strike, which is what lets quarantine actually fire.
+ */
+export const MAX_CONCURRENT_HELD_REQUESTS = 3;
+
 export class EgressAuthorizer {
   private readonly strikesByAgent = new Map<string, number>();
+  private readonly heldByAgent = new Map<string, number>();
 
   constructor(
     private readonly store: JsonStore,
@@ -90,6 +103,12 @@ export class EgressAuthorizer {
    */
   resetStrikes(agentId: string): void {
     this.strikesByAgent.delete(agentId);
+    this.heldByAgent.delete(agentId);
+  }
+
+  /** Requests currently held for this agent awaiting an operator decision. */
+  heldFor(agentId: string): number {
+    return this.heldByAgent.get(agentId) ?? 0;
   }
 
   async authorize(input: EgressAuthorizationRequest): Promise<EgressAuthorizationResult> {
@@ -142,21 +161,42 @@ export class EgressAuthorizer {
       agentId &&
       this.options.requestApproval
     ) {
-      let approved = false;
-      try {
-        approved = await this.options.requestApproval(runId, agentId, input);
-      } catch {
-        approved = false;
+      const held = this.heldByAgent.get(agentId) ?? 0;
+      if (held >= MAX_CONCURRENT_HELD_REQUESTS) {
+        // Refuse without creating an approval. A flooding agent must not be
+        // able to mint unbounded operator decisions, and this denial counts a
+        // strike below, so persistent flooding quarantines the agent.
+        decision = {
+          allowed: false,
+          ruleId: "HITL-EGRESS-FLOOD-027",
+          reason:
+            `Refused without asking: ${held} request(s) from this Agent are already ` +
+            `awaiting an operator decision (limit ${MAX_CONCURRENT_HELD_REQUESTS}).`,
+          principalId: input.agentPrincipalId,
+          grantId: null,
+        };
+      } else {
+        this.heldByAgent.set(agentId, held + 1);
+        let approved = false;
+        try {
+          approved = await this.options.requestApproval(runId, agentId, input);
+        } catch {
+          approved = false;
+        } finally {
+          const remaining = (this.heldByAgent.get(agentId) ?? 1) - 1;
+          if (remaining > 0) this.heldByAgent.set(agentId, remaining);
+          else this.heldByAgent.delete(agentId);
+        }
+        decision = {
+          allowed: approved,
+          ruleId: approved ? "HITL-EGRESS-APPROVED-025" : "HITL-EGRESS-DENIED-026",
+          reason: approved
+            ? `Operator approved this ${input.method} request to ${input.host}:${input.port}.`
+            : `Operator denied this ${input.method} request to ${input.host}:${input.port}.`,
+          principalId: input.agentPrincipalId,
+          grantId: null,
+        };
       }
-      decision = {
-        allowed: approved,
-        ruleId: approved ? "HITL-EGRESS-APPROVED-025" : "HITL-EGRESS-DENIED-026",
-        reason: approved
-          ? `Operator approved this ${input.method} request to ${input.host}:${input.port}.`
-          : `Operator denied this ${input.method} request to ${input.host}:${input.port}.`,
-        principalId: input.agentPrincipalId,
-        grantId: null,
-      };
     }
 
     // Platform endpoints are noise on the timeline; agent-initiated egress is not.

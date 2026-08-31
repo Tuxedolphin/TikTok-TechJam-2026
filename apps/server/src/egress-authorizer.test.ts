@@ -2,7 +2,11 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { EgressAuthorizer, egressProxySecret } from "./egress-authorizer.js";
+import {
+  EgressAuthorizer,
+  egressProxySecret,
+  MAX_CONCURRENT_HELD_REQUESTS,
+} from "./egress-authorizer.js";
 import { JsonStore } from "./store.js";
 import type { Grant } from "./types.js";
 
@@ -187,5 +191,62 @@ describe("EgressAuthorizer", () => {
       agentPrincipalId: "agent-unknown", host: "registry.npmjs.org", port: 443, method: "CONNECT",
     });
     expect(result.allowed).toBe(false);
+  });
+
+  it("bounds how many requests one agent can hold awaiting approval", async () => {
+    // A hijacked agent must not be able to mint unbounded operator decisions.
+    // Approvals that never resolve would otherwise flood the queue before a
+    // single strike is recorded, so quarantine could never fire.
+    let asked = 0;
+    let release: (() => void) | null = null;
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const authorizer = new EgressAuthorizer(await makeStore(), {
+      ...baseOptions,
+      quarantineThreshold: 99,
+      requestApproval: async () => {
+        asked += 1;
+        await held; // never resolves during the test: these stay held
+        return false;
+      },
+    });
+
+    const inFlight = Array.from({ length: MAX_CONCURRENT_HELD_REQUESTS }, (_unused, index) =>
+      authorizer.authorize({
+        agentPrincipalId: PRINCIPAL, host: `held-${index}.example`, port: 443, method: "CONNECT",
+      }),
+    );
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(asked).toBe(MAX_CONCURRENT_HELD_REQUESTS);
+    expect(authorizer.heldFor(AGENT_ID)).toBe(MAX_CONCURRENT_HELD_REQUESTS);
+
+    // One past the cap is refused immediately, without asking anyone.
+    const overflow = await authorizer.authorize({
+      agentPrincipalId: PRINCIPAL, host: "overflow.example", port: 443, method: "CONNECT",
+    });
+    expect(overflow).toMatchObject({ allowed: false, ruleId: "HITL-EGRESS-FLOOD-027" });
+    expect(asked).toBe(MAX_CONCURRENT_HELD_REQUESTS);
+    // It still counts as a blocked attempt, so flooding leads to quarantine.
+    expect(overflow.strikes).toBeGreaterThan(0);
+
+    release?.();
+    await Promise.all(inFlight);
+    // Slots are returned once the held requests resolve.
+    expect(authorizer.heldFor(AGENT_ID)).toBe(0);
+  });
+
+  it("frees a held slot when the approval call throws", async () => {
+    const authorizer = new EgressAuthorizer(await makeStore(), {
+      ...baseOptions,
+      requestApproval: async () => {
+        throw new Error("control plane unavailable");
+      },
+    });
+    const result = await authorizer.authorize({
+      agentPrincipalId: PRINCIPAL, host: "attacker.example", port: 443, method: "CONNECT",
+    });
+    expect(result.allowed).toBe(false);
+    expect(authorizer.heldFor(AGENT_ID)).toBe(0);
   });
 });
