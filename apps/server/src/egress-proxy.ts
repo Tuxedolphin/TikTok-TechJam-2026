@@ -273,7 +273,12 @@ export function createEgressProxy(options: EgressProxyOptions): Server {
     clientSocket.end();
   };
 
+  server.on("clientError", (_err, socket) => {
+    socket.destroy();
+  });
+
   server.on("connect", (request: IncomingMessage, clientSocket: Socket, head: Buffer) => {
+    clientSocket.on("error", () => {});
     void (async () => {
       const { host, port } = parseAuthority(request.url ?? "", 443);
       const principal = principalFromProxyAuth(request.headers["proxy-authorization"]);

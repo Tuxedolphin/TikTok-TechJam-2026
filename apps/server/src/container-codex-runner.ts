@@ -122,6 +122,8 @@ export function buildContainerRunArgs(
     "HOME=/tmp",
     "--env",
     "NO_COLOR=1",
+    "--env",
+    "NODE_OPTIONS=--use-env-proxy",
     "--mount",
     "type=bind,src=" + request.workspacePath + ",dst=/workspace",
     "--mount",
