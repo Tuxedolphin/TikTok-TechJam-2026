@@ -68,6 +68,7 @@ export async function parseCodexEventLine(
         type: "message",
         title: "Agent response",
         detail: item.text.slice(0, 160),
+        phase: "after",
         rawPayload: item,
       });
     } else if (item.type === "command_execution") {
@@ -77,6 +78,7 @@ export async function parseCodexEventLine(
         type: "command",
         title: "Executed shell command",
         detail: `${cmd}${exitCode}`,
+        phase: "after",
         rawPayload: item,
       });
     } else if (item.type === "file_change") {
@@ -85,6 +87,7 @@ export async function parseCodexEventLine(
         type: "file_change",
         title: "File modified",
         detail: filePath,
+        phase: "after",
         rawPayload: item,
       });
     } else if (item.type === "mcp_tool_call" || item.type === "tool_call") {
@@ -102,6 +105,7 @@ export async function parseCodexEventLine(
         type: "tool_call",
         title: `Invoked tool ${name}`,
         detail: inputStr.slice(0, 160),
+        phase: "after",
         rawPayload: item,
       });
     }

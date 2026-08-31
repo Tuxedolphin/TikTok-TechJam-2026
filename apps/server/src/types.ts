@@ -58,6 +58,7 @@ export type RunEventType =
   | "step.file_change"
   | "step.message"
   | "step.auto_approved"
+  | "step.risk_observed"
   | "step.approval_requested"
   | "step.approval_granted"
   | "step.approval_denied"
@@ -185,6 +186,8 @@ export interface RunnerStepEvent {
   type: "command" | "tool_call" | "file_change" | "message";
   title: string;
   detail: string;
+  /** Whether the Runtime observed the step before or after its side effect. */
+  phase?: "before" | "after";
   rawPayload?: unknown;
 }
 

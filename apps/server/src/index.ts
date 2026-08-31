@@ -51,6 +51,8 @@ egressAuthorizer = config.egressEnforcement
         service.recordPolicyDecision(runId, agentId, decision),
       recordBlocked: (runId, agentId, input, decision, strikes) =>
         service.recordEgressBlocked(runId, agentId, input.host, decision, strikes),
+      requestApproval: (runId, agentId, input) =>
+        service.requestEgressApproval(runId, agentId, input),
       quarantineAgent: (agentId, reason) => service.quarantineAgent(agentId, reason),
     })
   : undefined;

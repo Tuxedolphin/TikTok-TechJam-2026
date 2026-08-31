@@ -292,9 +292,17 @@ export async function createApp(
     // Called by the egress proxy sidecar for EVERY outbound connection an
     // agent container attempts. Answering slowly or failing here makes the
     // proxy fail closed, which is the safe direction.
-    app.post("/api/egress/authorize", async (request) => {
+    app.post("/api/egress/authorize", async (request, reply) => {
       const body = egressAuthorizeBody.parse(request.body);
-      const result = await egressAuthorizer.authorize(body);
+      const controller = new AbortController();
+      request.raw.once("aborted", () => controller.abort());
+      reply.raw.once("close", () => {
+        if (!reply.raw.writableEnded) controller.abort();
+      });
+      const result = await egressAuthorizer.authorize({
+        ...body,
+        signal: controller.signal,
+      });
       return {
         allowed: result.allowed,
         ruleId: result.ruleId,

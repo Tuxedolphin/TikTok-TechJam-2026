@@ -31,6 +31,7 @@ export type EgressAuthorizer = (input: {
   port: number;
   method: string;
   secret: string;
+  signal?: AbortSignal | undefined;
 }) => Promise<EgressVerdict>;
 
 export interface EgressProxyOptions {
@@ -155,6 +156,7 @@ export function createEgressProxy(options: EgressProxyOptions): Server {
     host: string,
     port: number,
     method: string,
+    signal: AbortSignal,
   ): Promise<EgressVerdict> => {
     if (!caller) {
       return {
@@ -170,6 +172,7 @@ export function createEgressProxy(options: EgressProxyOptions): Server {
         port,
         method,
         secret: caller.secret,
+        signal,
       });
       options.onVerdict?.({ agentPrincipalId: caller.principalId, host, verdict });
       return verdict;
@@ -197,7 +200,18 @@ export function createEgressProxy(options: EgressProxyOptions): Server {
         : new URL(rawUrl, `http://${request.headers.host ?? ""}`);
       const port = target.port ? Number(target.port) : 80;
       const principal = principalFromProxyAuth(request.headers["proxy-authorization"]);
-      const verdict = await decide(principal, target.hostname, port, request.method ?? "GET");
+      const controller = new AbortController();
+      response.once("close", () => {
+        if (!response.writableEnded) controller.abort();
+      });
+      const verdict = await decide(
+        principal,
+        target.hostname,
+        port,
+        request.method ?? "GET",
+        controller.signal,
+      );
+      if (controller.signal.aborted) return;
 
       if (!verdict.allowed) {
         const unauthenticated = verdict.ruleId === "NET-EGRESS-NOAUTH-022";
@@ -277,7 +291,10 @@ export function createEgressProxy(options: EgressProxyOptions): Server {
     void (async () => {
       const { host, port } = parseAuthority(request.url ?? "", 443);
       const principal = principalFromProxyAuth(request.headers["proxy-authorization"]);
-      const verdict = await decide(principal, host, port, "CONNECT");
+      const controller = new AbortController();
+      clientSocket.once("close", () => controller.abort());
+      const verdict = await decide(principal, host, port, "CONNECT", controller.signal);
+      if (controller.signal.aborted) return;
 
       if (!verdict.allowed) {
         denyConnect(clientSocket, verdict, host);

@@ -49,6 +49,8 @@ export class AgentService {
       resolve: (approved: boolean) => void;
       timeout: NodeJS.Timeout;
       request: ApprovalRequest;
+      signal?: AbortSignal;
+      onAbort?: () => void;
     }
   >();
 
@@ -422,8 +424,9 @@ export class AgentService {
       approval.resolvedBy = operatorName;
 
       const agent = database.agents.find((item) => item.id === approval.agentId);
+      const run = database.runs.find((item) => item.id === approval.runId);
       if (agent && agent.status === "waiting_approval") {
-        agent.status = decision === "approved" ? "busy" : "ready";
+        agent.status = run?.status === "running" ? "busy" : "ready";
         agent.updatedAt = timestamp;
       }
 
@@ -443,6 +446,9 @@ export class AgentService {
     const pending = this.pendingApprovals.get(id);
     if (pending) {
       clearTimeout(pending.timeout);
+      if (pending.signal && pending.onAbort) {
+        pending.signal.removeEventListener("abort", pending.onAbort);
+      }
       this.pendingApprovals.delete(id);
       pending.resolve(decision === "approved");
     }
@@ -450,7 +456,70 @@ export class AgentService {
     return updated;
   }
 
+  async requestEgressApproval(
+    runId: string,
+    agentId: string,
+    input: { host: string; port: number; method: string; signal?: AbortSignal | undefined },
+  ): Promise<boolean> {
+    const approvalId = randomUUID();
+    const timestamp = now();
+    const actionDetail = `${input.method} ${input.host}:${input.port}`;
+    const approvalReq: ApprovalRequest = {
+      id: approvalId,
+      runId,
+      agentId,
+      actionType: "tool_call",
+      actionDetail,
+      ruleId: "HITL-EGRESS-025",
+      reason: "Outbound request is held at the enforced proxy boundary pending operator approval.",
+      riskLevel: "high",
+      status: "pending",
+      createdAt: timestamp,
+      resolvedAt: null,
+      resolvedBy: null,
+    };
 
+    await this.store.mutate((database) => {
+      const agent = database.agents.find((item) => item.id === agentId);
+      const run = database.runs.find((item) => item.id === runId && item.agentId === agentId);
+      if (!agent || run?.status !== "running") {
+        throw new HttpError(409, "Egress approval requires an active Agent run");
+      }
+      database.approvals.push(approvalReq);
+      agent.status = "waiting_approval";
+      agent.updatedAt = timestamp;
+      this.appendRunEvent(database, {
+        runId,
+        agentId,
+        type: "step.approval_requested",
+        severity: "warning",
+        title: "Outbound request held before connection",
+        detail: `Human approval required for ${actionDetail}; no upstream connection has been opened.`,
+        createdAt: timestamp,
+      });
+    });
+
+    return new Promise<boolean>((resolve) => {
+      const timeout = setTimeout(() => {
+        void this.resolveApproval(approvalId, "denied", "System (Approval timed out)");
+      }, 300_000);
+      const onAbort = () => {
+        void this.resolveApproval(
+          approvalId,
+          "denied",
+          "System (Requester disconnected)",
+        ).catch(() => undefined);
+      };
+      this.pendingApprovals.set(approvalId, {
+        resolve,
+        timeout,
+        request: approvalReq,
+        ...(input.signal ? { signal: input.signal, onAbort } : {}),
+      });
+      if (input.signal?.aborted) onAbort();
+      else input.signal?.addEventListener("abort", onAbort, { once: true });
+    });
+  }
 
   async sendMessage(
     agentId: string,
@@ -627,7 +696,19 @@ export class AgentService {
 
         // 2. Action Risk Assessment (Human-in-the-Loop Gate)
         const risk = evaluateActionRisk(step);
-        if (risk.requiresApproval) {
+        if (risk.requiresApproval && step.phase === "after") {
+          await this.store.mutate((database) => {
+            this.appendRunEvent(database, {
+              runId: run.id,
+              agentId: agentAtStart.id,
+              type: "step.risk_observed",
+              severity: "warning",
+              title: `Risk observed after execution (${risk.ruleId})`,
+              detail: `Telemetry only; this Runtime event arrived after execution. ${risk.reason}`,
+              createdAt: now(),
+            });
+          });
+        } else if (risk.requiresApproval) {
           const approvalId = randomUUID();
           const timestamp = now();
           const approvalReq: ApprovalRequest = {
@@ -908,9 +989,16 @@ export class AgentService {
     this.cancellationRequests.add(agentId);
     for (const [approvalId, pending] of this.pendingApprovals.entries()) {
       if (pending.request.agentId === agentId) {
-        clearTimeout(pending.timeout);
-        this.pendingApprovals.delete(approvalId);
-        pending.resolve(false);
+        try {
+          await this.resolveApproval(approvalId, "denied", "System (Run cancelled)");
+        } catch {
+          clearTimeout(pending.timeout);
+          if (pending.signal && pending.onAbort) {
+            pending.signal.removeEventListener("abort", pending.onAbort);
+          }
+          this.pendingApprovals.delete(approvalId);
+          pending.resolve(false);
+        }
       }
     }
     try {
