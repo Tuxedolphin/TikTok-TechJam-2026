@@ -9,6 +9,7 @@
  * Started by EgressNetworkManager; not part of the API server process.
  */
 import { createEgressProxy, type EgressVerdict } from "./egress-proxy.js";
+import { egressProxySecret } from "./egress-authorizer.js";
 
 const port = Number(process.env["EGRESS_PROXY_PORT"] ?? 8888);
 const authorizeUrl = process.env["EGRESS_AUTHORIZE_URL"];
@@ -42,6 +43,13 @@ const server = createEgressProxy({
     }
     return (await response.json()) as EgressVerdict;
   },
+  // The agent cannot reach the control plane except through this process, so
+  // headers applied here are the control plane's only trustworthy signal that
+  // a request originated from an agent rather than a human operator.
+  attest: (agentPrincipalId) => ({
+    "x-agent-attested-principal": agentPrincipalId,
+    "x-agent-attested-proof": egressProxySecret(agentPrincipalId, authorizeToken),
+  }),
   onVerdict: ({ agentPrincipalId, host, verdict }) => {
     console.log(
       `[egress] ${verdict.allowed ? "ALLOW" : "DENY "} ${agentPrincipalId} -> ${host} (${verdict.ruleId})`,

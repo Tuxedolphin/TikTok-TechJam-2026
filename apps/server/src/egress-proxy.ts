@@ -35,6 +35,13 @@ export type EgressAuthorizer = (input: {
 
 export interface EgressProxyOptions {
   authorize: EgressAuthorizer;
+  /**
+   * Stamps the authenticated agent identity onto forwarded requests. Because
+   * the agent has no route off-box except this proxy, a header applied here
+   * cannot be omitted or forged by the agent -- the containment topology is
+   * what makes the attestation trustworthy.
+   */
+  attest?: (agentPrincipalId: string) => Record<string, string>;
   /** Called for every verdict so the caller can log; must never throw. */
   onVerdict?: (input: { agentPrincipalId: string; host: string; verdict: EgressVerdict }) => void;
   /** Idle/connect timeout for upstream connections. */
@@ -219,6 +226,11 @@ export function createEgressProxy(options: EgressProxyOptions): Server {
       }
 
       const headers = { ...request.headers };
+      // Never let the caller supply its own attestation; only this proxy may.
+      for (const forged of Object.keys(headers)) {
+        if (forged.toLowerCase().startsWith("x-agent-attested")) delete headers[forged];
+      }
+      Object.assign(headers, principal ? (options.attest?.(principal.principalId) ?? {}) : {});
       // Hop-by-hop headers are meaningful only on the agent->proxy leg.
       for (const hop of [
         "proxy-authorization",

@@ -9,7 +9,7 @@ import { HttpError } from "./errors.js";
 import type { AgentService } from "./agent-service.js";
 import { handleGeminiResponsesAdapter } from "./gemini-adapter.js";
 import type { IdentityService } from "./identity.js";
-import type { EgressAuthorizer } from "./egress-authorizer.js";
+import { egressProxySecret, type EgressAuthorizer } from "./egress-authorizer.js";
 import type { EgressNetworkManager } from "./egress-network.js";
 
 const agentIdParams = z.object({ id: z.string().uuid() });
@@ -52,6 +52,24 @@ const grantBody = z.object({
 });
 const grantQuery = z.object({ principalId: z.string().min(1).max(128).optional() });
 const grantIdParams = z.object({ id: z.string().uuid() });
+/**
+ * Returns the agent principal this request was attested as, when the proof
+ * matches. Anything unattested is treated as coming from a human operator.
+ */
+function attestedAgentPrincipal(
+  request: { headers: Record<string, unknown> },
+  serverKey: string,
+): string | null {
+  const principal = request.headers["x-agent-attested-principal"];
+  const proof = request.headers["x-agent-attested-proof"];
+  if (typeof principal !== "string" || typeof proof !== "string") return null;
+  const expected = egressProxySecret(principal, serverKey);
+  const a = Buffer.from(expected);
+  const b = Buffer.from(proof);
+  if (a.length !== b.length || !timingSafeEqual(a, b)) return null;
+  return principal;
+}
+
 const egressProbeBody = z.object({
   host: z
     .string()
@@ -258,7 +276,11 @@ export async function createApp(
 
     app.post("/api/grants", async (request, reply) => {
       const body = grantBody.parse(request.body);
-      const grantedBy = (request.headers["x-principal-id"] as string | undefined) ?? "user-a";
+      // An attested agent identity outranks any self-asserted header: the
+      // proxy stamps it, and the agent cannot strip it.
+      const grantedBy = attestedAgentPrincipal(request, config.authToken)
+        ?? (request.headers["x-principal-id"] as string | undefined)
+        ?? "user-a";
       const grant = await identity.createGrant({
         principalId: body.principalId,
         scope: body.scope,
