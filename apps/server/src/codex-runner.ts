@@ -205,6 +205,21 @@ export class CodexRunner implements AgentRunner {
     return this.active.has(agentId);
   }
 
+  /**
+   * Kills every live process group this runner started.
+   *
+   * Running each child in its own process group is what lets a stop or kill
+   * reach its tool descendants -- but it also detaches them from this server's
+   * group, so they would survive a shutdown that used to take them down with
+   * it. Called on shutdown so isolation does not trade one leak for another.
+   */
+  terminateAll(): void {
+    for (const active of this.active.values()) {
+      signalGroup(active.child, "SIGKILL");
+    }
+    this.active.clear();
+  }
+
   async resume(agentId: string): Promise<boolean> {
     const active = this.active.get(agentId);
     if (!active || active.cancelled) return false;

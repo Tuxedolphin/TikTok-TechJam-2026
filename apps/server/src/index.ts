@@ -73,6 +73,10 @@ const app = await createApp(
 const shutdown = async (signal: string) => {
   app.log.info({ signal }, "Shutting down");
   await app.close();
+  // Agent processes run in their own process group so a freeze reaches their
+  // descendants; that also means they do not die with this server unless we
+  // say so. Take them down explicitly rather than leaking orphans.
+  (runner as { terminateAll?: () => void }).terminateAll?.();
   await egressNetwork?.shutdown();
   process.exit(0);
 };

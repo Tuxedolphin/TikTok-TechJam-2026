@@ -163,12 +163,25 @@ describe("IdentityService", () => {
       scope: "network:egress", target: "registry.npmjs.org", ttlMinutes: 5,
     });
     expect(delegated.parentGrantId).toBe(parent.id);
-    expect((await service.readResourceAsAgent("res-a", "agent-2")) === undefined).toBe(false);
+    // Live before the parent is revoked, so the cascade below is what changes it.
+    expect(delegated.revokedAt).toBeNull();
 
     // Revoke the human-issued parent. The delegated copy must not outlive it.
     await service.revokeGrant(parent.id);
     const stored = store.snapshot().grants.find((g) => g.id === delegated.id);
     expect(stored?.revokedAt).not.toBeNull();
+  });
+
+  it("keeps the first revocation timestamp when a grant is revoked twice", async () => {
+    const service = await makeService();
+    const grant = await service.createGrant({
+      principalId: "agent-1", grantedBy: "user-a", scope: "resource:read", target: "res-a",
+    });
+    const first = await service.revokeGrant(grant.id);
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    const second = await service.revokeGrant(grant.id);
+    // Re-revoking must not rewrite when authority actually ended.
+    expect(second.revokedAt).toBe(first.revokedAt);
   });
 
   it("refuses a self-directed clone that would survive its parent's revocation", async () => {

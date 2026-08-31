@@ -44,6 +44,13 @@ export class AgentTerminator {
       steps.push(await this.revokeAndBlock(agentId, agent.principalId, revoked));
     }
 
+    // Drain any connection the proxy is still piping for this principal before
+    // verifying. Authorization is per-connection, so a tunnel opened before
+    // revocation would otherwise keep flowing while the receipt claimed
+    // containment.
+    if (this.egress?.drainPrincipal) {
+      await Promise.resolve(this.egress.drainPrincipal(agent.principalId)).catch(() => null);
+    }
     steps.push(await this.verifyContainment(agentId, agent.principalId));
     const body: UnsignedReceipt = {
       version: 1,

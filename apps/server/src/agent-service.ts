@@ -701,6 +701,28 @@ export class AgentService {
             resolvedBy: null,
           };
 
+          // Freeze BEFORE publishing the approval. Pausing afterwards meant a
+          // failed pause left a pending approval in the store and the agent in
+          // waiting_approval, so the operator was asked to decide about a run
+          // that was already doomed -- and, worse, the runtime stayed live for
+          // up to five minutes while the UI claimed the action was held.
+          // Nothing is published unless the freeze actually took.
+          let pauseResult: "paused" | "idle" | "failed" | undefined;
+          try {
+            pauseResult = await this.runner.pause?.(agentAtStart.id);
+          } catch {
+            pauseResult = "failed";
+          }
+          if (pauseResult === "failed") {
+            stepViolation = new RunPolicyViolationError(
+              "approval",
+              409,
+              `Runtime pause failed; the high-risk action was cancelled before approval (${risk.ruleId}).`,
+            );
+            await this.runner.cancel(agentAtStart.id).catch(() => false);
+            throw stepViolation;
+          }
+
           await this.store.mutate((database) => {
             database.approvals.push(approvalReq);
             const agent = database.agents.find((item) => item.id === agentAtStart.id);
@@ -718,27 +740,6 @@ export class AgentService {
               createdAt: timestamp,
             });
           });
-
-          // Fail closed if the runtime cannot actually be frozen. Discarding
-          // the pause result left the agent live for up to five minutes while
-          // the UI said "awaiting approval" -- the risky action could complete
-          // during the wait. A pause that reports "failed" aborts the run
-          // rather than pretending the action is held.
-          let pauseResult: "paused" | "idle" | "failed" | undefined;
-          try {
-            pauseResult = await this.runner.pause?.(agentAtStart.id);
-          } catch {
-            pauseResult = "failed";
-          }
-          if (pauseResult === "failed") {
-            stepViolation = new RunPolicyViolationError(
-              "approval",
-              409,
-              `Runtime pause failed; the high-risk action was cancelled before approval (${risk.ruleId}).`,
-            );
-            await this.runner.cancel(agentAtStart.id).catch(() => false);
-            throw stepViolation;
-          }
 
           const approved = await new Promise<boolean>((resolve) => {
             const timeout = setTimeout(() => {

@@ -255,6 +255,54 @@ export class EgressNetworkManager {
     }
   }
 
+  /**
+   * Tears down every connection the proxy is still piping for this principal.
+   * Authorization is per-connection, so a tunnel established before revocation
+   * keeps flowing; termination must drain it or an in-flight transfer can
+   * finish after the agent is gone. Reaches the proxy from inside the internal
+   * network (the only place it is addressable) via a short-lived probe
+   * container. Returns how many connections the proxy reported closing, or null
+   * if the drain could not be carried out -- which the caller must not read as
+   * "nothing was flowing".
+   */
+  async drainPrincipal(agentPrincipalId: string): Promise<number | null> {
+    if (!(await this.containerRunning(PROXY_CONTAINER))) return 0;
+    const controlUrl = `http://${PROXY_CONTAINER}:${this.config.egressProxyPort}/__egress_control/drain`;
+    try {
+      // Run a shell inside the container so it expands the token from its own
+      // environment (passed by name, never in argv, so /proc/<pid>/cmdline on
+      // the host never sees the secret). The probe image is Alpine-based and
+      // has /bin/sh.
+      const stdout = await this.engine(
+        [
+          "run",
+          "--rm",
+          "--network",
+          INTERNAL_NETWORK,
+          "--env",
+          "EGRESS_CONTROL_TOKEN",
+          "--env",
+          "EGRESS_PRINCIPAL",
+          "--entrypoint",
+          "sh",
+          this.config.egressProbeImage,
+          "-c",
+          `curl -s -X POST --max-time 10 ` +
+            `-H "x-egress-control-token: $EGRESS_CONTROL_TOKEN" ` +
+            `-H "x-egress-principal: $EGRESS_PRINCIPAL" "${controlUrl}"`,
+        ],
+        {
+          EGRESS_CONTROL_TOKEN: this.config.internalAgentSecret,
+          EGRESS_PRINCIPAL: agentPrincipalId,
+        },
+      );
+      const parsed = JSON.parse(stdout.trim()) as { closed?: number };
+      return typeof parsed.closed === "number" ? parsed.closed : null;
+    } catch {
+      return null;
+    }
+  }
+
   private async removeProxy(): Promise<void> {
     try {
       await this.engine(["rm", "-f", PROXY_CONTAINER]);

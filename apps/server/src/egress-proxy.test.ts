@@ -114,10 +114,73 @@ describe("isPrivateAddress", () => {
       "::ffff:10.0.0.1",
       "::ffff:192.168.1.1",
       "::ffff:a9fe:a9fe", // hex form of 169.254.169.254
+      "::169.254.169.254", // deprecated IPv4-compatible form
+      "::127.0.0.1",
     ]) {
       expect(isPrivateAddress(address), address).toBe(true);
     }
     expect(isPrivateAddress("::ffff:8.8.8.8")).toBe(false);
+  });
+});
+
+function drainRequest(
+  proxyPort: number,
+  principal: string,
+  token: string | null,
+): Promise<{ status: number; body: string }> {
+  return new Promise((resolve, reject) => {
+    const headers: Record<string, string> = { "x-egress-principal": principal };
+    if (token) headers["x-egress-control-token"] = token;
+    const req = httpRequest(
+      { host: "127.0.0.1", port: proxyPort, method: "POST", path: "/__egress_control/drain", headers },
+      (response) => {
+        let body = "";
+        response.on("data", (chunk) => (body += chunk));
+        response.on("end", () => resolve({ status: response.statusCode ?? 0, body }));
+      },
+    );
+    req.on("error", reject);
+    req.end();
+  });
+}
+
+describe("egress proxy drain", () => {
+  it("closes a principal's in-flight connection on demand", async () => {
+    // An upstream that accepts the connection but never answers, standing in
+    // for a slow transfer already past authorization.
+    const stuck = createServer(() => {});
+    const upstreamPort = await listen(stuck);
+    const proxy = createEgressProxy({ authorize: async () => allow, allowPrivateAddresses: true });
+    const proxyPort = await listen(proxy);
+
+    // Fire a proxied request and leave it hanging.
+    const pending = proxyFetch(proxyPort, `http://127.0.0.1:${upstreamPort}/`, "agent-1").catch(
+      (error) => ({ status: -1, body: String(error) }),
+    );
+    // Give the proxy a moment to open and register the upstream connection.
+    await new Promise((resolve) => setTimeout(resolve, 100));
+
+    const closed = proxy.closePrincipalConnections("agent-1");
+    expect(closed).toBeGreaterThanOrEqual(1);
+    // A different principal has nothing to close.
+    expect(proxy.closePrincipalConnections("agent-2")).toBe(0);
+    // The hung request resolves once its upstream is destroyed.
+    await pending;
+  });
+
+  it("gates the drain control endpoint on the control token", async () => {
+    const proxy = createEgressProxy({ authorize: async () => allow, controlToken: "s3cr3t" });
+    const proxyPort = await listen(proxy);
+
+    const noToken = await drainRequest(proxyPort, "agent-1", null);
+    expect(noToken.status).toBe(404); // invisible without the token
+
+    const wrongToken = await drainRequest(proxyPort, "agent-1", "guess");
+    expect(wrongToken.status).toBe(404);
+
+    const authorized = await drainRequest(proxyPort, "agent-1", "s3cr3t");
+    expect(authorized.status).toBe(200);
+    expect(JSON.parse(authorized.body)).toEqual({ closed: 0 });
   });
 });
 
