@@ -20,7 +20,11 @@ services:
       CODEX_HOME: /app/codex-home
       CODEX_SANDBOX_MODE: ${CODEX_SANDBOX_MODE:-workspace-write}
     ports:
-      - "${PUBLIC_PORT:-3000}:3000"
+      # Loopback by default: inside the container HOST is necessarily 0.0.0.0,
+      # so the published address is what actually decides exposure. Set
+      # PUBLIC_BIND=0.0.0.0 to reach the demo from another machine -- that also
+      # needs a real APP_AUTH_TOKEN, which bootstrap-local.sh generates.
+      - "${PUBLIC_BIND:-127.0.0.1}:${PUBLIC_PORT:-3000}:3000"
     volumes:
       - ./data:/app/data
       - ./workspaces:/app/workspaces

@@ -157,9 +157,12 @@ Create and edit the configuration:
 ./scripts/bootstrap-local.sh
 ```
 
-Compose binds the production server to `0.0.0.0`, so the bootstrap command
-creates a URL-safe `APP_AUTH_TOKEN` when `.env` does not already contain a valid
-one. To rotate it later, replace that value in `.env` with the output of:
+Compose runs the server in production mode, where the process binds `0.0.0.0`
+inside its container. Only the published port decides who can reach it, so
+Compose publishes on `127.0.0.1` by default and the bootstrap command creates a
+URL-safe `APP_AUTH_TOKEN` when `.env` does not already contain a valid one. To
+serve the demo to another machine, set `PUBLIC_BIND=0.0.0.0`; that token is then
+the only thing standing between the internet and your Agents. To rotate it later, replace that value in `.env` with the output of:
 
 ```bash
 node -e 'console.log(require("node:crypto").randomBytes(24).toString("base64url"))'

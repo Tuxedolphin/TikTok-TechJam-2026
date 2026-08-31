@@ -29,8 +29,10 @@ describe("production authentication configuration", () => {
       OPENROUTER_MODEL: "openai/gpt-4o-mini",
     });
 
-    expect(config.openRouterApiKey).toBe("gemini-provider-key");
+    expect(config.geminiApiKey).toBe("gemini-provider-key");
     expect(config.openRouterModel).toBe("gemini-3.5-flash-lite");
+    // Deliberately not asserting what openRouterApiKey holds: #13 replaces it
+    // with a dedicated Runtime credential so the provider key stays server-side.
   });
 
   it("accepts the documented Compose bind with a generated token", () => {
