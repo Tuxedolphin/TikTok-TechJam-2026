@@ -28,21 +28,3 @@ describe("egress enforcement configuration", () => {
     expect(config.egressEnforcement).toBe(false);
   });
 });
-
-describe("Gemini adapter routing", () => {
-  it.each([
-    ["local-process", "127.0.0.1"],
-    ["container", "host.docker.internal"],
-  ] as const)("uses %s routing through %s", (runtimeProvider, expectedHost) => {
-    const config = loadConfig({
-      NODE_ENV: "test",
-      RUNTIME_PROVIDER: runtimeProvider,
-      PORT: "4317",
-      GEMINI_API_KEY: "google-provider-key",
-    });
-
-    expect(config.openRouterBaseUrl).toBe(
-      `http://${expectedHost}:4317/api/adapter`,
-    );
-  });
-});

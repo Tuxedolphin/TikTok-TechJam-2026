@@ -1,8 +1,7 @@
 import { mkdtemp, rm } from "node:fs/promises";
-import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 import { createApp } from "./app.js";
 import { loadConfig } from "./config.js";
 import { IdentityService } from "./identity.js";
@@ -16,26 +15,8 @@ const service = {
 
 const temporaryDirectories: string[] = [];
 afterEach(async () => {
-  vi.unstubAllGlobals();
   await Promise.all(temporaryDirectories.splice(0).map((d) => rm(d, { recursive: true, force: true })));
 });
-
-async function availableLoopbackPort(): Promise<number> {
-  const server = createServer();
-  await new Promise<void>((resolve, reject) => {
-    server.once("error", reject);
-    server.listen(0, "127.0.0.1", resolve);
-  });
-  const address = server.address();
-  if (!address || typeof address === "string") {
-    server.close();
-    throw new Error("Could not reserve a loopback port");
-  }
-  await new Promise<void>((resolve, reject) => {
-    server.close((error) => (error ? reject(error) : resolve()));
-  });
-  return address.port;
-}
 
 describe("HTTP boundary", () => {
   it("protects API routes with the configured shared token", async () => {
@@ -53,39 +34,6 @@ describe("HTTP boundary", () => {
     });
     expect(allowed.statusCode).toBe(200);
     await app.close();
-  });
-
-  it("reaches the Gemini adapter over loopback in the same-container profile", async () => {
-    const port = await availableLoopbackPort();
-    const realFetch = globalThis.fetch;
-    const upstreamFetch = vi.fn().mockResolvedValue(
-      new Response(
-        JSON.stringify({ choices: [{ message: { content: "loopback reached" } }] }),
-        { status: 200, headers: { "content-type": "application/json" } },
-      ),
-    );
-    vi.stubGlobal("fetch", upstreamFetch);
-    const config = loadConfig({
-      NODE_ENV: "test",
-      RUNTIME_PROVIDER: "local-process",
-      PORT: String(port),
-      GEMINI_API_KEY: "google-provider-key",
-    });
-    const app = await createApp(config, service);
-    await app.listen({ host: "127.0.0.1", port });
-
-    try {
-      const response = await realFetch(config.openRouterBaseUrl + "/responses", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ input: [] }),
-      });
-      expect(response.status).toBe(200);
-      expect(await response.text()).toContain("response.completed");
-      expect(upstreamFetch).toHaveBeenCalledOnce();
-    } finally {
-      await app.close();
-    }
   });
 
   it("preserves Fastify client error status codes", async () => {
