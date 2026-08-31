@@ -12,9 +12,9 @@ export async function handleGeminiResponsesAdapter(
   config: AppConfig,
 ): Promise<void> {
   const body = (request.body || {}) as Record<string, unknown>;
-  const apiKey = config.geminiApiKey || config.openRouterApiKey;
+  const apiKey = config.geminiApiKey;
   if (!apiKey) {
-    return reply.code(401).send({ error: "No GEMINI_API_KEY configured" });
+    return reply.code(404).send({ error: "Gemini adapter is not configured" });
   }
 
   let targetModel =

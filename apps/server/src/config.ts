@@ -1,3 +1,4 @@
+import { randomBytes } from "node:crypto";
 import { existsSync } from "node:fs";
 import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
@@ -76,6 +77,13 @@ const envSchema = z.object({
     .default("https://openrouter.ai/api/v1"),
   GEMINI_API_KEY: z.string().optional(),
   GEMINI_MODEL: z.string().optional(),
+  GEMINI_ADAPTER_TOKEN: z
+    .string()
+    .trim()
+    .min(24)
+    .max(128)
+    .regex(/^[A-Za-z0-9._~-]+$/, "GEMINI_ADAPTER_TOKEN must use URL-safe characters")
+    .optional(),
   ARK_API_KEY: z.string().optional(),
   ARK_MODEL: z.string().optional(),
   ARK_BASE_URL: z.string().url().optional(),
@@ -93,11 +101,18 @@ export function loadConfig(environment: Record<string, unknown> = process.env) {
 
   const env = envSchema.parse(environment);
   const authToken = env.APP_AUTH_TOKEN?.trim() ?? "";
-  const geminiApiKey = env.GEMINI_API_KEY?.trim() ?? "";
-  const isGeminiMode = geminiApiKey.length > 0 && !geminiApiKey.startsWith("replace-");
+  const configuredGeminiApiKey = env.GEMINI_API_KEY?.trim() ?? "";
+  const geminiApiKey =
+    configuredGeminiApiKey.length > 0 && !configuredGeminiApiKey.startsWith("replace-")
+      ? configuredGeminiApiKey
+      : "";
+  const isGeminiMode = geminiApiKey.length > 0;
+  const geminiAdapterToken = isGeminiMode
+    ? env.GEMINI_ADAPTER_TOKEN?.trim() || randomBytes(32).toString("base64url")
+    : "";
 
   const openRouterApiKey = isGeminiMode
-    ? geminiApiKey
+    ? geminiAdapterToken
     : env.OPENROUTER_API_KEY?.trim() ?? env.ARK_API_KEY?.trim() ?? "";
   const openRouterModel = isGeminiMode
     ? env.GEMINI_MODEL?.trim() || env.OPENROUTER_MODEL?.trim() || "gemini-3.5-flash-lite"
@@ -150,6 +165,7 @@ export function loadConfig(environment: Record<string, unknown> = process.env) {
     serverDistPath: resolveServerDistPath(),
     authToken,
     geminiApiKey,
+    geminiAdapterToken,
     openRouterApiKey,
     openRouterModel,
     openRouterBaseUrl,
