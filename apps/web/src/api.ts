@@ -5,6 +5,7 @@ import type {
   ApprovalRequest,
   Grant,
   GrantScope,
+  MemoryEntry,
   Message,
   MockResource,
   PolicyDecision,
@@ -157,6 +158,17 @@ export const api = {
     }),
   revokeGrant: (id: string) =>
     request<{ grant: Grant }>("/api/grants/" + id + "/revoke", {
+      method: "POST",
+    }),
+  listMemories: (agentId: string) =>
+    request<{ memories: MemoryEntry[] }>("/api/agents/" + agentId + "/memories"),
+  rememberForAgent: (agentId: string, body: { content: string; ttlMinutes?: number }) =>
+    request<{ memory: MemoryEntry }>("/api/agents/" + agentId + "/memories", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+  quarantineMemory: (id: string) =>
+    request<{ memory: MemoryEntry }>("/api/memories/" + id + "/quarantine", {
       method: "POST",
     }),
   // The whole point of this probe is to surface a 403 denial, not throw it
