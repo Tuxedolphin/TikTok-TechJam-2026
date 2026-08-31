@@ -23,11 +23,10 @@ async function makeFakeContainerEngine(actualPauseState: boolean): Promise<{
   const directory = await mkdtemp(path.join(tmpdir(), "launchpad-container-test-"));
   temporaryDirectories.push(directory);
   const state = path.join(directory, "paused-state");
-  const engine = path.join(directory, "fake-container-engine");
+  const engineScript = path.join(directory, "fake-container-engine.mjs");
+  const engine = path.join(directory, process.platform === "win32" ? "fake-container-engine.cmd" : "fake-container-engine");
   await writeFile(state, "false");
-  await writeFile(
-    engine,
-    `#!/usr/bin/env node
+  const script = `#!/usr/bin/env node
 import { existsSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 
 const state = ${JSON.stringify(state)};
@@ -56,9 +55,15 @@ if (command === "run") {
 } else {
   process.exit(1);
 }
-`,
+`;
+  await writeFile(engineScript, script);
+  await writeFile(
+    engine,
+    process.platform === "win32"
+      ? `@echo off\r\n"${process.execPath}" "%~dp0fake-container-engine.mjs" %*\r\n`
+      : script,
   );
-  await chmod(engine, 0o755);
+  if (process.platform !== "win32") await chmod(engine, 0o755);
   return { engine, state };
 }
 
@@ -86,11 +91,12 @@ describe("Container runtime pause verification", () => {
       };
 
       const run = runner.run(request);
+      const cancelledRun = expect(run).rejects.toThrow("cancelled");
       expect(await runner.pause(request.agentId)).toBe(actualPauseState);
       expect(await runner.resume(request.agentId)).toBe(true);
       expect(await readFile(state, "utf8")).toBe("false");
       await runner.cancel(request.agentId);
-      await expect(run).rejects.toThrow("cancelled");
+      await cancelledRun;
     },
     15_000,
   );

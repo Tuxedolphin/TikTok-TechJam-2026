@@ -138,11 +138,12 @@ export class ContainerCodexRunner implements AgentRunner {
       await execFileAsync(this.config.containerEngine, ["version"], {
         timeout: 5_000,
         env: this.childEnvironment(),
+        shell: this.commandShell(),
       });
       await execFileAsync(
         this.config.containerEngine,
         ["image", "inspect", this.config.containerRuntimeImage],
-        { timeout: 5_000, env: this.childEnvironment() },
+        { timeout: 5_000, env: this.childEnvironment(), shell: this.commandShell() },
       );
       return true;
     } catch {
@@ -167,7 +168,7 @@ export class ContainerCodexRunner implements AgentRunner {
       await execFileAsync(
         this.config.containerEngine,
         ["pause", active.containerName],
-        { timeout: 5_000, env: this.childEnvironment() },
+        { timeout: 5_000, env: this.childEnvironment(), shell: this.commandShell() },
       );
       return await this.containerPaused(active.containerName);
     } catch {
@@ -182,7 +183,7 @@ export class ContainerCodexRunner implements AgentRunner {
       await execFileAsync(
         this.config.containerEngine,
         ["unpause", active.containerName],
-        { timeout: 5_000, env: this.childEnvironment() },
+        { timeout: 5_000, env: this.childEnvironment(), shell: this.commandShell() },
       );
       return !(await this.containerPaused(active.containerName));
     } catch {
@@ -194,7 +195,7 @@ export class ContainerCodexRunner implements AgentRunner {
     const { stdout } = await execFileAsync(
       this.config.containerEngine,
       ["inspect", "--format", "{{.State.Paused}}", name],
-      { timeout: 5_000, env: this.childEnvironment() },
+      { timeout: 5_000, env: this.childEnvironment(), shell: this.commandShell() },
     );
     return stdout.trim() === "true";
   }
@@ -204,7 +205,7 @@ export class ContainerCodexRunner implements AgentRunner {
       active.termination = execFileAsync(
         this.config.containerEngine,
         ["rm", "--force", active.containerName],
-        { timeout: 8_000, env: this.childEnvironment() },
+        { timeout: 8_000, env: this.childEnvironment(), shell: this.commandShell() },
       )
         .then(() => undefined)
         .catch(() => {
@@ -228,6 +229,7 @@ export class ContainerCodexRunner implements AgentRunner {
         cwd: request.workspacePath,
         env: this.childEnvironment(true),
         stdio: ["ignore", "pipe", "pipe"],
+        shell: this.commandShell(),
       },
     );
     const effectiveTimeoutMs =
@@ -346,5 +348,9 @@ export class ContainerCodexRunner implements AgentRunner {
 
   private childEnvironment(includeRuntimeConfig = false): NodeJS.ProcessEnv {
     return containerEngineEnvironment(this.config, includeRuntimeConfig);
+  }
+
+  private commandShell(): boolean {
+    return process.platform === "win32" && this.config.containerEngine.toLowerCase().endsWith(".cmd");
   }
 }

@@ -46,7 +46,7 @@ describe("Container Codex runner", () => {
     );
     expect(args).toContain("runtime:test");
     expect(args).toContain("type=bind,src=/tmp/agent-workspace,dst=/workspace");
-    expect(args).toContain("type=bind,src=/tmp/codex-home,dst=/codex-home");
+    expect(args).toContain("type=bind,src=" + config.codexHome + ",dst=/codex-home");
     expect(args).toContain("501:20");
     expect(args).toContain("workspace-write");
     expect(args).toContain("/workspace");
@@ -93,18 +93,27 @@ describe("Container Codex runner", () => {
     const root = await mkdtemp(path.join(tmpdir(), "launchpad-container-secrets-"));
     temporaryDirectories.push(root);
     const recordPath = path.join(root, "engine-env.log");
-    const enginePath = path.join(root, "podman");
+    const engineScript = path.join(root, "fake-container-engine.mjs");
+    const enginePath = path.join(root, process.platform === "win32" ? "podman.cmd" : "podman");
+    const script = `#!/usr/bin/env node
+import { appendFileSync } from "node:fs";
+const recordPath = ${JSON.stringify(recordPath)};
+const command = process.argv[2];
+const runtimeKey = process.env.MODEL_API_KEY || "<unset>";
+appendFileSync(recordPath, command + "|" + runtimeKey + "\\n");
+if (command === "run") {
+  process.stdout.write(JSON.stringify({ type: "item.completed", item: { type: "agent_message", text: "done" } }) + "\\n");
+}
+`;
+    await writeFile(engineScript, script, "utf8");
     await writeFile(
       enginePath,
-      `#!/bin/sh
-printf '%s|%s\\n' "$1" "\${MODEL_API_KEY-<unset>}" >> "${recordPath}"
-if [ "$1" = "run" ]; then
-  printf '%s\\n' '{"type":"item.completed","item":{"type":"agent_message","text":"done"}}'
-fi
-`,
+      process.platform === "win32"
+        ? `@echo off\r\n"${process.execPath}" "%~dp0fake-container-engine.mjs" %*\r\n`
+        : script,
       "utf8",
     );
-    await chmod(enginePath, 0o755);
+    if (process.platform !== "win32") await chmod(enginePath, 0o755);
     const config = loadConfig({
       NODE_ENV: "test",
       RUNTIME_PROVIDER: "container",

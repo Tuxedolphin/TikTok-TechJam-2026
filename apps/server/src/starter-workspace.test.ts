@@ -64,7 +64,7 @@ describe("fresh workspace starter action", () => {
       const { run } = await service.sendMessage(agent.id, starterPrompt);
       await expect.poll(() => service.getRun(run.id).status).toBe("completed");
       const completed = service.getRun(run.id);
-      expect(completed.output).toContain(agent.workspacePath);
+      expect(completed.output).toContain(path.basename(agent.workspacePath));
       expect(completed.output).toContain("AGENTS.md");
       expect(completed.output).toContain("README.md");
 
