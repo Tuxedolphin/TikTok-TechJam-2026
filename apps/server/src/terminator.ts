@@ -30,20 +30,21 @@ export class AgentTerminator {
     const freeze = await this.freeze(agentId);
     const steps: TerminationStep[] = [freeze];
     const revoked: string[] = [];
+    const memoriesQuarantined: string[] = [];
 
     if (freeze.ok) {
-      steps.push(await this.revokeAndBlock(agentId, agent.principalId, revoked));
+      steps.push(await this.revokeAndBlock(agentId, agent.principalId, revoked, memoriesQuarantined));
       steps.push(await this.kill(agentId, reason));
     } else {
       // If a live runtime could not be frozen, kill it before changing grants.
       // This fallback is safe but cannot claim the requested freeze-first proof.
       steps.push(await this.kill(agentId, reason));
-      steps.push(await this.revokeAndBlock(agentId, agent.principalId, revoked));
+      steps.push(await this.revokeAndBlock(agentId, agent.principalId, revoked, memoriesQuarantined));
     }
 
     steps.push(await this.verifyContainment(agentId, agent.principalId));
     const body: UnsignedReceipt = {
-      version: 1,
+      version: 2,
       keyId: this.receiptKeys.keyId,
       agentId,
       agentPrincipalId: agent.principalId,
@@ -51,6 +52,7 @@ export class AgentTerminator {
       issuedAt: now(),
       steps,
       grantsRevoked: revoked,
+      memoriesQuarantined,
       contained: steps.every((step) => step.ok),
     };
     const receipt: TerminationReceipt = {
@@ -83,6 +85,7 @@ export class AgentTerminator {
     agentId: string,
     agentPrincipalId: string,
     revoked: string[],
+    memoriesQuarantined: string[],
   ): Promise<TerminationStep> {
     try {
       const ids = await this.store.mutate((database) => {
@@ -98,13 +101,26 @@ export class AgentTerminator {
             stamped.push(grant.id);
           }
         }
-        return stamped;
+
+        // Beliefs close with authority, in the same mutation. Revoking grants
+        // while leaving memory live would let a restarted agent carry a
+        // poisoned belief past its own termination.
+        const quarantined: string[] = [];
+        for (const entry of database.memories) {
+          if (entry.agentId === agentId && entry.quarantinedAt === null) {
+            entry.quarantinedAt = revokedAt;
+            entry.quarantinedBy = "termination";
+            quarantined.push(entry.id);
+          }
+        }
+        return { stamped, quarantined };
       });
-      revoked.push(...ids);
+      revoked.push(...ids.stamped);
+      memoriesQuarantined.push(...ids.quarantined);
       return {
         step: "revoke",
         ok: true,
-        detail: `${ids.length} grant(s) revoked; new grants blocked until operator restart.`,
+        detail: `${ids.stamped.length} grant(s) revoked, ${ids.quarantined.length} memory/memories quarantined; new grants blocked until operator restart.`,
         at: now(),
       };
     } catch (error) {
@@ -141,6 +157,9 @@ export class AgentTerminator {
       );
       const runtimeStopped = !this.agents.hasLiveExecution(agentId) && agent?.status === "stopped";
       const authorityBlocked = agent?.authorityBlocked === true;
+      const liveMemories = database.memories.filter(
+        (entry) => entry.agentId === agentId && entry.quarantinedAt === null,
+      );
 
       let networkBlocked = runtimeStopped;
       let networkDetail = "No runtime remains from which to open a route.";
@@ -154,7 +173,12 @@ export class AgentTerminator {
           : `containment unconfirmed: ${probe.detail}`;
       }
 
-      const ok = runtimeStopped && authorityBlocked && liveGrants.length === 0 && networkBlocked;
+      const ok =
+        runtimeStopped &&
+        authorityBlocked &&
+        liveGrants.length === 0 &&
+        liveMemories.length === 0 &&
+        networkBlocked;
       return {
         step: "verify",
         ok,
@@ -162,6 +186,7 @@ export class AgentTerminator {
           `runtimeStopped=${runtimeStopped}`,
           `authorityBlocked=${authorityBlocked}`,
           `liveGrants=${liveGrants.length}`,
+          `liveMemories=${liveMemories.length}`,
           `networkBlocked=${networkBlocked}`,
           networkDetail,
         ].join("; "),

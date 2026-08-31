@@ -17,7 +17,7 @@ export interface TerminationStep {
 }
 
 export interface TerminationReceipt {
-  version: 1;
+  version: 2;
   keyId: string;
   agentId: string;
   agentPrincipalId: string;
@@ -25,6 +25,8 @@ export interface TerminationReceipt {
   issuedAt: string;
   steps: TerminationStep[];
   grantsRevoked: string[];
+  /** Memories pulled from circulation, so a restart cannot resurrect a belief. */
+  memoriesQuarantined: string[];
   /** True only when every required step succeeded. */
   contained: boolean;
   signature: string;
@@ -85,7 +87,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 function validateReceiptStructure(value: unknown): value is TerminationReceipt {
   if (!isRecord(value)) return false;
   if (
-    value.version !== 1 ||
+    value.version !== 2 ||
     typeof value.keyId !== "string" ||
     typeof value.agentId !== "string" ||
     typeof value.agentPrincipalId !== "string" ||
@@ -96,6 +98,9 @@ function validateReceiptStructure(value: unknown): value is TerminationReceipt {
     !Array.isArray(value.grantsRevoked) ||
     value.grantsRevoked.some((id) => typeof id !== "string") ||
     new Set(value.grantsRevoked).size !== value.grantsRevoked.length ||
+    !Array.isArray(value.memoriesQuarantined) ||
+    value.memoriesQuarantined.some((id) => typeof id !== "string") ||
+    new Set(value.memoriesQuarantined).size !== value.memoriesQuarantined.length ||
     !Array.isArray(value.steps) ||
     value.steps.length !== 4
   ) {

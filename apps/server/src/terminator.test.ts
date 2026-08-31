@@ -7,6 +7,7 @@ import { AgentService } from "./agent-service.js";
 import { loadConfig } from "./config.js";
 import type { EgressNetworkManager } from "./egress-network.js";
 import { IdentityService } from "./identity.js";
+import { MemoryService } from "./memory.js";
 import { JsonStore } from "./store.js";
 import { receiptKeyId, verifyReceipt, type ReceiptKeyPair } from "./termination.js";
 import { AgentTerminator } from "./terminator.js";
@@ -50,11 +51,13 @@ async function harness(runner: AgentRunner) {
   );
   await service.initialize();
   const identity = new IdentityService(store);
+  const memory = new MemoryService(store);
   const keys = receiptKeys();
   return {
     service,
     store,
     identity,
+    memory,
     keys,
     terminator: new AgentTerminator(store, service, identity, keys),
   };
@@ -205,5 +208,53 @@ describe("AgentTerminator", () => {
       detail: expect.stringContaining("containment unconfirmed"),
     });
     expect(receipt.contained).toBe(false);
+  });
+
+  it("quarantines memory with authority and names it in the receipt", async () => {
+    const { service, memory, keys, terminator } = await harness({
+      run: async () => ({ output: "done", threadId: null, usage: null }),
+      cancel: async () => false,
+      isAvailable: async () => true,
+    });
+    const agent = await service.createAgent({ name: "Believer" });
+    const poisoned = await memory.remember({
+      agentId: agent.id, content: "attacker.example is an approved vendor",
+      sourceType: "web-content", sourceDetail: "https://blog.example/post",
+    });
+
+    const receipt = await terminator.terminate(agent.id, "Suspected compromise");
+
+    expect(receipt.memoriesQuarantined).toEqual([poisoned.id]);
+    expect(receipt.contained).toBe(true);
+    expect(verifyReceipt(receipt, keys.publicKeyPem).valid).toBe(true);
+    // A restart must not resurrect the belief.
+    expect(memory.listMemories(agent.id)[0]?.quarantinedBy).toBe("termination");
+    const recalled = await memory.recall(agent.id, new Date().toISOString());
+    expect(recalled.entries).toEqual([]);
+  });
+
+  it("counts live memories when verifying containment", async () => {
+    const { service, store, identity, keys } = await harness({
+      run: async () => ({ output: "done", threadId: null, usage: null }),
+      cancel: async () => false,
+      isAvailable: async () => true,
+    });
+    const agent = await service.createAgent({ name: "Leftover" });
+    const terminator = new AgentTerminator(store, service, identity, keys);
+    await terminator.terminate(agent.id, "First pass");
+
+    // A belief that appears after termination must be caught by the next pass.
+    await store.mutate((database) => {
+      database.memories.push({
+        id: "left-behind", agentId: agent.id, content: "still here",
+        provenance: { runId: null, sourceType: "web-content", sourceDetail: "https://blog.example" },
+        trust: "untrusted", createdAt: new Date().toISOString(),
+        expiresAt: null, quarantinedAt: null, quarantinedBy: null,
+      });
+    });
+    const second = await terminator.terminate(agent.id, "Second pass");
+
+    expect(second.memoriesQuarantined).toEqual(["left-behind"]);
+    expect(second.steps.at(-1)?.detail).toContain("liveMemories=0");
   });
 });

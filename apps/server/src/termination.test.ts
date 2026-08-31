@@ -16,7 +16,7 @@ const KEY_ID = receiptKeyId(PUBLIC_KEY);
 
 function receipt(over: Partial<UnsignedReceipt> = {}): TerminationReceipt {
   const body: UnsignedReceipt = {
-    version: 1,
+    version: 2,
     keyId: KEY_ID,
     agentId: "agent-1",
     agentPrincipalId: "agent-agent-1",
@@ -29,6 +29,7 @@ function receipt(over: Partial<UnsignedReceipt> = {}): TerminationReceipt {
       { step: "verify", ok: true, detail: "no route off-box", at: "2026-08-31T00:00:03.000Z" },
     ],
     grantsRevoked: ["grant-a", "grant-b"],
+    memoriesQuarantined: ["memory-a"],
     contained: true,
     ...over,
   };
