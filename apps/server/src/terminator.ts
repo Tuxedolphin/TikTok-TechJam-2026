@@ -27,6 +27,9 @@ export class AgentTerminator {
 
   async terminate(agentId: string, reason: string): Promise<TerminationReceipt> {
     const agent = this.agents.getAgent(agentId);
+    // Raise the admission barrier before anything else, so a run cannot be
+    // admitted during the freeze/revoke window and outlive this termination.
+    this.agents.beginTermination(agentId);
     const freeze = await this.freeze(agentId);
     const steps: TerminationStep[] = [freeze];
     const revoked: string[] = [];
@@ -42,6 +45,13 @@ export class AgentTerminator {
       steps.push(await this.revokeAndBlock(agentId, agent.principalId, revoked, memoriesQuarantined));
     }
 
+    // Drain any connection the proxy is still piping for this principal before
+    // verifying. Authorization is per-connection, so a tunnel opened before
+    // revocation would otherwise keep flowing while the receipt claimed
+    // containment.
+    if (this.egress?.drainPrincipal) {
+      await Promise.resolve(this.egress.drainPrincipal(agent.principalId)).catch(() => null);
+    }
     steps.push(await this.verifyContainment(agentId, agent.principalId));
     const body: UnsignedReceipt = {
       version: 2,
@@ -155,7 +165,20 @@ export class AgentTerminator {
           grant.revokedAt === null &&
           (grant.expiresAt === null || grant.expiresAt > currentTime),
       );
-      const runtimeStopped = !this.agents.hasLiveExecution(agentId) && agent?.status === "stopped";
+      const inMemoryStopped = !this.agents.hasLiveExecution(agentId) && agent?.status === "stopped";
+      // The in-memory map is cleared even when `docker rm` failed, so it is not
+      // proof the container is gone. Ask the engine directly. A confirmed
+      // sighting (false) fails containment; an unconfirmable answer (null)
+      // falls back to the in-memory view and is reported as such.
+      const runtimeConfirmed = await this.agents.runtimeConfirmedStopped(agentId);
+      // Confirmed-running (false) fails containment outright. Otherwise the
+      // in-memory view stands, whether the engine confirmed stopped (true) or
+      // could not be asked (null).
+      const runtimeStopped = runtimeConfirmed !== false && inMemoryStopped;
+      const runtimeDetail =
+        runtimeConfirmed === null
+          ? "runtime stop not independently confirmed by the engine"
+          : `runtime confirmed ${runtimeConfirmed ? "stopped" : "STILL RUNNING"} by the engine`;
       const authorityBlocked = agent?.authorityBlocked === true;
       const liveMemories = database.memories.filter(
         (entry) => entry.agentId === agentId && entry.quarantinedAt === null,
@@ -184,6 +207,7 @@ export class AgentTerminator {
         ok,
         detail: [
           `runtimeStopped=${runtimeStopped}`,
+          runtimeDetail,
           `authorityBlocked=${authorityBlocked}`,
           `liveGrants=${liveGrants.length}`,
           `liveMemories=${liveMemories.length}`,

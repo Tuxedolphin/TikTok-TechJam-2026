@@ -257,6 +257,16 @@ export class AgentService {
     }
   }
 
+  /**
+   * Raised at the very start of termination, before freeze. `freezeAgent`
+   * returns "idle" and short-circuits when no execution is registered yet, so
+   * installing the barrier only inside freeze left a window: a message admitted
+   * but not yet in `activeExecutions` would see no barrier and run after
+   * termination believed the agent idle. Admission now checks this set.
+   */
+  beginTermination(agentId: string): void {
+    this.terminationBarriers.add(agentId);  }
+
   async freezeAgent(
     agentId: string,
   ): Promise<"paused" | "idle" | "blocked" | "failed" | "unsupported"> {
@@ -576,7 +586,7 @@ export class AgentService {
       sessionId: null,
       runId,
       role: "user",
-      content: prompt,
+      content: this.redact(prompt),
       createdAt: timestamp,
     };
     const agentAtStart = await this.store.mutate((database) => {
@@ -589,6 +599,12 @@ export class AgentService {
       }
       if (storedAgent.status === "busy") {
         throw new HttpError(409, "This Agent is already running");
+      }
+      // Refuse admission while the agent is being terminated. Without this, a
+      // message could slip in between termination's freeze (which saw no live
+      // execution) and the barrier check just before the runner starts.
+      if (this.terminationBarriers.has(agentId)) {
+        throw new HttpError(409, "This Agent is being terminated");
       }
       const activeSessionId = storedAgent.activeSessionId ?? null;
       run.sessionId = activeSessionId;
@@ -737,6 +753,28 @@ export class AgentService {
             resolvedBy: null,
           };
 
+          // Freeze BEFORE publishing the approval. Pausing afterwards meant a
+          // failed pause left a pending approval in the store and the agent in
+          // waiting_approval, so the operator was asked to decide about a run
+          // that was already doomed -- and, worse, the runtime stayed live for
+          // up to five minutes while the UI claimed the action was held.
+          // Nothing is published unless the freeze actually took.
+          let pauseResult: "paused" | "idle" | "failed" | undefined;
+          try {
+            pauseResult = await this.runner.pause?.(agentAtStart.id);
+          } catch {
+            pauseResult = "failed";
+          }
+          if (pauseResult === "failed") {
+            stepViolation = new RunPolicyViolationError(
+              "approval",
+              409,
+              `Runtime pause failed; the high-risk action was cancelled before approval (${risk.ruleId}).`,
+            );
+            await this.runner.cancel(agentAtStart.id).catch(() => false);
+            throw stepViolation;
+          }
+
           await this.store.mutate((database) => {
             database.approvals.push(approvalReq);
             const agent = database.agents.find((item) => item.id === agentAtStart.id);
@@ -754,8 +792,6 @@ export class AgentService {
               createdAt: timestamp,
             });
           });
-
-          await this.runner.pause?.(agentAtStart.id);
 
           const approved = await new Promise<boolean>((resolve) => {
             const timeout = setTimeout(() => {
@@ -862,7 +898,7 @@ export class AgentService {
         const storedSession = database.sessions.find((item) => item.id === run.sessionId);
         if (!storedRun || !agent) return;
         storedRun.status = "completed";
-        storedRun.output = result.output;
+        storedRun.output = this.redact(result.output);
         storedRun.usage = enrichedUsage;
         storedRun.completedAt = completedAt;
 
@@ -945,7 +981,12 @@ export class AgentService {
   private redact(value: string): string {
     if (!value) return value;
     let output = value;
-    for (const secret of [this.config.guardrailCanaryToken, this.config.openRouterApiKey]) {
+    for (const secret of [
+      this.config.guardrailCanaryToken,
+      this.config.geminiApiKey,
+      this.config.geminiAdapterToken,
+      this.config.openRouterApiKey,
+    ]) {
       if (secret) {
         output = output.split(secret).join("[redacted]");
       }
@@ -999,6 +1040,15 @@ export class AgentService {
     } finally {
       this.cancellationRequests.delete(agentId);
     }
+  }
+
+  /**
+   * Whether the runtime is independently confirmed stopped by the engine, not
+   * just absent from the in-memory map. null when the runner cannot confirm
+   * (e.g. the host-process runtime), which the caller must not read as "gone".
+   */
+  async runtimeConfirmedStopped(agentId: string): Promise<boolean | null> {
+    return (await this.runner.confirmStopped?.(agentId)) ?? null;
   }
 
   hasLiveExecution(agentId: string): boolean {

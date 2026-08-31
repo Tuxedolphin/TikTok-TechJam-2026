@@ -14,10 +14,10 @@ Requirements:
 
 ```bash
 # With Gemini:
-GEMINI_API_KEY=your-gemini-key npm run poc
+HOST=127.0.0.1 GEMINI_API_KEY=your-gemini-key npm run poc
 
 # Or with OpenRouter fallback:
-# OPENROUTER_API_KEY=your-key OPENROUTER_MODEL=openai/gpt-4o-mini npm run poc
+# HOST=127.0.0.1 OPENROUTER_API_KEY=your-key OPENROUTER_MODEL=openai/gpt-4o-mini npm run poc
 ```
 
 Open <http://localhost:3000>. Press `Ctrl+C` to stop the server and remove this
@@ -25,6 +25,23 @@ instance's remaining Runtime containers.
 
 Force an engine with `CONTAINER_ENGINE=docker` or
 `CONTAINER_ENGINE=podman`. Colima uses the Docker CLI.
+
+### Gemini adapter routing
+
+Gemini requests return to the Fastify adapter before the server contacts
+Google. The address is selected from `RUNTIME_PROVIDER`:
+
+- `container` uses `http://host.docker.internal:<port>/api/adapter`. Disposable
+  Docker, Docker Desktop, Colima, and Podman Runtime containers receive the
+  explicit `host.docker.internal:host-gateway` mapping. With egress enforcement,
+  traffic uses the authorized proxy sidecar, which has the same mapping; with
+  enforcement off, the mapping is attached directly to the Runtime container.
+- `local-process` uses `http://127.0.0.1:<port>/api/adapter`. This is the profile
+  for Codex started directly on the development host.
+
+The explicit mapping is required by native Linux Docker and keeps behavior
+consistent with Docker Desktop and Colima. Rootless Podman uses the same alias
+rather than relying on its engine-specific `host.containers.internal` name.
 
 ## Data and Runtime
 
@@ -90,6 +107,7 @@ podman run --rm docker.io/library/alpine:3.20 echo PODMAN_OK
 `podman info` must report `rootless: true`. Start the POC:
 
 ```bash
+HOST=127.0.0.1 \
 CONTAINER_ENGINE=podman \
 GEMINI_API_KEY=your-gemini-api-key \
 npm run poc
@@ -102,6 +120,7 @@ build.
 ## Common options
 
 ```bash
+HOST=127.0.0.1 \
 CONTAINER_RUNTIME_APT_PACKAGES='ca-certificates git ripgrep curl python3 build-essential' \
 GEMINI_API_KEY=your-gemini-api-key \
 npm run poc

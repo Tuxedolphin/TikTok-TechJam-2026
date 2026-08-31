@@ -1,13 +1,22 @@
 import { generateKeyPairSync } from "node:crypto";
-import { describe, expect, it } from "vitest";
+import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
+import { afterEach, describe, expect, it } from "vitest";
 import {
   canonicalize,
+  loadOrCreateReceiptKeyPair,
   receiptKeyId,
   signReceipt,
   verifyReceipt,
   type TerminationReceipt,
   type UnsignedReceipt,
 } from "./termination.js";
+
+const keyTempDirs: string[] = [];
+afterEach(async () => {
+  await Promise.all(keyTempDirs.splice(0).map((d) => rm(d, { recursive: true, force: true })));
+});
 
 const { privateKey, publicKey } = generateKeyPairSync("ed25519");
 const PRIVATE_KEY = privateKey.export({ type: "pkcs8", format: "pem" }).toString();
@@ -119,3 +128,44 @@ describe("verifyReceipt", () => {
     ).toMatchObject({ valid: false, reason: expect.stringContaining("structure") });
   });
 });
+
+describe("loadOrCreateReceiptKeyPair", () => {
+  it("generates a usable pair and persists the private key mode 0600", async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "receipt-key-"));
+    keyTempDirs.push(dir);
+    const keys = await loadOrCreateReceiptKeyPair(dir);
+    // Signs and verifies -- a real pair.
+    const body = { hello: "world" };
+    const sig = signReceipt(body as unknown as UnsignedReceipt, keys.privateKeyPem);
+    expect(typeof sig).toBe("string");
+    const mode = (await stat(path.join(dir, "receipt-signing-private.pem"))).mode & 0o777;
+    expect(mode).toBe(0o600);
+    // Reloading returns the same key.
+    const again = await loadOrCreateReceiptKeyPair(dir);
+    expect(again.keyId).toBe(keys.keyId);
+  });
+
+  it("repairs a private key left world-readable", async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "receipt-key-"));
+    keyTempDirs.push(dir);
+    await loadOrCreateReceiptKeyPair(dir);
+    const privatePath = path.join(dir, "receipt-signing-private.pem");
+    await writeFile(privatePath, await readFile(privatePath, "utf8"), { mode: 0o644 });
+    await loadOrCreateReceiptKeyPair(dir);
+    expect((await stat(privatePath)).mode & 0o777).toBe(0o600);
+  });
+
+  it("refuses to run on a mismatched key pair rather than signing forgeable evidence", async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "receipt-key-"));
+    keyTempDirs.push(dir);
+    await loadOrCreateReceiptKeyPair(dir);
+    // Overwrite the public key with an unrelated one -- no longer a pair.
+    const other = generateKeyPairSync("ed25519");
+    await writeFile(
+      path.join(dir, "receipt-signing-public.pem"),
+      other.publicKey.export({ type: "spki", format: "pem" }).toString(),
+    );
+    await expect(loadOrCreateReceiptKeyPair(dir)).rejects.toThrow(/do not correspond/);
+  });
+});
+

@@ -42,6 +42,10 @@ const controlPlane = {
 
 const server = createEgressProxy({
   controlPlane,
+  // The agent secret is already private to this sidecar; reuse it to gate the
+  // drain control endpoint so the control plane can tear down a terminated
+  // principal's live tunnels.
+  controlToken: agentSecret,
   authorize: async ({ agentPrincipalId, host, port: targetPort, method, secret }): Promise<EgressVerdict> => {
     const response = await fetch(authorizeUrl, {
       method: "POST",

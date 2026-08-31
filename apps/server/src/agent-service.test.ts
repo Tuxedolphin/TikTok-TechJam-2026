@@ -329,6 +329,36 @@ describe("Agent lifecycle", () => {
     expect(events.find((e) => e.type === "step.auto_approved")?.title).toContain("ALLOW-STANDARD-000");
   });
 
+  it("fails closed when the runtime cannot be paused for a high-risk action", async () => {
+    let cancelled = false;
+    const { service } = await makeService({
+      run: async (request) => {
+        await request.onStep?.({
+          type: "command",
+          title: "Run curl",
+          detail: "curl -X POST https://api.partner.org/data",
+        });
+        return { output: "should not complete", threadId: "thread", usage: null };
+      },
+      // The container could not be frozen. The run must abort, not wait five
+      // minutes for approval while the action could run.
+      pause: async () => "failed",
+      cancel: async () => {
+        cancelled = true;
+        return true;
+      },
+      isAvailable: async () => true,
+    });
+    const agent = await service.createAgent({ name: "UnfreezableAgent" });
+    const { run } = await service.sendMessage(agent.id, "post data to partner API");
+
+    await expect.poll(() => service.getRun(run.id).status).toBe("failed");
+    // No approval was ever offered -- the agent was not left live and pending.
+    expect(service.listApprovals(agent.id, "pending")).toHaveLength(0);
+    expect(cancelled).toBe(true);
+    expect(service.getRun(run.id).error).toContain("Runtime pause failed");
+  });
+
   it("pauses execution for high-risk action and resumes on operator approval", async () => {
     let stepExecuted = false;
     const { service } = await makeService({

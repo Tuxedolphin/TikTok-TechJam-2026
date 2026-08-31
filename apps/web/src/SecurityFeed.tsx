@@ -309,10 +309,14 @@ export default function SecurityFeed({ agent }: { agent: Agent }) {
                 <strong>{line.headline}</strong>
                 <span className="line-because">{line.because}</span>
               </div>
-              <div className="line-meta">
-                <span className="category-tag mono">{line.category}</span>
-                <span className="line-time mono">{relativeTime(line.at)}</span>
-              </div>
+              <details className="inspector-details line-details">
+                <summary>Details</summary>
+                <div className="line-meta">
+                  <span className="category-tag mono">{line.category}</span>
+                  <code className="mono">{line.rule}</code>
+                  <span className="line-time mono">{relativeTime(line.at)}</span>
+                </div>
+              </details>
             </li>
           ))}
         </ul>

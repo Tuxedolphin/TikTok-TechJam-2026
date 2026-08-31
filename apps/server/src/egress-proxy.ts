@@ -7,6 +7,14 @@ import {
 } from "node:http";
 import { connect, isIP, type Socket } from "node:net";
 import { lookup as dnsLookup } from "node:dns/promises";
+import { timingSafeEqual } from "node:crypto";
+
+/** Constant-time comparison, matching how the rest of the codebase checks secrets. */
+function secretsMatch(presented: string, expected: string): boolean {
+  const a = Buffer.from(presented);
+  const b = Buffer.from(expected);
+  return a.length === b.length && timingSafeEqual(a, b);
+}
 
 /**
  * Verdict returned by the authorizer for one outbound connection attempt.
@@ -55,6 +63,14 @@ export interface EgressProxyOptions {
   connectTimeoutMs?: number;
   /** Test-only escape hatch: upstreams on loopback are otherwise refused. */
   allowPrivateAddresses?: boolean;
+  /**
+   * Bearer token gating the in-band drain control request. When set, a
+   * `POST /__egress_control/drain` carrying this token and an
+   * `x-egress-principal` header drains that principal's live connections. The
+   * control plane uses this during termination; agent containers never learn
+   * the token.
+   */
+  controlToken?: string;
 }
 
 /**
@@ -101,15 +117,19 @@ export function principalFromProxyAuth(
 export function isPrivateAddress(address: string): boolean {
   if (isIP(address) === 6) {
     const normalized = address.toLowerCase();
+    // An IPv4-mapped address (::ffff:a.b.c.d, and its hex ::ffff:aabb:ccdd
+    // form) reaches the same host as the bare IPv4. Anything less than
+    // normalizing it back to v4 lets a partial prefix list leak: the previous
+    // check listed ::ffff:10/192.168 but not ::ffff:172.16/12 or, worse,
+    // ::ffff:169.254.169.254 -- cloud metadata behind a mapped address.
+    const mapped = mappedIpv4(normalized);
+    if (mapped) return isPrivateAddress(mapped);
     return (
       normalized === "::1" ||
       normalized === "::" ||
       normalized.startsWith("fe80:") ||
       normalized.startsWith("fc") ||
-      normalized.startsWith("fd") ||
-      normalized.startsWith("::ffff:127.") ||
-      normalized.startsWith("::ffff:10.") ||
-      normalized.startsWith("::ffff:192.168.")
+      normalized.startsWith("fd")
     );
   }
   const parts = address.split(".").map(Number);
@@ -120,6 +140,25 @@ export function isPrivateAddress(address: string): boolean {
   if (a === 172 && b >= 16 && b <= 31) return true;
   if (a === 192 && b === 168) return true;
   return false;
+}
+
+/**
+ * The dotted-quad inside an IPv6 address that actually reaches an IPv4 host:
+ * the v4-mapped form (::ffff:a.b.c.d and its hex ::ffff:aabb:ccdd spelling) and
+ * the deprecated v4-compatible form (::a.b.c.d). Both are decoded so one policy
+ * covers every spelling -- listing prefixes by hand is what let
+ * ::ffff:169.254.169.254 through as "public".
+ */
+function mappedIpv4(normalized: string): string | null {
+  const dotted = /^::(?:ffff:)?(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})$/.exec(normalized);
+  if (dotted?.[1]) return dotted[1];
+  const hex = /^::ffff:([0-9a-f]{1,4}):([0-9a-f]{1,4})$/.exec(normalized);
+  if (hex?.[1] && hex[2]) {
+    const high = parseInt(hex[1], 16);
+    const low = parseInt(hex[2], 16);
+    return `${high >> 8}.${high & 0xff}.${low >> 8}.${low & 0xff}`;
+  }
+  return null;
 }
 
 const privateAddressVerdict = (host: string): EgressVerdict => ({
@@ -145,9 +184,60 @@ const DENIED_BODY = (verdict: EgressVerdict, host: string): string =>
  * authorized before a byte leaves; there is no cached decision, so revoking a
  * grant takes effect on the agent's very next connection.
  */
-export function createEgressProxy(options: EgressProxyOptions): Server {
-  const server = createServer();
+/** A proxy that can also drain the connections it is piping for a principal. */
+export type EgressProxyServer = Server & {
+  /**
+   * Destroys every connection currently piping for this principal and returns
+   * how many were closed. Authorization is per-connection, so an already-
+   * established tunnel keeps flowing after its grant is revoked and its agent
+   * killed; termination must drain these, or an in-flight exfiltration can
+   * complete after the receipt claims containment.
+   */
+  closePrincipalConnections(agentPrincipalId: string): number;
+};
+
+interface Closable {
+  destroy(): void;
+}
+
+export function createEgressProxy(options: EgressProxyOptions): EgressProxyServer {
+  const server = createServer() as EgressProxyServer;
   const connectTimeoutMs = options.connectTimeoutMs ?? 30_000;
+
+  // Live connections, indexed by the principal they were authorized for.
+  const liveByPrincipal = new Map<string, Set<Closable>>();
+  const track = (principalId: string, ...closables: Closable[]): void => {
+    let set = liveByPrincipal.get(principalId);
+    if (!set) {
+      set = new Set();
+      liveByPrincipal.set(principalId, set);
+    }
+    for (const closable of closables) {
+      set.add(closable);
+      const forget = () => {
+        set!.delete(closable);
+        if (set!.size === 0) liveByPrincipal.delete(principalId);
+      };
+      // ClientRequest / ServerResponse / Socket all emit "close".
+      (closable as unknown as { once(event: string, cb: () => void): void }).once("close", forget);
+    }
+  };
+
+  server.closePrincipalConnections = (agentPrincipalId: string): number => {
+    const set = liveByPrincipal.get(agentPrincipalId);
+    if (!set) return 0;
+    let closed = 0;
+    for (const closable of [...set]) {
+      try {
+        closable.destroy();
+        closed += 1;
+      } catch {
+        // Already gone; the "close" handler will have removed it.
+      }
+    }
+    liveByPrincipal.delete(agentPrincipalId);
+    return closed;
+  };
 
   /**
    * Resolves a host once and refuses private targets, then hands back the
@@ -202,6 +292,22 @@ export function createEgressProxy(options: EgressProxyOptions): Server {
   // Plain HTTP: the absolute-form request URI carries the target.
   server.on("request", (request: IncomingMessage, response: ServerResponse) => {
     void (async () => {
+      // In-band control channel: the control plane asks the proxy to drain a
+      // terminated principal's live connections. Origin-form path, bearer
+      // token, no forwarding. A wrong or missing token is a 404 so the endpoint
+      // is invisible to an agent probing for it.
+      if (request.url === "/__egress_control/drain" && request.method === "POST") {
+        const presented = (request.headers["x-egress-control-token"] as string | undefined) ?? "";
+        const principalId = (request.headers["x-egress-principal"] as string | undefined) ?? "";
+        if (!options.controlToken || !secretsMatch(presented, options.controlToken)) {
+          response.writeHead(404).end();
+          return;
+        }
+        const closed = server.closePrincipalConnections(principalId);
+        response.writeHead(200, { "content-type": "application/json" });
+        response.end(JSON.stringify({ closed }));
+        return;
+      }
       // Absolute-form (`GET http://host/path`) is what a proxy normally sees,
       // but origin-form (`GET /path` + Host header) is legal too; joining the
       // two keeps the path instead of silently rewriting every request to "/".
@@ -271,6 +377,9 @@ export function createEgressProxy(options: EgressProxyOptions): Server {
         if (!response.headersSent) response.writeHead(502, { "content-type": "text/plain" });
         response.end("upstream error\n");
       });
+      // Registered so termination can drain an in-flight request for a
+      // principal whose authority was just revoked.
+      if (principal) track(principal.principalId, upstream, response);
       // A client that vanishes mid-body must not strand the upstream socket.
       request.on("error", () => upstream.destroy());
       request.pipe(upstream);
@@ -343,9 +452,17 @@ export function createEgressProxy(options: EgressProxyOptions): Server {
         if (head.length > 0) upstream.write(head);
         upstream.pipe(clientSocket);
         clientSocket.pipe(upstream);
+        // An established tunnel re-authorizes nowhere; draining it on
+        // termination is the only way to stop bytes already flowing.
+        if (principal) track(principal.principalId, clientSocket, upstream);
       });
-      upstream.on("error", () => clientSocket.end());
+      // Tear the tunnel down fully when either end goes, on clean close as well
+      // as error. Handling only "error" left a half-open tunnel able to keep
+      // flushing upstream bytes after the agent's own socket had closed.
+      upstream.on("error", () => clientSocket.destroy());
+      upstream.on("close", () => clientSocket.destroy());
       clientSocket.on("error", () => upstream.destroy());
+      clientSocket.on("close", () => upstream.destroy());
     })();
   });
 

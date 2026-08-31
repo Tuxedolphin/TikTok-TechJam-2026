@@ -4,6 +4,18 @@ import type { AppConfig } from "./config.js";
 
 const thoughtSignatureStore = new Map<string, unknown>();
 let lastRequestTime = 0;
+
+function redactSecrets(value: string, config: AppConfig): string {
+  let output = value;
+  for (const secret of [
+    config.geminiApiKey,
+    config.geminiAdapterToken,
+    config.openRouterApiKey,
+  ]) {
+    if (secret) output = output.split(secret).join("[redacted]");
+  }
+  return output;
+}
 const MIN_REQUEST_INTERVAL_MS = 4200; // Cap pacing strictly at 14.3 RPM (under Google 15 RPM limit)
 
 export async function handleGeminiResponsesAdapter(
@@ -12,9 +24,9 @@ export async function handleGeminiResponsesAdapter(
   config: AppConfig,
 ): Promise<void> {
   const body = (request.body || {}) as Record<string, unknown>;
-  const apiKey = config.geminiApiKey || config.openRouterApiKey;
+  const apiKey = config.geminiApiKey;
   if (!apiKey) {
-    return reply.code(401).send({ error: "No GEMINI_API_KEY configured" });
+    return reply.code(404).send({ error: "Gemini adapter is not configured" });
   }
 
   let targetModel =
@@ -116,10 +128,29 @@ export async function handleGeminiResponsesAdapter(
     })
     .filter(Boolean);
 
+  const requestedMaxOutputTokens =
+    typeof body.max_output_tokens === "number" &&
+    Number.isInteger(body.max_output_tokens) &&
+    body.max_output_tokens > 0
+      ? body.max_output_tokens
+      : null;
+  const maxCompletionTokens = [
+    requestedMaxOutputTokens,
+    config.runBudgetMaxOutputTokens,
+  ].reduce<number | null>(
+    (lowest, value) =>
+      value === null ? lowest : lowest === null ? value : Math.min(lowest, value),
+    null,
+  );
   const geminiPayload = {
     model: targetModel,
     messages,
     ...(tools.length > 0 ? { tools, tool_choice: "auto" } : {}),
+    // Google's OpenAI-compatibility layer documents `max_tokens` and silently
+    // ignores parameters it does not recognize, so an unrecognized name would
+    // make this cap decorative. It counts reasoning plus output tokens, which
+    // is stricter than the budget name suggests -- never looser.
+    ...(maxCompletionTokens !== null ? { max_tokens: maxCompletionTokens } : {}),
     stream: false,
   };
 
@@ -162,7 +193,7 @@ export async function handleGeminiResponsesAdapter(
 
   if (!response.ok) {
     const errorText = await response.text();
-    return reply.code(response.status).send({ error: errorText });
+    return reply.code(response.status).send({ error: redactSecrets(errorText, config) });
   }
 
   const geminiResult = (await response.json()) as {
@@ -193,7 +224,12 @@ export async function handleGeminiResponsesAdapter(
 
   let seq = 0;
   const sendEvent = (event: Record<string, unknown>) => {
-    reply.raw.write("data: " + JSON.stringify({ ...event, sequence_number: seq++ }) + "\n\n");
+    const payload = JSON.stringify(
+      { ...event, sequence_number: seq++ },
+      (_key, value) =>
+        typeof value === "string" ? redactSecrets(value, config) : value,
+    );
+    reply.raw.write("data: " + payload + "\n\n");
   };
 
   sendEvent({

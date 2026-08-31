@@ -135,15 +135,31 @@ describe("authorizeGrantRequest", () => {
     expect(decision.allowed).toBe(false);
   });
 
-  it("allows an agent to pass along strictly less than it holds", () => {
+  it("refuses a self-directed clone even of authority the agent already holds", () => {
+    // The revocation-bypass: re-granting yourself a copy of a grant you hold
+    // gains nothing but a second grant that survives the first's revocation.
+    const decision = authorizeGrantRequest({
+      actorKind: "agent",
+      actorPrincipalId: AGENT,
+      requested: { scope: "network:egress", target: "registry.npmjs.org", expiresAt: LATER },
+      beneficiaryPrincipalId: AGENT,
+      heldByRequester: [held({ target: "registry.npmjs.org", expiresAt: null })],
+    });
+    expect(decision).toMatchObject({ allowed: false, ruleId: "AUTHORITY-SELF-ESCALATION-031" });
+  });
+
+  it("allows an agent to pass along strictly less than it holds, and names the parent", () => {
+    const parent = held({ expiresAt: null });
     const decision = authorizeGrantRequest({
       actorKind: "agent",
       actorPrincipalId: AGENT,
       requested: { scope: "network:egress", target: "registry.npmjs.org", expiresAt: LATER },
       beneficiaryPrincipalId: "agent-child",
-      heldByRequester: [held({ expiresAt: null })],
+      heldByRequester: [parent],
     });
     expect(decision).toMatchObject({ allowed: true, ruleId: "AUTHORITY-NARROWING-032" });
+    // The parent link is what lets revocation cascade.
+    expect(decision.parentGrantId).toBe(parent.id);
   });
 
   it("stops an agent handing a peer more than it holds itself", () => {

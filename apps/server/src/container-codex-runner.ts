@@ -38,14 +38,31 @@ interface ParsedEvents {
  * server's own process environment holds credentials that have no business
  * reaching a `docker`/`podman` invocation.
  */
-export function containerEngineEnvironment(config: AppConfig): NodeJS.ProcessEnv {
-  const environment: NodeJS.ProcessEnv = {
-    OPENROUTER_API_KEY: config.openRouterApiKey,
-    OPENAI_API_KEY: config.openRouterApiKey,
-    OPENROUTER_BASE_URL: config.openRouterBaseUrl,
-    OPENAI_BASE_URL: config.openRouterBaseUrl,
-    NO_COLOR: "1",
+/**
+ * The proxy URL values, keyed by the names `buildContainerRunArgs` forwards.
+ * Empty when enforcement is off, so the agent container gets no proxy env.
+ */
+export function proxyChildEnv(egressProxyUrl: string | undefined): NodeJS.ProcessEnv {
+  if (!egressProxyUrl) return {};
+  return {
+    HTTP_PROXY: egressProxyUrl,
+    HTTPS_PROXY: egressProxyUrl,
+    http_proxy: egressProxyUrl,
+    https_proxy: egressProxyUrl,
   };
+}
+
+export function containerEngineEnvironment(
+  config: AppConfig,
+  includeRuntimeConfig = false,
+): NodeJS.ProcessEnv {
+  const environment: NodeJS.ProcessEnv = { NO_COLOR: "1" };
+  if (includeRuntimeConfig) {
+    environment.OPENROUTER_API_KEY = config.openRouterApiKey;
+    environment.OPENAI_API_KEY = config.openRouterApiKey;
+    environment.OPENROUTER_BASE_URL = config.openRouterBaseUrl;
+    environment.OPENAI_BASE_URL = config.openRouterBaseUrl;
+  }
   for (const name of ["PATH", "HOME", "TMPDIR", "LANG", "LC_ALL", "XDG_RUNTIME_DIR"] as const) {
     if (process.env[name] !== undefined) environment[name] = process.env[name];
   }
@@ -84,14 +101,20 @@ export function buildContainerRunArgs(
       ? [
           "--network",
           INTERNAL_NETWORK,
+          // Passed by name, not value. The proxy URL embeds this agent's
+          // per-process proxy secret; `--env NAME=value` would put that secret
+          // in the engine's argv, and /proc/<pid>/cmdline is world-readable, so
+          // any local process could recover it and impersonate the agent at the
+          // proxy. The value travels in the engine child's own environment
+          // instead (see proxyChildEnv).
           "--env",
-          "HTTP_PROXY=" + request.egressProxyUrl,
+          "HTTP_PROXY",
           "--env",
-          "HTTPS_PROXY=" + request.egressProxyUrl,
+          "HTTPS_PROXY",
           "--env",
-          "http_proxy=" + request.egressProxyUrl,
+          "http_proxy",
           "--env",
-          "https_proxy=" + request.egressProxyUrl,
+          "https_proxy",
           "--env",
           "NO_PROXY=localhost,127.0.0.1",
         ]
@@ -109,13 +132,13 @@ export function buildContainerRunArgs(
     "--user",
     config.containerUser,
     "--env",
-    "OPENROUTER_API_KEY=" + config.openRouterApiKey,
+    "OPENROUTER_API_KEY",
     "--env",
-    "OPENAI_API_KEY=" + config.openRouterApiKey,
+    "OPENAI_API_KEY",
     "--env",
-    "OPENROUTER_BASE_URL=" + config.openRouterBaseUrl,
+    "OPENROUTER_BASE_URL",
     "--env",
-    "OPENAI_BASE_URL=" + config.openRouterBaseUrl,
+    "OPENAI_BASE_URL",
     "--env",
     "CODEX_HOME=/codex-home",
     "--env",
@@ -187,6 +210,28 @@ export class ContainerCodexRunner implements AgentRunner {
     return this.active.has(agentId);
   }
 
+  /**
+   * Asks the engine directly whether this agent's container still exists,
+   * rather than trusting the in-memory active map. `docker rm --force` can time
+   * out or fail while the daemon-side container keeps running; the map is
+   * cleared regardless, so a receipt could claim a kill that did not happen.
+   * Returns false only on a confirmed sighting of the container; a query error
+   * is reported as "unconfirmed" (null) rather than a false all-clear.
+   */
+  async confirmStopped(agentId: string): Promise<boolean | null> {
+    const name = containerName(agentId, this.config.runtimeInstanceId);
+    try {
+      const { stdout } = await execFileAsync(
+        this.config.containerEngine,
+        ["ps", "-a", "--filter", `name=^${name}$`, "--format", "{{.Names}}"],
+        { timeout: 5_000, env: this.childEnvironment() },
+      );
+      return stdout.trim() === "";
+    } catch {
+      return null;
+    }
+  }
+
   async resume(agentId: string): Promise<boolean> {
     const active = this.active.get(agentId);
     if (!active || active.cancelled) return false;
@@ -234,7 +279,7 @@ export class ContainerCodexRunner implements AgentRunner {
       buildContainerRunArgs(request, this.config),
       {
         cwd: request.workspacePath,
-        env: this.childEnvironment(),
+        env: { ...this.childEnvironment(true), ...proxyChildEnv(request.egressProxyUrl) },
         stdio: ["ignore", "pipe", "pipe"],
       },
     );
@@ -352,7 +397,7 @@ export class ContainerCodexRunner implements AgentRunner {
     }
   }
 
-  private childEnvironment(): NodeJS.ProcessEnv {
-    return containerEngineEnvironment(this.config);
+  private childEnvironment(includeRuntimeConfig = false): NodeJS.ProcessEnv {
+    return containerEngineEnvironment(this.config, includeRuntimeConfig);
   }
 }
