@@ -115,6 +115,23 @@ describe("production authentication configuration", () => {
       );
     },
   );
+
+  it("points at a remedy that runs on every platform", () => {
+    // Docker Compose forces NODE_ENV=production and HOST=0.0.0.0, so this is
+    // the first thing a Compose user sees. Naming a bash script here strands
+    // anyone on Windows: the only documented way out of the error is a file
+    // their shell cannot execute.
+    const message = (() => {
+      try {
+        loadConfig({ NODE_ENV: "production", HOST: "0.0.0.0", APP_AUTH_TOKEN: "" });
+        return "";
+      } catch (error) {
+        return (error as Error).message;
+      }
+    })();
+    expect(message).toContain("npm run bootstrap");
+    expect(message).not.toContain(".sh");
+  });
 });
 
 describe("egress enforcement configuration", () => {

@@ -155,7 +155,7 @@ export function loadConfig(environment: Record<string, unknown> = process.env) {
     if (authToken.length < 24 || authToken.startsWith("replace-")) {
       throw new Error(
         "APP_AUTH_TOKEN must contain at least 24 characters for a non-loopback production server. " +
-          "Run ./scripts/bootstrap-local.sh to generate one in .env.",
+          "Run: npm run bootstrap",
       );
     }
   }

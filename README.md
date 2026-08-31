@@ -65,6 +65,17 @@ Being precise about provenance: the approval UI, canary tripwire, budget breaker
 
 Codex CLI is included in the Runtime image and is not required on the host.
 
+### On Windows
+
+`npm run poc` is a bash script and needs **WSL2** — which Docker Desktop for
+Windows already requires, so the environment is usually there. Inside a WSL2
+shell everything below works unchanged.
+
+Natively on Windows, use the [Docker Compose](#docker-compose) path with
+`npm run bootstrap`. That gives you the full platform, but note it runs
+`RUNTIME_PROVIDER=local-process`, and egress enforcement exists only under the
+container runtime — so the containment demo needs WSL2.
+
 ## Local browser SOP
 
 ### 1. Check the local tools
@@ -165,8 +176,13 @@ For a clean Linux host, follow the
 Create and edit the configuration:
 
 ```bash
-./scripts/bootstrap-local.sh
+npm run bootstrap
 ```
+
+Compose runs the server with `NODE_ENV=production` and `HOST=0.0.0.0`, so it
+refuses to start without a real `APP_AUTH_TOKEN`. This command creates `.env`
+from the example, generates that token, and makes the state directories. It is
+idempotent and runs on every platform, Windows included.
 
 Compose runs the server in production mode, where the process binds `0.0.0.0`
 inside its container. Only the published port decides who can reach it, so
