@@ -150,7 +150,12 @@ export default function App() {
   const [pendingApprovals, setPendingApprovals] = useState<ApprovalRequest[]>([]);
   const [showCreate, setShowCreate] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [inspectorOpen, setInspectorOpen] = useState(true);
+  const [inspectorWidth, setInspectorWidth] = useState(440);
+  const [theme, setTheme] = useState<"light" | "dark">(
+    () => window.localStorage.getItem("launchpad-theme") === "dark" ? "dark" : "light",
+  );
   const [inspectorTab, setInspectorTab] = useState<"containment" | "passport" | "trace">("containment");
   const [traceSubTab, setTraceSubTab] = useState<"trace" | "tokens" | "runs">("trace");
   const [form, setForm] = useState(emptyForm);
@@ -166,6 +171,29 @@ export default function App() {
   const pollingRunIds = useRef(new Set<string>());
   selectedIdRef.current = selectedId;
   selectedSessionIdRef.current = selectedSessionId;
+
+  const startInspectorResize = (event: React.PointerEvent<HTMLDivElement>) => {
+    if (window.matchMedia("(max-width: 1024px)").matches) return;
+    event.preventDefault();
+    const startX = event.clientX;
+    const startWidth = inspectorWidth;
+    const workspaceWidth = event.currentTarget.parentElement?.getBoundingClientRect().width ?? 0;
+    const maxInspectorWidth = Math.max(280, Math.min(620, workspaceWidth - 440 - 36));
+    const resize = (moveEvent: PointerEvent) => {
+      setInspectorWidth(Math.min(maxInspectorWidth, Math.max(280, startWidth - (moveEvent.clientX - startX))));
+    };
+    const stop = () => {
+      window.removeEventListener("pointermove", resize);
+      window.removeEventListener("pointerup", stop);
+    };
+    window.addEventListener("pointermove", resize);
+    window.addEventListener("pointerup", stop, { once: true });
+  };
+
+  useEffect(() => {
+    document.documentElement.dataset.theme = theme;
+    window.localStorage.setItem("launchpad-theme", theme);
+  }, [theme]);
 
   useEffect(() => {
     const handleClickOutside = (event: MouseEvent) => {
@@ -557,11 +585,11 @@ export default function App() {
 
 
   return (
-    <div className="app-shell">
+    <div className={"app-shell " + (sidebarCollapsed ? "sidebar-collapsed" : "")}>
       <aside className="sidebar">
         <div className="brand">
           <div className="brand-mark">A</div>
-          <div>
+          <div className="brand-copy">
             <strong>Agent Launchpad</strong>
             <span>
               {system?.runtimeProvider === "container"
@@ -569,6 +597,15 @@ export default function App() {
                 : "ECS / Docker · Codex CLI"}
             </span>
           </div>
+          <button
+            type="button"
+            className="sidebar-collapse-btn"
+            onClick={() => setSidebarCollapsed((value) => !value)}
+            aria-label={sidebarCollapsed ? "Expand sidebar" : "Collapse sidebar"}
+            title={sidebarCollapsed ? "Expand sidebar" : "Collapse sidebar"}
+          >
+            <span aria-hidden="true">{sidebarCollapsed ? "▶" : "◀"}</span>
+          </button>
         </div>
 
         <button
@@ -654,13 +691,34 @@ export default function App() {
                 <div className="header-title-row">
                   <h1>{selected.name}</h1>
                   <StatusPill status={selected.status} />
+                  <div
+                    className={"agent-environment-chip " + (system?.egressEnforcement ? "protected" : "warning")}
+                    title={`${system?.runtimeProvider === "container" ? "Isolated container" : "Local runtime"}; egress enforcement ${system?.egressEnforcement ? "enabled" : "disabled"}`}
+                  >
+                    <span className="environment-dot" aria-hidden="true" />
+                    {system?.runtimeProvider === "container" ? "Container" : "Local"}
+                    <span aria-hidden="true">·</span>
+                    {system?.egressEnforcement ? "Protected" : "Egress off"}
+                  </div>
                 </div>
                 <p>{selected.description || "A Codex coding Agent in an isolated workspace."}</p>
               </div>
               <div className="header-actions">
+                <div className="header-theme-control">
+                  <span>{theme === "dark" ? "Dark" : "Light"}</span>
+                  <button
+                    type="button"
+                    className="theme-switch"
+                    role="switch"
+                    aria-checked={theme === "dark"}
+                    onClick={() => setTheme((value) => value === "light" ? "dark" : "light")}
+                    title={theme === "light" ? "Switch to dark mode" : "Switch to light mode"}
+                    aria-label={theme === "light" ? "Switch to dark mode" : "Switch to light mode"}
+                  />
+                </div>
                 <button
                   type="button"
-                  className={"button " + (inspectorOpen ? "button-active" : "button-ghost")}
+                  className={"button header-inspector-toggle " + (inspectorOpen ? "button-active" : "button-ghost")}
                   onClick={() => setInspectorOpen((value) => !value)}
                   title={inspectorOpen ? "Hide Inspector Pane" : "Open Inspector Pane"}
                 >
@@ -677,19 +735,11 @@ export default function App() {
                 </button>
                 <button
                   type="button"
-                  className="button button-ghost"
+                  className={"button " + (selected.status === "stopped" ? "button-start" : "button-stop")}
                   onClick={toggleAgent}
                   disabled={busy}
                 >
                   {selected.status === "stopped" ? "Start" : "Stop"}
-                </button>
-                <button
-                  type="button"
-                  className="button button-danger"
-                  onClick={deleteAgent}
-                  disabled={busy || selected.status === "busy"}
-                >
-                  Delete
                 </button>
               </div>
             </header>
@@ -697,7 +747,7 @@ export default function App() {
             {showSettings && (
               <div className="modal-backdrop" onMouseDown={() => setShowSettings(false)}>
                 <form
-                  className="modal"
+                  className="modal agent-settings-modal"
                   onSubmit={saveAgent}
                   onMouseDown={(event) => event.stopPropagation()}
                 >
@@ -709,43 +759,74 @@ export default function App() {
                     </div>
                     <button type="button" onClick={() => setShowSettings(false)}>×</button>
                   </div>
-                  <div className="form-grid">
+                  <section className="settings-section">
+                    <div className="settings-section-heading">
+                      <strong>Agent details</strong>
+                      <span>Used to identify this workspace in the sidebar.</span>
+                    </div>
+                    <div className="form-grid">
+                      <label>
+                        Name
+                        <input
+                          value={form.name}
+                          onChange={(event) => setForm({ ...form, name: event.target.value })}
+                          required
+                          maxLength={80}
+                        />
+                      </label>
+                      <label>
+                        Description
+                        <input
+                          value={form.description}
+                          onChange={(event) =>
+                            setForm({ ...form, description: event.target.value })
+                          }
+                          maxLength={500}
+                        />
+                      </label>
+                    </div>
+                  </section>
+                  <section className="settings-section settings-instructions-section">
+                    <div className="settings-section-heading">
+                      <strong>System instructions</strong>
+                      <span>Persistent guidance for every run.</span>
+                    </div>
                     <label>
-                      Name
-                      <input
-                        value={form.name}
-                        onChange={(event) => setForm({ ...form, name: event.target.value })}
-                        required
-                        maxLength={80}
-                      />
-                    </label>
-                    <label>
-                      Description
-                      <input
-                        value={form.description}
+                      <span className="sr-only">System instructions</span>
+                      <textarea
+                        value={form.instructions}
                         onChange={(event) =>
-                          setForm({ ...form, description: event.target.value })
+                          setForm({ ...form, instructions: event.target.value })
                         }
-                        maxLength={500}
+                        rows={6}
+                        maxLength={10_000}
                       />
                     </label>
-                  </div>
-                  <label>
-                    System instructions
-                    <textarea
-                      value={form.instructions}
-                      onChange={(event) =>
-                        setForm({ ...form, instructions: event.target.value })
-                      }
-                      rows={6}
-                      maxLength={10_000}
-                    />
-                  </label>
-                  <div className="modal-footer">
+                  </section>
+                  <div className="settings-workspace">
+                    <span>Workspace</span>
                     <code>{selected.workspacePath}</code>
-                    <button className="button button-primary" disabled={busy}>
-                      {busy ? <Spinner /> : "Save changes"}
+                  </div>
+                  <div className="settings-danger-zone">
+                    <div>
+                      <strong>Delete this agent</strong>
+                      <span>Removes its saved configuration and sessions.</span>
+                    </div>
+                    <button
+                      type="button"
+                      className="button button-danger"
+                      onClick={deleteAgent}
+                      disabled={busy || selected.status === "busy"}
+                    >
+                      Delete agent
                     </button>
+                  </div>
+                  <div className="modal-footer">
+                    <div className="modal-footer-actions">
+                      <button className="button button-primary" disabled={busy}>
+                        {busy ? <Spinner /> : "Save changes"}
+                      </button>
+                    </div>
                   </div>
                 </form>
               </div>
@@ -815,6 +896,14 @@ export default function App() {
                       <span className="pulse" />
                       {currentSession?.codexThreadId ? "Context active" : "New session"}
                     </div>
+                    <button
+                      type="button"
+                      className={"button " + (inspectorOpen ? "button-active" : "button-ghost")}
+                      onClick={() => setInspectorOpen((value) => !value)}
+                      title={inspectorOpen ? "Hide Inspector Pane" : "Open Inspector Pane"}
+                    >
+                      Inspector
+                    </button>
                   </div>
                 </div>
 
@@ -1050,7 +1139,19 @@ export default function App() {
               </section>
 
               {inspectorOpen && (
-                <aside className="inspector-panel" aria-label="Governance & Security Inspector">
+                <>
+                  <div
+                    className="workspace-resizer"
+                    role="separator"
+                    aria-label="Resize Playground and Inspector"
+                    aria-orientation="vertical"
+                    onPointerDown={startInspectorResize}
+                  />
+                  <aside
+                    className="inspector-panel"
+                    style={{ width: inspectorWidth }}
+                    aria-label="Governance & Security Inspector"
+                  >
                   <div className="inspector-header">
                     <div className="inspector-tabs" role="tablist">
                       <button
@@ -1249,7 +1350,8 @@ export default function App() {
                       </div>
                     )}
                   </div>
-                </aside>
+                  </aside>
+                </>
               )}
             </div>
           </>
