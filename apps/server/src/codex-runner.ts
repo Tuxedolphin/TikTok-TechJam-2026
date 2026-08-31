@@ -154,6 +154,9 @@ function signalGroup(child: ChildProcess, signal: NodeJS.Signals): boolean {
 }
 
 export class CodexRunner implements AgentRunner {
+  /** Process-group leader pid of the last run per agent, kept after exit. */
+  private readonly lastGroupPid = new Map<string, number>();
+
   private readonly active = new Map<
     string,
     {
@@ -206,6 +209,33 @@ export class CodexRunner implements AgentRunner {
   }
 
   /**
+   * Asks the OS whether this agent's process group still has members, rather
+   * than inferring it from an empty in-memory map. Signal 0 performs the
+   * permission and existence check without delivering anything: ESRCH means
+   * the group is gone, success means something is still alive in it -- a
+   * shell or tool descendant that outlived its parent.
+   *
+   * Returns null when there is nothing to check (no run recorded) or when the
+   * platform cannot answer, which the caller must not read as "gone". A
+   * process that double-forks into a new group still escapes this; that is why
+   * this runtime is development-only.
+   */
+  async confirmStopped(agentId: string): Promise<boolean | null> {
+    const active = this.active.get(agentId);
+    const pid = active?.child.pid ?? this.lastGroupPid.get(agentId);
+    if (typeof pid !== "number") return null;
+    try {
+      process.kill(-pid, 0);
+      return false; // the group still has at least one live member
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code === "ESRCH") return true;
+      if (code === "EPERM") return false; // alive, owned by someone else
+      return null;
+    }
+  }
+
+  /**
    * Kills every live process group this runner started.
    *
    * Running each child in its own process group is what lets a stop or kill
@@ -214,7 +244,8 @@ export class CodexRunner implements AgentRunner {
    * it. Called on shutdown so isolation does not trade one leak for another.
    */
   terminateAll(): void {
-    for (const active of this.active.values()) {
+    for (const [agentId, active] of this.active.entries()) {
+      if (typeof active.child.pid === "number") this.lastGroupPid.set(agentId, active.child.pid);
       signalGroup(active.child, "SIGKILL");
     }
     this.active.clear();
@@ -363,6 +394,7 @@ export class CodexRunner implements AgentRunner {
     } finally {
       clearTimeout(timeout);
       if (active.forceKillTimer) clearTimeout(active.forceKillTimer);
+      if (typeof child.pid === "number") this.lastGroupPid.set(request.agentId, child.pid);
       this.active.delete(request.agentId);
     }
   }

@@ -106,12 +106,13 @@ Decisions are named so a trace reads as an explanation rather than a boolean.
 | `EGRESS_PROXY_IMAGE` | `node:22-alpine` | Image for the sidecar; it runs the compiled proxy from the server's `dist`. |
 | `EGRESS_QUARANTINE_THRESHOLD` | `3` | Blocked attempts before the agent is stopped. |
 
-Enforcement applies to the container runtime. `RUNTIME_PROVIDER=local-process` runs Codex as a host process and is not isolated — use it for development only.
+Enforcement applies to the container runtime. `RUNTIME_PROVIDER=local-process` runs Codex as a host process and is not isolated — use it for development only. It does run each turn in its own process group, so a freeze or kill reaches tool descendants rather than only the direct child, and termination asks the OS whether that group still has members instead of inferring it from an empty map. A process that double-forks into a new group still escapes, which is why this runtime is development-only rather than a containment boundary.
 
 ## Honest limitations
 
 - **Human identity is still a mock.** Agent identity is bound to the proxy topology and an internal secret, but `x-principal-id` for operators is trusted verbatim. A production deployment needs authenticated operator identities and RBAC.
 - **Receipts attest; they do not recreate the observation.** Ed25519 lets a third party verify who signed the recorded steps and that they were not edited. The verifier still relies on the control plane to have observed runtime and grant state honestly.
+- **An established tunnel is re-authorized on a timer, not per byte.** A CONNECT tunnel is re-checked every 15 seconds and torn down when its grant no longer holds, so revocation bites mid-stream rather than only on the next connection. Bytes already in flight within that window still pass.
 - **HTTPS is authorized by hostname, not URL.** CONNECT only exposes the host, so per-path rules are impossible without terminating TLS. Anthropic's own sandbox-runtime documents the same limit.
 - **Non-HTTP TCP is refused outright.** `git+ssh` and raw sockets do not traverse an HTTP proxy. Under default-deny that is the correct outcome, not a bug — but it does constrain what agents can do.
 - **The topology is verified on Docker/OrbStack only.** Rootless Podman is documented as unable to route an internal network to the host; re-run the measurements before trusting another engine.

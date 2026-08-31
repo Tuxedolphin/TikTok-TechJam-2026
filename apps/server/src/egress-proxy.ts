@@ -61,6 +61,13 @@ export interface EgressProxyOptions {
   onVerdict?: (input: { agentPrincipalId: string; host: string; verdict: EgressVerdict }) => void;
   /** Idle/connect timeout for upstream connections. */
   connectTimeoutMs?: number;
+  /**
+   * How often an established CONNECT tunnel is re-authorized. Authorization is
+   * otherwise per-connection, so a long-lived tunnel opened while a grant was
+   * live keeps flowing after that grant is revoked -- revocation would only be
+   * felt on the next connection. Set to 0 to disable.
+   */
+  reauthorizeIntervalMs?: number;
   /** Test-only escape hatch: upstreams on loopback are otherwise refused. */
   allowPrivateAddresses?: boolean;
   /**
@@ -203,6 +210,7 @@ interface Closable {
 export function createEgressProxy(options: EgressProxyOptions): EgressProxyServer {
   const server = createServer() as EgressProxyServer;
   const connectTimeoutMs = options.connectTimeoutMs ?? 30_000;
+  const reauthorizeIntervalMs = options.reauthorizeIntervalMs ?? 15_000;
 
   // Live connections, indexed by the principal they were authorized for.
   const liveByPrincipal = new Map<string, Set<Closable>>();
@@ -452,9 +460,33 @@ export function createEgressProxy(options: EgressProxyOptions): EgressProxyServe
         if (head.length > 0) upstream.write(head);
         upstream.pipe(clientSocket);
         clientSocket.pipe(upstream);
-        // An established tunnel re-authorizes nowhere; draining it on
-        // termination is the only way to stop bytes already flowing.
         if (principal) track(principal.principalId, clientSocket, upstream);
+
+        // Keep asking. A tunnel authorized once would otherwise outlive the
+        // grant that opened it -- revocation felt only on the next connection,
+        // which for a long-lived stream may be never. Re-checking on a timer
+        // makes revocation bite mid-flight, and a re-check that throws tears
+        // the tunnel down (fail closed), matching the initial decision.
+        if (principal && reauthorizeIntervalMs > 0) {
+          const recheck = setInterval(() => {
+            void (async () => {
+              const current = await decide(principal, host, port, "CONNECT");
+              if (!current.allowed) {
+                options.onVerdict?.({
+                  agentPrincipalId: principal.principalId,
+                  host,
+                  verdict: current,
+                });
+                upstream.destroy();
+                clientSocket.destroy();
+              }
+            })();
+          }, reauthorizeIntervalMs);
+          recheck.unref();
+          const stopRecheck = () => clearInterval(recheck);
+          upstream.once("close", stopRecheck);
+          clientSocket.once("close", stopRecheck);
+        }
       });
       // Tear the tunnel down fully when either end goes, on clean close as well
       // as error. Handling only "error" left a half-open tunnel able to keep
