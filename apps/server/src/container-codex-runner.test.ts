@@ -52,6 +52,8 @@ describe("Container Codex runner", () => {
     expect(args).toContain("/workspace");
     expect(args).toContain("io.codejam.instance-id=test-instance");
     expect(args).toContain("keep-id");
+    expect(args).toContain("--add-host");
+    expect(args).toContain("host.docker.internal:host-gateway");
     expect(args).not.toContain("secret-that-must-not-appear-in-argv");
   });
 
@@ -182,6 +184,32 @@ fi
       config,
     );
     expect(args.slice(-3)).toEqual(["resume", "thread-123", "continue"]);
+    expect(args).toContain("host.docker.internal:host-gateway");
     expect(args).not.toContain("keep-id");
+  });
+
+  it("routes the host adapter through the proxy under egress enforcement", () => {
+    const config = loadConfig({
+      NODE_ENV: "test",
+      GEMINI_API_KEY: "google-provider-key",
+      RUNTIME_PROVIDER: "container",
+    });
+    const args = buildContainerRunArgs(
+      {
+        agentId: "agent",
+        workspacePath: "/tmp/workspace",
+        prompt: "connect to the adapter",
+        threadId: null,
+        egressProxyUrl: "http://launchpad-egress-proxy:8888",
+      },
+      config,
+    );
+
+    expect(config.openRouterBaseUrl).toBe(
+      "http://host.docker.internal:3000/api/adapter",
+    );
+    expect(args).toContain("HTTP_PROXY=http://launchpad-egress-proxy:8888");
+    expect(args).toContain("NO_PROXY=localhost,127.0.0.1");
+    expect(args).not.toContain("host.docker.internal:host-gateway");
   });
 });
