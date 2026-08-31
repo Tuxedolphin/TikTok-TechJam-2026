@@ -4,6 +4,7 @@ import type { IdentityService } from "./identity.js";
 import type { JsonStore } from "./store.js";
 import {
   signReceipt,
+  type ReceiptKeyPair,
   type TerminationReceipt,
   type TerminationStep,
   type UnsignedReceipt,
@@ -11,89 +12,39 @@ import {
 
 const now = () => new Date().toISOString();
 
-/**
- * Carries out an agent termination and reports what actually happened.
- *
- * The order is the point. Revoking first would leave a window in which a
- * request that already passed its check completes after the operator believed
- * the agent was stopped, so the process is frozen before anything else moves.
- */
 export class AgentTerminator {
   constructor(
     private readonly store: JsonStore,
     private readonly agents: AgentService,
     private readonly identity: IdentityService,
-    private readonly serverKey: string,
+    private readonly receiptKeys: ReceiptKeyPair,
     private readonly egress?: EgressNetworkManager,
   ) {}
 
+  publicKeyInfo(): { keyId: string; publicKey: string } {
+    return { keyId: this.receiptKeys.keyId, publicKey: this.receiptKeys.publicKeyPem };
+  }
+
   async terminate(agentId: string, reason: string): Promise<TerminationReceipt> {
     const agent = this.agents.getAgent(agentId);
-    const steps: TerminationStep[] = [];
+    const freeze = await this.freeze(agentId);
+    const steps: TerminationStep[] = [freeze];
     const revoked: string[] = [];
 
-    // 1. Freeze: stop the process advancing before its authority changes.
-    let frozen = false;
-    try {
-      frozen = await this.agents.freezeAgent(agentId);
-      steps.push({
-        step: "freeze",
-        ok: true,
-        detail: frozen
-          ? "Execution suspended at the OS level before any authority changed."
-          : "No live execution to suspend.",
-        at: now(),
-      });
-    } catch (error) {
-      steps.push({ step: "freeze", ok: false, detail: describe(error), at: now() });
+    if (freeze.ok) {
+      steps.push(await this.revokeAndBlock(agentId, agent.principalId, revoked));
+      steps.push(await this.kill(agentId, reason));
+    } else {
+      // If a live runtime could not be frozen, kill it before changing grants.
+      // This fallback is safe but cannot claim the requested freeze-first proof.
+      steps.push(await this.kill(agentId, reason));
+      steps.push(await this.revokeAndBlock(agentId, agent.principalId, revoked));
     }
 
-    // 2. Revoke: one store transaction, so the agent never sees a half-revoked set.
-    try {
-      const live = this.identity
-        .listGrants(agent.principalId)
-        .filter((grant) => grant.revokedAt === null);
-      const ids = await this.store.mutate((database) => {
-        const stamped: string[] = [];
-        const at = now();
-        for (const grant of database.grants) {
-          if (grant.principalId === agent.principalId && grant.revokedAt === null) {
-            grant.revokedAt = at;
-            stamped.push(grant.id);
-          }
-        }
-        return stamped;
-      });
-      revoked.push(...ids);
-      steps.push({
-        step: "revoke",
-        ok: true,
-        detail: `${ids.length} grant(s) revoked in a single transaction (held ${live.length}).`,
-        at: now(),
-      });
-    } catch (error) {
-      steps.push({ step: "revoke", ok: false, detail: describe(error), at: now() });
-    }
-
-    // 3. Kill: tear the execution down for real.
-    try {
-      await this.agents.quarantineAgent(agentId, reason);
-      steps.push({
-        step: "kill",
-        ok: true,
-        detail: "Run cancelled, container torn down, agent stopped.",
-        at: now(),
-      });
-    } catch (error) {
-      steps.push({ step: "kill", ok: false, detail: describe(error), at: now() });
-    }
-
-    // 4. Verify: don't assert containment, observe it.
-    const verify = await this.verifyNoRouteRemains(agent.principalId);
-    steps.push(verify);
-
+    steps.push(await this.verifyContainment(agentId, agent.principalId));
     const body: UnsignedReceipt = {
       version: 1,
+      keyId: this.receiptKeys.keyId,
       agentId,
       agentPrincipalId: agent.principalId,
       reason,
@@ -102,34 +53,116 @@ export class AgentTerminator {
       grantsRevoked: revoked,
       contained: steps.every((step) => step.ok),
     };
-    const receipt: TerminationReceipt = { ...body, signature: signReceipt(body, this.serverKey) };
+    const receipt: TerminationReceipt = {
+      ...body,
+      signature: signReceipt(body, this.receiptKeys.privateKeyPem),
+    };
 
     await this.agents.recordTermination(agentId, receipt);
     return receipt;
   }
 
-  /**
-   * Re-probes from the agent's own network position after teardown. A refusal
-   * here is the evidence; without it the receipt would only be repeating what
-   * the previous steps intended to do.
-   */
-  private async verifyNoRouteRemains(agentPrincipalId: string): Promise<TerminationStep> {
-    if (!this.egress) {
+  private async freeze(agentId: string): Promise<TerminationStep> {
+    try {
+      const result = await this.agents.freezeAgent(agentId);
+      const details = {
+        paused: "Execution suspended at the OS level before authority changed.",
+        blocked: "Queued execution blocked before its runtime could start.",
+        idle: "No live or queued execution existed.",
+        failed: "A live execution could not be suspended.",
+      } as const;
+      return { step: "freeze", ok: result !== "failed", detail: details[result], at: now() };
+    } catch (error) {
+      return { step: "freeze", ok: false, detail: describe(error), at: now() };
+    }
+  }
+
+  private async revokeAndBlock(
+    agentId: string,
+    agentPrincipalId: string,
+    revoked: string[],
+  ): Promise<TerminationStep> {
+    try {
+      const ids = await this.store.mutate((database) => {
+        const storedAgent = database.agents.find((candidate) => candidate.id === agentId);
+        if (!storedAgent) throw new Error("Agent disappeared during termination");
+        storedAgent.authorityBlocked = true;
+
+        const stamped: string[] = [];
+        const revokedAt = now();
+        for (const grant of database.grants) {
+          if (grant.principalId === agentPrincipalId && grant.revokedAt === null) {
+            grant.revokedAt = revokedAt;
+            stamped.push(grant.id);
+          }
+        }
+        return stamped;
+      });
+      revoked.push(...ids);
       return {
-        step: "verify",
+        step: "revoke",
         ok: true,
-        detail: "Egress enforcement is off; no network boundary to re-probe.",
+        detail: `${ids.length} grant(s) revoked; new grants blocked until operator restart.`,
         at: now(),
       };
+    } catch (error) {
+      return { step: "revoke", ok: false, detail: describe(error), at: now() };
     }
+  }
+
+  private async kill(agentId: string, reason: string): Promise<TerminationStep> {
     try {
-      const probe = await this.egress.probeAsAgent(agentPrincipalId, "example.com");
+      await this.agents.quarantineAgent(agentId, reason);
+      return {
+        step: "kill",
+        ok: true,
+        detail: "Run cancelled, runtime torn down, and agent stopped.",
+        at: now(),
+      };
+    } catch (error) {
+      return { step: "kill", ok: false, detail: describe(error), at: now() };
+    }
+  }
+
+  private async verifyContainment(
+    agentId: string,
+    agentPrincipalId: string,
+  ): Promise<TerminationStep> {
+    try {
+      const database = this.store.snapshot();
+      const agent = database.agents.find((candidate) => candidate.id === agentId);
+      const currentTime = now();
+      const liveGrants = this.identity.listGrants(agentPrincipalId).filter(
+        (grant) =>
+          grant.revokedAt === null &&
+          (grant.expiresAt === null || grant.expiresAt > currentTime),
+      );
+      const runtimeStopped = !this.agents.hasLiveExecution(agentId) && agent?.status === "stopped";
+      const authorityBlocked = agent?.authorityBlocked === true;
+
+      let networkBlocked = runtimeStopped;
+      let networkDetail = "No runtime remains from which to open a route.";
+      if (this.egress) {
+        const probe = await this.egress.probeAsAgent(agentPrincipalId, "example.com");
+        // A probe that could not run is not evidence. Counting it as a refusal
+        // would let an engine hiccup be signed as observed containment.
+        networkBlocked = probe.blocked && probe.conclusive;
+        networkDetail = probe.conclusive
+          ? probe.detail
+          : `containment unconfirmed: ${probe.detail}`;
+      }
+
+      const ok = runtimeStopped && authorityBlocked && liveGrants.length === 0 && networkBlocked;
       return {
         step: "verify",
-        ok: probe.blocked,
-        detail: probe.blocked
-          ? `Re-probe refused after teardown: ${probe.detail}`
-          : `Route still open after teardown: ${probe.detail}`,
+        ok,
+        detail: [
+          `runtimeStopped=${runtimeStopped}`,
+          `authorityBlocked=${authorityBlocked}`,
+          `liveGrants=${liveGrants.length}`,
+          `networkBlocked=${networkBlocked}`,
+          networkDetail,
+        ].join("; "),
         at: now(),
       };
     } catch (error) {

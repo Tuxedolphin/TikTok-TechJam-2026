@@ -160,6 +160,13 @@ describe("EgressAuthorizer", () => {
     expect(result.allowed).toBe(true);
   });
 
+  it("never derives agent credentials from an empty or public fallback key", () => {
+    expect(() => egressProxySecret(PRINCIPAL, "")).toThrow("internal agent secret");
+    expect(egressProxySecret(PRINCIPAL, "process-a")).not.toBe(
+      egressProxySecret(PRINCIPAL, "process-b"),
+    );
+  });
+
   it("permits a private address only for platform hosts", async () => {
     // allowPrivate switches off the proxy's SSRF guard, so it must never be
     // reachable through a grant an agent's owner could create.
@@ -178,6 +185,24 @@ describe("EgressAuthorizer", () => {
     });
     expect(granted.allowed).toBe(true);
     expect(granted.allowPrivate).toBe(false);
+  });
+
+  it("scopes a platform allowance to its port", async () => {
+    // The control plane shares a host with anything else bound to the gateway
+    // address; a bare-host allowance would hand every agent all of them.
+    const authorizer = new EgressAuthorizer(await makeStore(), {
+      ...baseOptions,
+      standingAllowHosts: ["host.docker.internal:3000"],
+    });
+    const onPort = await authorizer.authorize({
+      agentPrincipalId: PRINCIPAL, host: "host.docker.internal", port: 3000, method: "CONNECT",
+    });
+    expect(onPort).toMatchObject({ allowed: true, ruleId: "NET-EGRESS-PLATFORM-021" });
+
+    const otherPort = await authorizer.authorize({
+      agentPrincipalId: PRINCIPAL, host: "host.docker.internal", port: 9229, method: "CONNECT",
+    });
+    expect(otherPort.allowed).toBe(false);
   });
 
   it("denies an unknown principal", async () => {

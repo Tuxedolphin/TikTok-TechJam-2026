@@ -8,13 +8,21 @@ import { IdentityService } from "./identity.js";
 import { AgentTerminator } from "./terminator.js";
 import { createRunner } from "./runner-factory.js";
 import { JsonStore } from "./store.js";
+import { loadOrCreateReceiptKeyPair } from "./termination.js";
 import { WorkspaceManager } from "./workspace.js";
 
 /** Hosts the runtime itself needs: the model endpoint and the adapter callback. */
+/**
+ * Endpoints the runtime itself needs, pinned to their ports. Allowing a bare
+ * host would hand every contained agent access to anything else listening on
+ * that address, which on the gateway host includes the control plane.
+ */
 function platformHosts(config: AppConfig): string[] {
-  const hosts = new Set<string>(["host.docker.internal"]);
+  const hosts = new Set<string>([`host.docker.internal:${config.port}`]);
   try {
-    hosts.add(new URL(config.openRouterBaseUrl).hostname);
+    const modelApi = new URL(config.openRouterBaseUrl);
+    const port = modelApi.port || (modelApi.protocol === "https:" ? "443" : "80");
+    hosts.add(`${modelApi.hostname}:${port}`);
   } catch {
     // A malformed base URL simply contributes no standing allowance.
   }
@@ -46,7 +54,7 @@ egressAuthorizer = config.egressEnforcement
       // The platform's own endpoints must stay reachable or the agent cannot
       // think; they are explicit and auditable rather than an implicit hole.
       standingAllowHosts: platformHosts(config),
-      serverKey: config.authToken,
+      serverKey: config.internalAgentSecret,
       quarantineThreshold: config.egressQuarantineThreshold,
       recordDecision: (runId, agentId, decision) =>
         service.recordPolicyDecision(runId, agentId, decision),
@@ -56,7 +64,8 @@ egressAuthorizer = config.egressEnforcement
     })
   : undefined;
 
-const terminator = new AgentTerminator(store, service, identity, config.authToken, egressNetwork);
+const receiptKeys = await loadOrCreateReceiptKeyPair(config.dataDirectory);
+const terminator = new AgentTerminator(store, service, identity, receiptKeys, egressNetwork);
 const app = await createApp(
   config, service, identity, egressAuthorizer, egressNetwork, terminator,
 );

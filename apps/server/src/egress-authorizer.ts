@@ -19,7 +19,8 @@ export interface EgressAuthorizationRequest {
  * one agent could borrow another's grants just by changing a username.
  */
 export function egressProxySecret(agentPrincipalId: string, serverKey: string): string {
-  return createHmac("sha256", serverKey || "launchpad-egress")
+  if (!serverKey) throw new Error("An internal agent secret is required");
+  return createHmac("sha256", serverKey)
     .update(agentPrincipalId)
     .digest("hex")
     .slice(0, 32);
@@ -39,7 +40,11 @@ export interface EgressAuthorizationResult extends EgressVerdict {
 }
 
 export interface EgressAuthorizerOptions {
-  /** Hosts the platform itself needs (model API, adapter callback). */
+  /**
+   * Platform endpoints the runtime needs, as "host" or "host:port". A bare
+   * host allows any port on it, so prefer the "host:port" form: the control
+   * plane shares its host with anything else bound to that address.
+   */
   standingAllowHosts: string[];
   /** Server key the per-agent proxy secret is derived from. */
   serverKey?: string;
@@ -106,7 +111,10 @@ export class EgressAuthorizer {
       }
     }
 
-    const decision = this.options.standingAllowHosts.includes(input.host)
+    const isPlatformEndpoint = this.options.standingAllowHosts.some(
+      (entry) => entry === input.host || entry === `${input.host}:${input.port}`,
+    );
+    const decision = isPlatformEndpoint
       ? {
           allowed: true,
           ruleId: "NET-EGRESS-PLATFORM-021",
