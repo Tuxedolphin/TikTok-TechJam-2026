@@ -44,10 +44,7 @@ export function containerEngineEnvironment(
 ): NodeJS.ProcessEnv {
   const environment: NodeJS.ProcessEnv = { NO_COLOR: "1" };
   if (includeRuntimeConfig) {
-    environment.OPENROUTER_API_KEY = config.openRouterApiKey;
-    environment.OPENAI_API_KEY = config.openRouterApiKey;
-    environment.OPENROUTER_BASE_URL = config.openRouterBaseUrl;
-    environment.OPENAI_BASE_URL = config.openRouterBaseUrl;
+    environment.MODEL_API_KEY = config.modelRuntimeApiKey;
   }
   for (const name of ["PATH", "HOME", "TMPDIR", "LANG", "LC_ALL", "XDG_RUNTIME_DIR"] as const) {
     if (process.env[name] !== undefined) environment[name] = process.env[name];
@@ -112,13 +109,7 @@ export function buildContainerRunArgs(
     "--user",
     config.containerUser,
     "--env",
-    "OPENROUTER_API_KEY",
-    "--env",
-    "OPENAI_API_KEY",
-    "--env",
-    "OPENROUTER_BASE_URL",
-    "--env",
-    "OPENAI_BASE_URL",
+    "MODEL_API_KEY",
     "--env",
     "CODEX_HOME=/codex-home",
     "--env",

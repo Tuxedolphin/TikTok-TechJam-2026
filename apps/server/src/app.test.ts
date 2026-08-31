@@ -1,4 +1,6 @@
+import { existsSync } from "node:fs";
 import { mkdtemp, rm } from "node:fs/promises";
+import { fileURLToPath } from "node:url";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -34,6 +36,70 @@ describe("HTTP boundary", () => {
       headers: { authorization: "Bearer a-strong-test-token" },
     });
     expect(allowed.statusCode).toBe(200);
+
+    const nonCanonicalCases: Array<[string, number]> = [
+      ["/api//agents", 401],
+      ["/api/./agents", 401],
+      ["/api/%2e/agents", 401],
+      ["/api/%2e%2e/api/agents", 401],
+      ["//api/agents", 401],
+      ["/api\\agents", 401],
+      ["/api%5cagents", 401],
+      ["/api/%5cagents", 401],
+      ["/api%2fagents", 401],
+      ["/api/%2fagents", 401],
+      ["/api/%252e/agents", 401],
+      ["/api/%ZZ/agents", 400],
+    ];
+    for (const [url, statusCode] of nonCanonicalCases) {
+      const response = await app.inject({ method: "GET", url });
+      expect(response.statusCode, url).toBe(statusCode);
+      expect(response.body, url).not.toContain("secret");
+      if (statusCode === 401) {
+        expect(response.json(), url).toEqual({ error: "Authentication required" });
+      }
+    }
+    await app.close();
+  });
+
+  it("does not expose a protected API route through a non-canonical path", async () => {
+    // The security half of this check needs no build: `/api//agents` must not
+    // slip past the auth hook by failing a naive startsWith("/api/") test.
+    const app = await createApp(
+      loadConfig({
+        NODE_ENV: "production",
+        HOST: "127.0.0.1",
+        APP_AUTH_TOKEN: "a-strong-test-token",
+      }),
+      service,
+    );
+
+    const protectedApi = await app.inject({ method: "GET", url: "/api//agents" });
+    expect(protectedApi.statusCode).toBe(401);
+    await app.close();
+  });
+
+  // Serving the built UI can only be asserted once the web workspace has been
+  // built. `npm test` runs before `npm run build` in CI and on a clean clone,
+  // so gate this on the artifact rather than making the suite build-order
+  // dependent -- a test that fails on a fresh checkout trains people to ignore
+  // red.
+  const webIndex = fileURLToPath(new URL("../../web/dist/index.html", import.meta.url));
+  const webBuilt = existsSync(webIndex);
+  it.skipIf(!webBuilt)("serves the built production UI at the root", async () => {
+    const app = await createApp(
+      loadConfig({
+        NODE_ENV: "production",
+        HOST: "127.0.0.1",
+        APP_AUTH_TOKEN: "a-strong-test-token",
+      }),
+      service,
+    );
+
+    const page = await app.inject({ method: "GET", url: "/" });
+    expect(page.statusCode).toBe(200);
+    expect(page.headers["content-type"]).toContain("text/html");
+    expect(page.body).toContain("Agent Launchpad");
     await app.close();
   });
 
@@ -71,12 +137,15 @@ describe("HTTP boundary", () => {
     await app.close();
   });
 
-  it("disables the Gemini adapter for OpenRouter and Ark configurations", async () => {
+  it.each(["openrouter", "ark"] as const)(
+    "disables the Gemini adapter for selected %s configurations",
+    async (modelProvider) => {
     const fetchMock = vi.fn();
     vi.stubGlobal("fetch", fetchMock);
     const app = await createApp(
       loadConfig({
         NODE_ENV: "test",
+        MODEL_PROVIDER: modelProvider,
         OPENROUTER_API_KEY: "openrouter-provider-key",
         OPENROUTER_MODEL: "openai/test",
         ARK_API_KEY: "ark-provider-key",
@@ -111,6 +180,7 @@ describe("HTTP boundary", () => {
       loadConfig({
         NODE_ENV: "test",
         APP_AUTH_TOKEN: "browser-token",
+        MODEL_PROVIDER: "gemini",
         GEMINI_API_KEY: "google-provider-key",
         GEMINI_ADAPTER_TOKEN: "runtime-only-token-1234567890",
         OPENROUTER_API_KEY: "openrouter-provider-key",
