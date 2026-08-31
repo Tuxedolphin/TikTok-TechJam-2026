@@ -73,6 +73,16 @@ const resourceIdParams = z.object({ id: z.string().min(1).max(128) });
 const MOCK_SESSION_TTL_MS = 8 * 60 * 60 * 1000;
 const MAX_MOCK_SESSIONS = 1_000;
 
+function hasValidBearerToken(header: string | undefined, expected: string): boolean {
+  const candidate = header?.startsWith("Bearer ") ? header.slice(7) : "";
+  const expectedBuffer = Buffer.from(expected);
+  const candidateBuffer = Buffer.from(candidate);
+  return (
+    candidateBuffer.length === expectedBuffer.length &&
+    timingSafeEqual(candidateBuffer, expectedBuffer)
+  );
+}
+
 interface MockPrincipalSession {
   actor: ApprovalActor;
   expiresAt: number;
@@ -124,14 +134,7 @@ export async function createApp(
     ) {
       return;
     }
-    const header = request.headers.authorization ?? "";
-    const candidate = header.startsWith("Bearer ") ? header.slice(7) : "";
-    const expectedBuffer = Buffer.from(config.authToken);
-    const candidateBuffer = Buffer.from(candidate);
-    const valid =
-      candidateBuffer.length === expectedBuffer.length &&
-      timingSafeEqual(candidateBuffer, expectedBuffer);
-    if (!valid) {
+    if (!hasValidBearerToken(request.headers.authorization, config.authToken)) {
       return reply.code(401).send({ error: "Authentication required" });
     }
   });
@@ -362,6 +365,12 @@ export async function createApp(
   }
 
   app.post("/api/adapter/responses", async (request, reply) => {
+    if (!config.geminiApiKey) {
+      return reply.code(404).send({ error: "Gemini adapter is not configured" });
+    }
+    if (!hasValidBearerToken(request.headers.authorization, config.geminiAdapterToken)) {
+      return reply.code(401).send({ error: "Runtime authentication required" });
+    }
     await handleGeminiResponsesAdapter(request, reply, config);
   });
 

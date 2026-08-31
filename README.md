@@ -93,10 +93,10 @@ Configure your API key in `.env` (copied from `.env.example`):
 
 ```bash
 # Option A: With Gemini in .env (Recommended)
-npm run poc
+HOST=127.0.0.1 npm run poc
 
 # Option B: Pass via CLI environment variable
-GEMINI_API_KEY=your-gemini-api-key npm run poc
+HOST=127.0.0.1 GEMINI_API_KEY=your-gemini-api-key npm run poc
 ```
 
 The first run installs Node.js dependencies and builds the Runtime image. The
@@ -141,7 +141,7 @@ Run the same `npm run poc` command to continue later.
 Force Podman when multiple engines are installed:
 
 ```bash
-CONTAINER_ENGINE=podman GEMINI_API_KEY=your-gemini-api-key npm run poc
+HOST=127.0.0.1 CONTAINER_ENGINE=podman GEMINI_API_KEY=your-gemini-api-key npm run poc
 ```
 
 Colima uses `CONTAINER_ENGINE=docker` because it exposes the Docker CLI.
@@ -157,7 +157,18 @@ Create and edit the configuration:
 ./scripts/bootstrap-local.sh
 ```
 
-Required values in `.env`:
+Compose runs the server in production mode, where the process binds `0.0.0.0`
+inside its container. Only the published port decides who can reach it, so
+Compose publishes on `127.0.0.1` by default and the bootstrap command creates a
+URL-safe `APP_AUTH_TOKEN` when `.env` does not already contain a valid one. To
+serve the demo to another machine, set `PUBLIC_BIND=0.0.0.0`; that token is then
+the only thing standing between the internet and your Agents. To rotate it later, replace that value in `.env` with the output of:
+
+```bash
+node -e 'console.log(require("node:crypto").randomBytes(24).toString("base64url"))'
+```
+
+Required provider values in `.env`:
 
 ```dotenv
 # Option A: Google Gemini API (Recommended)
@@ -234,6 +245,10 @@ cp deploy/volcengine/terraform.tfvars.example \
 | `RUNTIME_PROVIDER` | `local-process` | `container` for disposable local Runtime containers. |
 | `CODEX_SANDBOX_MODE` | `workspace-write` | Codex inner sandbox mode. |
 | `CODEX_TIMEOUT_MS` | `600000` | Maximum duration of one turn. |
+| `RUN_BUDGET_MAX_INPUT_TOKENS` | Optional | Observational post-run cap for all input tokens, including the cached subset. |
+| `RUN_BUDGET_MAX_OUTPUT_TOKENS` | Optional | Preventive provider generation cap; reported usage is also checked after the run. |
+| `RUN_BUDGET_MAX_TOTAL_TOKENS` | Optional | Observational post-run cap for input plus output; cached input is not double-counted. |
+| `RUN_BUDGET_MAX_DURATION_MS` | Optional | Preventive process/container deadline. |
 | `LOCAL_POC_DATA_ROOT` | Platform-specific | Local metadata, workspace, and session directory. |
 
 See [.env.example](.env.example) for all Runtime and resource-limit options.

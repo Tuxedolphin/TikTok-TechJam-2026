@@ -1,5 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { evaluateEgress, evaluateResourceAccess } from "./run-policies.js";
+import { loadConfig } from "./config.js";
+import {
+  estimateRunCostUsd,
+  evaluateEgress,
+  evaluateResourceAccess,
+  rejectRunIfBudgetExceeded,
+  summarizeRunPolicies,
+} from "./run-policies.js";
 import type { Grant, MockResource } from "./types.js";
 
 const NOW = "2026-08-30T12:00:00.000Z";
@@ -8,6 +15,97 @@ const grant = (over: Partial<Grant>): Grant => ({
   id: "g1", principalId: "agent-1", grantedBy: "user-a",
   scope: "resource:read", target: "res-a",
   expiresAt: null, revokedAt: null, revokedBy: null, createdAt: NOW, ...over,
+});
+
+const budgetConfig = (over: Record<string, unknown> = {}) => loadConfig({
+  NODE_ENV: "test",
+  ...over,
+});
+
+describe("rejectRunIfBudgetExceeded", () => {
+  it("allows usage at exact token and duration boundaries", () => {
+    const config = budgetConfig({
+      RUN_BUDGET_MAX_INPUT_TOKENS: 300,
+      RUN_BUDGET_MAX_OUTPUT_TOKENS: 300,
+      RUN_BUDGET_MAX_TOTAL_TOKENS: 600,
+      RUN_BUDGET_MAX_DURATION_MS: 1_000,
+    });
+
+    expect(() => rejectRunIfBudgetExceeded(config, {
+      inputTokens: 300, cachedInputTokens: 200, outputTokens: 300,
+    }, 1_000)).not.toThrow();
+  });
+
+  it("rejects input tokens at limit plus one", () => {
+    const config = budgetConfig({ RUN_BUDGET_MAX_INPUT_TOKENS: 100 });
+
+    expect(() => rejectRunIfBudgetExceeded(config, { inputTokens: 101 }, 0))
+      .toThrow(/input tokens exceeded 100/);
+  });
+
+  it("rejects output tokens at limit plus one as a fallback observation", () => {
+    const config = budgetConfig({ RUN_BUDGET_MAX_OUTPUT_TOKENS: 100 });
+
+    expect(() => rejectRunIfBudgetExceeded(config, { outputTokens: 101 }, 0))
+      .toThrow(/output tokens exceeded 100/);
+  });
+
+  it("treats cached input as a subset instead of double-counting it", () => {
+    const config = budgetConfig({ RUN_BUDGET_MAX_TOTAL_TOKENS: 400 });
+
+    expect(() => rejectRunIfBudgetExceeded(config, {
+      inputTokens: 200, cachedInputTokens: 150, outputTokens: 200,
+    }, 0)).not.toThrow();
+    expect(() => rejectRunIfBudgetExceeded(config, {
+      inputTokens: 200, cachedInputTokens: 150, outputTokens: 201,
+    }, 0)).toThrow(/total tokens exceeded 400/);
+  });
+
+  it("does not reject null usage", () => {
+    const config = budgetConfig({
+      RUN_BUDGET_MAX_INPUT_TOKENS: 1,
+      RUN_BUDGET_MAX_OUTPUT_TOKENS: 1,
+      RUN_BUDGET_MAX_TOTAL_TOKENS: 1,
+      RUN_BUDGET_MAX_DURATION_MS: 1,
+    });
+
+    expect(() => rejectRunIfBudgetExceeded(config, null, 1)).not.toThrow();
+  });
+});
+
+describe("token usage semantics", () => {
+  it("charges the cached subset at the cached rate rather than twice", () => {
+    expect(estimateRunCostUsd({
+      inputTokens: 100,
+      cachedInputTokens: 40,
+      outputTokens: 10,
+    })).toBe(0.000017);
+  });
+});
+
+describe("summarizeRunPolicies", () => {
+  it("exposes budget modes and total components", () => {
+    const config = budgetConfig({
+      RUN_BUDGET_MAX_INPUT_TOKENS: 100,
+      RUN_BUDGET_MAX_OUTPUT_TOKENS: 200,
+      RUN_BUDGET_MAX_TOTAL_TOKENS: 600,
+      RUN_BUDGET_MAX_DURATION_MS: 1_000,
+    });
+
+    expect(summarizeRunPolicies(config)).toMatchObject({
+      runBudgetEnforcement: {
+        inputTokens: "observational",
+        cachedInputTokens: "observational",
+        outputTokens: "preventive",
+        totalTokens: "observational",
+        durationMs: "preventive",
+      },
+      runBudgetTokenSemantics: {
+        cachedInputTokensIncludedInInput: true,
+        totalTokens: ["inputTokens", "outputTokens"],
+      },
+    });
+  });
 });
 
 describe("evaluateResourceAccess", () => {

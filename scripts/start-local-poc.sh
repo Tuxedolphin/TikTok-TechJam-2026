@@ -8,6 +8,8 @@ cli_gemini_key="${GEMINI_API_KEY:-}"
 cli_gemini_model="${GEMINI_MODEL:-}"
 cli_openrouter_key="${OPENROUTER_API_KEY:-}"
 cli_openrouter_model="${OPENROUTER_MODEL:-}"
+cli_host="${HOST:-}"
+cli_auth_token="${APP_AUTH_TOKEN:-}"
 
 if [[ -f .env ]]; then
   set -a
@@ -19,6 +21,8 @@ if [[ -n "$cli_gemini_key" ]]; then export GEMINI_API_KEY="$cli_gemini_key"; fi
 if [[ -n "$cli_gemini_model" ]]; then export GEMINI_MODEL="$cli_gemini_model"; fi
 if [[ -n "$cli_openrouter_key" ]]; then export OPENROUTER_API_KEY="$cli_openrouter_key"; fi
 if [[ -n "$cli_openrouter_model" ]]; then export OPENROUTER_MODEL="$cli_openrouter_model"; fi
+if [[ -n "$cli_host" ]]; then export HOST="$cli_host"; fi
+if [[ -n "$cli_auth_token" ]]; then export APP_AUTH_TOKEN="$cli_auth_token"; fi
 
 if [[ -n "${GEMINI_API_KEY:-}" ]]; then
   export OPENROUTER_API_KEY="${OPENROUTER_API_KEY:-$GEMINI_API_KEY}"
@@ -87,8 +91,8 @@ detect_engine() {
 
 if [[ -z "${OPENROUTER_API_KEY:-${ARK_API_KEY:-}}" || -z "${OPENROUTER_MODEL:-${ARK_MODEL:-}}" ]]; then
   log "GEMINI_API_KEY or (OPENROUTER_API_KEY and OPENROUTER_MODEL) is required."
-  log "Example with Gemini:     GEMINI_API_KEY=your-gemini-key npm run poc"
-  log "Example with OpenRouter: OPENROUTER_API_KEY=your-key OPENROUTER_MODEL=openai/gpt-4o-mini npm run poc"
+  log "Example with Gemini:     HOST=127.0.0.1 GEMINI_API_KEY=your-gemini-key npm run poc"
+  log "Example with OpenRouter: HOST=127.0.0.1 OPENROUTER_API_KEY=your-key OPENROUTER_MODEL=openai/gpt-4o-mini npm run poc"
   exit 2
 fi
 
@@ -101,6 +105,19 @@ command -v node >/dev/null 2>&1 || {
 node_major="$(node -p 'Number(process.versions.node.split(".")[0])')"
 if (( node_major < 22 )); then
   log "Node.js 22+ is required; found $(node --version)."
+  exit 2
+fi
+
+export NODE_ENV=production
+export HOST="${HOST:-127.0.0.1}"
+auth_token="${APP_AUTH_TOKEN:-}"
+if [[ "$HOST" != "127.0.0.1" && "$HOST" != "::1" && "$HOST" != "localhost" ]] \
+  && { (( ${#auth_token} < 24 || ${#auth_token} > 128 )) \
+    || [[ "$auth_token" == replace-* ]] \
+    || [[ ! "$auth_token" =~ ^[A-Za-z0-9._~-]+$ ]]; }; then
+  log "A non-loopback production HOST requires a URL-safe APP_AUTH_TOKEN of 24-128 characters."
+  log "Run locally without auth: HOST=127.0.0.1 npm run poc"
+  log "Or generate a token: APP_AUTH_TOKEN=\"\$(node -e 'process.stdout.write(require(\"node:crypto\").randomBytes(24).toString(\"base64url\"))')\" HOST=$HOST npm run poc"
   exit 2
 fi
 
@@ -172,8 +189,6 @@ if [[ "$codex_sandbox_mode" == "workspace-write" ]] \
   codex_sandbox_mode=danger-full-access
 fi
 
-export NODE_ENV=production
-export HOST="${HOST:-127.0.0.1}"
 export PORT="${PORT:-3000}"
 export CODEX_SANDBOX_MODE="$codex_sandbox_mode"
 export RUNTIME_PROVIDER=container

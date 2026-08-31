@@ -554,7 +554,7 @@ export class AgentService {
       sessionId: null,
       runId,
       role: "user",
-      content: prompt,
+      content: this.redact(prompt),
       createdAt: timestamp,
     };
     const agentAtStart = await this.store.mutate((database) => {
@@ -912,7 +912,7 @@ export class AgentService {
         const storedSession = database.sessions.find((item) => item.id === run.sessionId);
         if (!storedRun || !agent) return;
         storedRun.status = "completed";
-        storedRun.output = result.output;
+        storedRun.output = this.redact(result.output);
         storedRun.usage = enrichedUsage;
         storedRun.completedAt = completedAt;
 
@@ -1019,7 +1019,12 @@ export class AgentService {
   private redact(value: string): string {
     if (!value) return value;
     let output = value;
-    for (const secret of [this.config.guardrailCanaryToken, this.config.openRouterApiKey]) {
+    for (const secret of [
+      this.config.guardrailCanaryToken,
+      this.config.geminiApiKey,
+      this.config.geminiAdapterToken,
+      this.config.openRouterApiKey,
+    ]) {
       if (secret) {
         output = output.split(secret).join("[redacted]");
       }
