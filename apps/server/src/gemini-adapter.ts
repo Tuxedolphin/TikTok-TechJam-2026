@@ -18,6 +18,18 @@ function redactSecrets(value: string, config: AppConfig): string {
 }
 const MIN_REQUEST_INTERVAL_MS = 4200; // Cap pacing strictly at 14.3 RPM (under Google 15 RPM limit)
 
+/**
+ * Google reports a bad credential as 400 INVALID_ARGUMENT, so the status alone
+ * cannot separate "your key is dead" from "your payload is wrong". The message
+ * body is the only signal that distinguishes them.
+ */
+function isCredentialRejection(status: number, body: string): boolean {
+  if (status === 401 || status === 403) return true;
+  if (status !== 400) return false;
+  return /api[\s_-]?key(?:[\s_-]?(?:is[\s_-]?)?(?:not[\s_-]?valid|invalid|expired))?/i.test(body) &&
+    /invalid|not valid|expired|pass a valid|permission/i.test(body);
+}
+
 export async function handleGeminiResponsesAdapter(
   request: FastifyRequest,
   reply: FastifyReply,
@@ -193,11 +205,25 @@ export async function handleGeminiResponsesAdapter(
 
   if (!response.ok) {
     const errorText = await response.text();
+    // Google's OpenAI-compatibility layer answers a missing, mistyped, revoked,
+    // or expired key with HTTP 400 INVALID_ARGUMENT rather than 401. Forwarded
+    // verbatim that reads as "the request was malformed", so the operator goes
+    // looking for a bug in the payload while the real fault is the credential.
+    // Re-label it as the auth failure it is; every other 4xx passes through.
+    if (isCredentialRejection(response.status, errorText)) {
+      return reply.code(401).send({
+        error:
+          "Gemini rejected the API key in GEMINI_API_KEY. Check that the key is " +
+          "current and enabled for the Generative Language API. Upstream said: " +
+          redactSecrets(errorText, config),
+      });
+    }
     return reply.code(response.status).send({ error: redactSecrets(errorText, config) });
   }
 
   const geminiResult = (await response.json()) as {
     choices?: Array<{
+      finish_reason?: string | null;
       message?: {
         content?: string | null;
         tool_calls?: Array<{
@@ -213,6 +239,26 @@ export async function handleGeminiResponsesAdapter(
   const choice = geminiResult.choices?.[0]?.message;
   const content = choice?.content || "";
   const toolCalls = choice?.tool_calls || [];
+  const finishReason = geminiResult.choices?.[0]?.finish_reason ?? null;
+
+  // A 200 carrying neither text nor a tool call is a failed turn wearing a
+  // success status. Replayed as a `response.completed` with an empty output
+  // list it reaches the operator as "the agent decided to do nothing", which
+  // is indistinguishable from the model genuinely having nothing to say and
+  // sends them debugging the prompt. Reasoning is the usual culprit: Gemini 3
+  // models always think, thinking is billed against the same output cap, and
+  // a cap set low enough can be spent before a single visible token lands.
+  if (!content && toolCalls.length === 0) {
+    const cap = maxCompletionTokens === null ? "the model's output cap" : `${maxCompletionTokens} tokens`;
+    const detail =
+      finishReason === "length"
+        ? `the response hit ${cap} before producing any output. Gemini 3 models ` +
+          "always spend reasoning tokens against that same cap, so raise " +
+          "RUN_BUDGET_MAX_OUTPUT_TOKENS (or drop the run's max_output_tokens)."
+        : `the model returned no content and no tool calls (finish_reason: ${finishReason ?? "unreported"}).`;
+    return reply.code(502).send({ error: `Gemini returned an empty turn: ${detail}` });
+  }
+
   const responseId = "resp_" + randomUUID().replace(/-/g, "");
 
   // Hijack response from Fastify lifecycle so it flushes immediately without waiting for timeout
