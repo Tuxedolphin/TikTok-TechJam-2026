@@ -1,7 +1,7 @@
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { createApp } from "./app.js";
 import { loadConfig } from "./config.js";
 import { egressProxySecret } from "./egress-authorizer.js";
@@ -17,6 +17,7 @@ const service = {
 
 const temporaryDirectories: string[] = [];
 afterEach(async () => {
+  vi.unstubAllGlobals();
   await Promise.all(temporaryDirectories.splice(0).map((d) => rm(d, { recursive: true, force: true })));
 });
 
@@ -35,6 +36,108 @@ describe("HTTP boundary", () => {
       headers: { authorization: "Bearer a-strong-test-token" },
     });
     expect(allowed.statusCode).toBe(200);
+    await app.close();
+  });
+
+  it("rejects missing and unrelated credentials before calling Gemini", async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    const app = await createApp(
+      loadConfig({
+        NODE_ENV: "test",
+        APP_AUTH_TOKEN: "browser-token",
+        GEMINI_API_KEY: "google-provider-key",
+        GEMINI_ADAPTER_TOKEN: "runtime-only-token-1234567890",
+      }),
+      service,
+    );
+
+    for (const authorization of [
+      undefined,
+      "Bearer browser-token",
+      "Bearer google-provider-key",
+      "bearer runtime-only-token-1234567890",
+      "Basic runtime-only-token-1234567890",
+      "Bearer  runtime-only-token-1234567890",
+      "Bearer runtime-only-token-1234567890 ",
+    ]) {
+      const response = await app.inject({
+        method: "POST",
+        url: "/api/adapter/responses",
+        headers: authorization ? { authorization } : {},
+        payload: { input: [] },
+      });
+      expect(response.statusCode).toBe(401);
+    }
+    expect(fetchMock).not.toHaveBeenCalled();
+    await app.close();
+  });
+
+  it("disables the Gemini adapter for OpenRouter and Ark configurations", async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    const app = await createApp(
+      loadConfig({
+        NODE_ENV: "test",
+        OPENROUTER_API_KEY: "openrouter-provider-key",
+        OPENROUTER_MODEL: "openai/test",
+        ARK_API_KEY: "ark-provider-key",
+        ARK_MODEL: "ark-test",
+      }),
+      service,
+    );
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/adapter/responses",
+      headers: { authorization: "Bearer openrouter-provider-key" },
+      payload: { input: [] },
+    });
+    expect(response.statusCode).toBe(404);
+    expect(fetchMock).not.toHaveBeenCalled();
+    await app.close();
+  });
+
+  it("allows the dedicated Runtime credential and only forwards the Gemini key", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          choices: [{ message: { content: "adapter reached" } }],
+          usage: { prompt_tokens: 2, completion_tokens: 1, total_tokens: 3 },
+        }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      ),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    const app = await createApp(
+      loadConfig({
+        NODE_ENV: "test",
+        APP_AUTH_TOKEN: "browser-token",
+        GEMINI_API_KEY: "google-provider-key",
+        GEMINI_ADAPTER_TOKEN: "runtime-only-token-1234567890",
+        OPENROUTER_API_KEY: "openrouter-provider-key",
+        ARK_API_KEY: "ark-provider-key",
+      }),
+      service,
+    );
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/adapter/responses",
+      headers: { authorization: "Bearer runtime-only-token-1234567890" },
+      payload: { model: "gemini-test", input: [] },
+    });
+    expect(response.statusCode).toBe(200);
+    expect(response.body).toContain("response.completed");
+    expect(fetchMock).toHaveBeenCalledOnce();
+    expect(fetchMock).toHaveBeenCalledWith(
+      "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions",
+      expect.objectContaining({
+        headers: expect.objectContaining({ Authorization: "Bearer google-provider-key" }),
+      }),
+    );
+    expect(JSON.stringify(fetchMock.mock.calls)).not.toContain("openrouter-provider-key");
+    expect(JSON.stringify(fetchMock.mock.calls)).not.toContain("ark-provider-key");
     await app.close();
   });
 

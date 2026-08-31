@@ -52,14 +52,17 @@ export function proxyChildEnv(egressProxyUrl: string | undefined): NodeJS.Proces
   };
 }
 
-export function containerEngineEnvironment(config: AppConfig): NodeJS.ProcessEnv {
-  const environment: NodeJS.ProcessEnv = {
-    OPENROUTER_API_KEY: config.openRouterApiKey,
-    OPENAI_API_KEY: config.openRouterApiKey,
-    OPENROUTER_BASE_URL: config.openRouterBaseUrl,
-    OPENAI_BASE_URL: config.openRouterBaseUrl,
-    NO_COLOR: "1",
-  };
+export function containerEngineEnvironment(
+  config: AppConfig,
+  includeRuntimeConfig = false,
+): NodeJS.ProcessEnv {
+  const environment: NodeJS.ProcessEnv = { NO_COLOR: "1" };
+  if (includeRuntimeConfig) {
+    environment.OPENROUTER_API_KEY = config.openRouterApiKey;
+    environment.OPENAI_API_KEY = config.openRouterApiKey;
+    environment.OPENROUTER_BASE_URL = config.openRouterBaseUrl;
+    environment.OPENAI_BASE_URL = config.openRouterBaseUrl;
+  }
   for (const name of ["PATH", "HOME", "TMPDIR", "LANG", "LC_ALL", "XDG_RUNTIME_DIR"] as const) {
     if (process.env[name] !== undefined) environment[name] = process.env[name];
   }
@@ -129,13 +132,13 @@ export function buildContainerRunArgs(
     "--user",
     config.containerUser,
     "--env",
-    "OPENROUTER_API_KEY=" + config.openRouterApiKey,
+    "OPENROUTER_API_KEY",
     "--env",
-    "OPENAI_API_KEY=" + config.openRouterApiKey,
+    "OPENAI_API_KEY",
     "--env",
-    "OPENROUTER_BASE_URL=" + config.openRouterBaseUrl,
+    "OPENROUTER_BASE_URL",
     "--env",
-    "OPENAI_BASE_URL=" + config.openRouterBaseUrl,
+    "OPENAI_BASE_URL",
     "--env",
     "CODEX_HOME=/codex-home",
     "--env",
@@ -276,7 +279,7 @@ export class ContainerCodexRunner implements AgentRunner {
       buildContainerRunArgs(request, this.config),
       {
         cwd: request.workspacePath,
-        env: { ...this.childEnvironment(), ...proxyChildEnv(request.egressProxyUrl) },
+        env: { ...this.childEnvironment(true), ...proxyChildEnv(request.egressProxyUrl) },
         stdio: ["ignore", "pipe", "pipe"],
       },
     );
@@ -394,7 +397,7 @@ export class ContainerCodexRunner implements AgentRunner {
     }
   }
 
-  private childEnvironment(): NodeJS.ProcessEnv {
-    return containerEngineEnvironment(this.config);
+  private childEnvironment(includeRuntimeConfig = false): NodeJS.ProcessEnv {
+    return containerEngineEnvironment(this.config, includeRuntimeConfig);
   }
 }
