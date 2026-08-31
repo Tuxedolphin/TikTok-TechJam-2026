@@ -91,6 +91,17 @@ function sessionActor(
   return session.actor;
 }
 
+function hasValidBearerToken(header: string | undefined, expected: string): boolean {
+  if (!expected) return false;
+  const candidate = header?.startsWith("Bearer ") ? header.slice(7) : "";
+  const expectedBuffer = Buffer.from(expected);
+  const candidateBuffer = Buffer.from(candidate);
+  return (
+    candidateBuffer.length === expectedBuffer.length &&
+    timingSafeEqual(candidateBuffer, expectedBuffer)
+  );
+}
+
 export async function createApp(
   config: AppConfig,
   service: AgentService,
@@ -115,23 +126,30 @@ export async function createApp(
   });
 
   app.addHook("onRequest", async (request, reply) => {
+    const routePath = request.routeOptions.url;
+    const rawPath = request.url
+      .split(/[?#]/, 1)[0]
+      ?.replace(/\\/g, "/")
+      .replace(/\/{2,}/g, "/") ?? "/";
+    let decodedPath = rawPath;
+    try {
+      decodedPath = decodeURIComponent(rawPath)
+        .replace(/\\/g, "/")
+        .replace(/\/{2,}/g, "/");
+    } catch {
+      // Malformed encodings remain protected when their raw path targets /api.
+    }
+    const targetsApi = routePath?.startsWith("/api/") || decodedPath.startsWith("/api/");
     if (
       !config.authToken ||
-      !request.url.startsWith("/api/") ||
-      request.url === "/api/health" ||
-      request.url === "/api/auth" ||
-      request.url.startsWith("/api/adapter/")
+      !targetsApi ||
+      routePath === "/api/health" ||
+      routePath === "/api/auth" ||
+      routePath?.startsWith("/api/adapter/")
     ) {
       return;
     }
-    const header = request.headers.authorization ?? "";
-    const candidate = header.startsWith("Bearer ") ? header.slice(7) : "";
-    const expectedBuffer = Buffer.from(config.authToken);
-    const candidateBuffer = Buffer.from(candidate);
-    const valid =
-      candidateBuffer.length === expectedBuffer.length &&
-      timingSafeEqual(candidateBuffer, expectedBuffer);
-    if (!valid) {
+    if (!hasValidBearerToken(request.headers.authorization, config.authToken)) {
       return reply.code(401).send({ error: "Authentication required" });
     }
   });
@@ -349,9 +367,17 @@ export async function createApp(
     // Called by the egress proxy sidecar for EVERY outbound connection an
     // agent container attempts. Answering slowly or failing here makes the
     // proxy fail closed, which is the safe direction.
-    app.post("/api/egress/authorize", async (request) => {
+    app.post("/api/egress/authorize", async (request, reply) => {
       const body = egressAuthorizeBody.parse(request.body);
-      const result = await egressAuthorizer.authorize(body);
+      const controller = new AbortController();
+      request.raw.once("aborted", () => controller.abort());
+      reply.raw.once("close", () => {
+        if (!reply.raw.writableEnded) controller.abort();
+      });
+      const result = await egressAuthorizer.authorize({
+        ...body,
+        signal: controller.signal,
+      });
       return {
         allowed: result.allowed,
         ruleId: result.ruleId,
@@ -362,6 +388,12 @@ export async function createApp(
   }
 
   app.post("/api/adapter/responses", async (request, reply) => {
+    if (!config.geminiApiKey) {
+      return reply.code(404).send({ error: "Gemini adapter is not configured" });
+    }
+    if (!hasValidBearerToken(request.headers.authorization, config.geminiAdapterToken)) {
+      return reply.code(401).send({ error: "Runtime authentication required" });
+    }
     await handleGeminiResponsesAdapter(request, reply, config);
   });
 

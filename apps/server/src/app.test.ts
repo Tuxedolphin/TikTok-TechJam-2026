@@ -16,6 +16,7 @@ const service = {
 
 const temporaryDirectories: string[] = [];
 afterEach(async () => {
+  vi.unstubAllGlobals();
   await Promise.all(temporaryDirectories.splice(0).map((d) => rm(d, { recursive: true, force: true })));
 });
 
@@ -60,6 +61,155 @@ describe("HTTP boundary", () => {
       headers: { authorization: "Bearer a-strong-test-token" },
     });
     expect(allowed.statusCode).toBe(200);
+
+    const nonCanonicalCases: Array<[string, number]> = [
+      ["/api//agents", 401],
+      ["/api/./agents", 401],
+      ["/api/%2e/agents", 401],
+      ["/api/%2e%2e/api/agents", 401],
+      ["//api/agents", 401],
+      ["/api\\agents", 401],
+      ["/api%5cagents", 401],
+      ["/api/%5cagents", 401],
+      ["/api%2fagents", 401],
+      ["/api/%2fagents", 401],
+      ["/api/%252e/agents", 401],
+      ["/api/%ZZ/agents", 400],
+    ];
+    for (const [url, statusCode] of nonCanonicalCases) {
+      const response = await app.inject({ method: "GET", url });
+      expect(response.statusCode, url).toBe(statusCode);
+      expect(response.body, url).not.toContain("secret");
+      if (statusCode === 401) {
+        expect(response.json(), url).toEqual({ error: "Authentication required" });
+      }
+    }
+    await app.close();
+  });
+
+  it("serves production static assets without exposing protected API routes", async () => {
+    const app = await createApp(
+      loadConfig({
+        NODE_ENV: "production",
+        HOST: "127.0.0.1",
+        APP_AUTH_TOKEN: "a-strong-test-token",
+      }),
+      service,
+    );
+
+    const page = await app.inject({ method: "GET", url: "/" });
+    expect(page.statusCode).toBe(200);
+    expect(page.headers["content-type"]).toContain("text/html");
+    expect(page.body).toContain("Agent Launchpad");
+
+    const protectedApi = await app.inject({ method: "GET", url: "/api//agents" });
+    expect(protectedApi.statusCode).toBe(401);
+    await app.close();
+  });
+
+  it("rejects missing and unrelated credentials before calling Gemini", async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    const app = await createApp(
+      loadConfig({
+        NODE_ENV: "test",
+        APP_AUTH_TOKEN: "browser-token",
+        GEMINI_API_KEY: "google-provider-key",
+        GEMINI_ADAPTER_TOKEN: "runtime-only-token-1234567890",
+      }),
+      service,
+    );
+
+    for (const authorization of [
+      undefined,
+      "Bearer browser-token",
+      "Bearer google-provider-key",
+      "bearer runtime-only-token-1234567890",
+      "Basic runtime-only-token-1234567890",
+      "Bearer  runtime-only-token-1234567890",
+      "Bearer runtime-only-token-1234567890 ",
+    ]) {
+      const response = await app.inject({
+        method: "POST",
+        url: "/api/adapter/responses",
+        headers: authorization ? { authorization } : {},
+        payload: { input: [] },
+      });
+      expect(response.statusCode).toBe(401);
+    }
+    expect(fetchMock).not.toHaveBeenCalled();
+    await app.close();
+  });
+
+  it.each(["openrouter", "ark"] as const)(
+    "disables the Gemini adapter for selected %s configurations",
+    async (modelProvider) => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    const app = await createApp(
+      loadConfig({
+        NODE_ENV: "test",
+        MODEL_PROVIDER: modelProvider,
+        OPENROUTER_API_KEY: "openrouter-provider-key",
+        OPENROUTER_MODEL: "openai/test",
+        ARK_API_KEY: "ark-provider-key",
+        ARK_MODEL: "ark-test",
+      }),
+      service,
+    );
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/adapter/responses",
+      headers: { authorization: "Bearer openrouter-provider-key" },
+      payload: { input: [] },
+    });
+    expect(response.statusCode).toBe(404);
+    expect(fetchMock).not.toHaveBeenCalled();
+    await app.close();
+  });
+
+  it("allows the dedicated Runtime credential and only forwards the Gemini key", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          choices: [{ message: { content: "adapter reached" } }],
+          usage: { prompt_tokens: 2, completion_tokens: 1, total_tokens: 3 },
+        }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      ),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    const app = await createApp(
+      loadConfig({
+        NODE_ENV: "test",
+        APP_AUTH_TOKEN: "browser-token",
+        MODEL_PROVIDER: "gemini",
+        GEMINI_API_KEY: "google-provider-key",
+        GEMINI_ADAPTER_TOKEN: "runtime-only-token-1234567890",
+        OPENROUTER_API_KEY: "openrouter-provider-key",
+        ARK_API_KEY: "ark-provider-key",
+      }),
+      service,
+    );
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/adapter/responses",
+      headers: { authorization: "Bearer runtime-only-token-1234567890" },
+      payload: { model: "gemini-test", input: [] },
+    });
+    expect(response.statusCode).toBe(200);
+    expect(response.body).toContain("response.completed");
+    expect(fetchMock).toHaveBeenCalledOnce();
+    expect(fetchMock).toHaveBeenCalledWith(
+      "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions",
+      expect.objectContaining({
+        headers: expect.objectContaining({ Authorization: "Bearer google-provider-key" }),
+      }),
+    );
+    expect(JSON.stringify(fetchMock.mock.calls)).not.toContain("openrouter-provider-key");
+    expect(JSON.stringify(fetchMock.mock.calls)).not.toContain("ark-provider-key");
     await app.close();
   });
 

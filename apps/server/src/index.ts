@@ -13,7 +13,7 @@ import { WorkspaceManager } from "./workspace.js";
 function platformHosts(config: AppConfig): string[] {
   const hosts = new Set<string>(["host.docker.internal"]);
   try {
-    hosts.add(new URL(config.openRouterBaseUrl).hostname);
+    hosts.add(new URL(config.modelBaseUrl).hostname);
   } catch {
     // A malformed base URL simply contributes no standing allowance.
   }
@@ -51,6 +51,8 @@ egressAuthorizer = config.egressEnforcement
         service.recordPolicyDecision(runId, agentId, decision),
       recordBlocked: (runId, agentId, input, decision, strikes) =>
         service.recordEgressBlocked(runId, agentId, input.host, decision, strikes),
+      requestApproval: (runId, agentId, input) =>
+        service.requestEgressApproval(runId, agentId, input),
       quarantineAgent: (agentId, reason) => service.quarantineAgent(agentId, reason),
     })
   : undefined;
