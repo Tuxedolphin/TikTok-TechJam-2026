@@ -108,30 +108,36 @@ async function agentCurl(url) {
 try {
   log("Bringing up the isolated network and authorizing proxy...");
   await network.ensure();
-  await new Promise((resolve) => setTimeout(resolve, 2500));
 
   log(`\n1. Agent tries to reach ${TARGET} with NO grant`);
   const noGrant = await agentCurl(`http://${TARGET}/`);
-  log(`   -> HTTP ${noGrant}   (403 = proxy refused to connect)`);
+  log(`   -> HTTP ${noGrant}   (expect 403: the proxy refuses)`);
 
   log("\n2. Operator issues a network:egress grant");
   const grant = await identity.createGrant({
     principalId: agent.principalId, grantedBy: "user-a",
     scope: "network:egress", target: TARGET,
   });
-  const withGrant = await agentCurl(`http://${TARGET}/`);
-  log(`   -> HTTP ${withGrant}   (200 = allowed through)`);
+  // The claim under test is that the grant admits the connection. A 403 would
+  // disprove it; a 502 only means the proxy allowed the request and the far
+  // side hiccuped, so retry that rather than reporting a containment failure.
+  let withGrant = await agentCurl(`http://${TARGET}/`);
+  for (let attempt = 0; attempt < 3 && withGrant !== "200" && withGrant !== "403"; attempt++) {
+    log(`   -> HTTP ${withGrant}   (allowed by policy, upstream did not answer; retrying)`);
+    withGrant = await agentCurl(`http://${TARGET}/`);
+  }
+  log(`   -> HTTP ${withGrant}   (expect 200: the grant admits it)`);
 
   log("\n3. Operator REVOKES the grant mid-flight");
   await identity.revokeGrant(grant.id);
   const afterRevoke = await agentCurl(`http://${TARGET}/`);
-  log(`   -> HTTP ${afterRevoke}   (403 = revocation bit immediately)`);
+  log(`   -> HTTP ${afterRevoke}   (expect 403: revocation bites)`);
 
   log("\n4. Agent keeps probing until the quarantine threshold trips");
   await agentCurl("http://attacker.example/");
   await agentCurl("http://attacker.example/");
   const status = service.getAgent(agent.id).status;
-  log(`   -> agent status: ${status}   (stopped = contained)`);
+  log(`   -> agent status: ${status}   (expect stopped: quarantined)`);
 
   log("\n5. Can one agent borrow another's grants by claiming its principal?");
   const impersonated = await execFileAsync(
@@ -145,7 +151,7 @@ try {
     ],
     { timeout: 60_000 },
   ).then((r) => r.stdout.trim()).catch((e) => `error(${e.code})`);
-  log(`   -> HTTP ${impersonated}   (403 = secret did not verify)`);
+  log(`   -> HTTP ${impersonated}   (expect 403: the secret does not verify)`);
 
   log("\n6. Can the agent bypass the proxy entirely? (direct, no proxy env)");
   const direct = await execFileAsync(
@@ -156,7 +162,7 @@ try {
     ],
     { timeout: 60_000 },
   ).then((r) => r.stdout.trim()).catch((e) => `blocked(exit ${e.code})`);
-  log(`   -> ${direct}   (no route off-box: the network itself denies it)`);
+  log(`   -> ${direct}   (expect blocked: no route off-box)`);
 
   const events = store.snapshot().runEvents;
   log("\n7. Trace receipts");

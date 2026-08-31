@@ -92,7 +92,6 @@ async function reach(host) {
 try {
   log("Bringing up the isolated network and authorizing proxy...\n");
   await network.ensure();
-  await new Promise((r) => setTimeout(r, 2500));
 
   log("1. Operator grants the agent egress it legitimately needs");
   await identity.createGrant({

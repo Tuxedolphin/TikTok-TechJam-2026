@@ -126,8 +126,36 @@ export class EgressNetworkManager {
       // The uplink is attached second so the proxy's default route stays on the
       // internal network while it still has a path to the internet.
       await this.engine(["network", "connect", UPLINK_NETWORK, PROXY_CONTAINER]);
+      await this.waitForProxyListening();
       this.readyForCurrentProcess = true;
     }
+  }
+
+  /**
+   * `docker run -d` returns when the container is created, not when the process
+   * inside it has bound its port. Returning from ensure() before then hands the
+   * first agent request a connection refusal that looks nothing like a policy
+   * decision -- the caller cannot tell "not started yet" from "denied".
+   */
+  private async waitForProxyListening(timeoutMs = 60_000): Promise<void> {
+    const deadline = Date.now() + timeoutMs;
+    let logs = "";
+    while (Date.now() < deadline) {
+      try {
+        logs = await this.engine(["logs", PROXY_CONTAINER]);
+        if (logs.includes("proxy listening on")) return;
+      } catch {
+        // The container may not be emitting yet; the running check below is
+        // what distinguishes "still starting" from "died on startup".
+      }
+      if (!(await this.containerRunning(PROXY_CONTAINER))) {
+        throw new Error(`Egress proxy exited before listening: ${logs.trim().slice(-400)}`);
+      }
+      await new Promise((resolve) => setTimeout(resolve, 200));
+    }
+    throw new Error(
+      `Egress proxy did not listen within ${timeoutMs}ms: ${logs.trim().slice(-400)}`,
+    );
   }
 
   /** Proxy URL as seen from inside an agent container on the internal network. */
