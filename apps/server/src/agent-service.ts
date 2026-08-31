@@ -53,6 +53,8 @@ export class AgentService {
       resolve: (approved: boolean) => void;
       timeout: NodeJS.Timeout;
       request: ApprovalRequest;
+      signal?: AbortSignal;
+      onAbort?: () => void;
     }
   >();
 
@@ -468,8 +470,18 @@ export class AgentService {
       approval.resolvedBy = operatorName;
 
       const agent = database.agents.find((item) => item.id === approval.agentId);
+      const hasOtherPendingApproval = database.approvals.some(
+        (item) =>
+          item.id !== approval.id &&
+          item.agentId === approval.agentId &&
+          item.status === "pending",
+      );
       if (agent && agent.status === "waiting_approval") {
-        agent.status = decision === "approved" ? "busy" : "ready";
+        agent.status = hasOtherPendingApproval
+          ? "waiting_approval"
+          : run.status === "running"
+            ? "busy"
+            : "ready";
         agent.updatedAt = timestamp;
       }
 
@@ -490,13 +502,108 @@ export class AgentService {
       throw new Error("Active approval registration disappeared during resolution");
     }
     clearTimeout(pending.timeout);
+    if (pending.signal && pending.onAbort) {
+      pending.signal.removeEventListener("abort", pending.onAbort);
+    }
     this.pendingApprovals.delete(id);
     pending.resolve(decision === "approved");
 
     return updated;
   }
 
+  async requestEgressApproval(
+    runId: string,
+    agentId: string,
+    input: { host: string; port: number; method: string; signal?: AbortSignal | undefined },
+  ): Promise<boolean> {
+    const approvalId = randomUUID();
+    const timestamp = now();
+    const actionDetail = `${input.method} ${input.host}:${input.port}`;
+    const approvalReq: ApprovalRequest = {
+      id: approvalId,
+      runId,
+      agentId,
+      actionType: "tool_call",
+      actionDetail,
+      ruleId: "HITL-EGRESS-025",
+      reason: "Outbound request is held at the enforced proxy boundary pending operator approval.",
+      riskLevel: "high",
+      status: "pending",
+      createdAt: timestamp,
+      resolvedAt: null,
+      resolvedBy: null,
+    };
 
+    let resolveDecision!: (approved: boolean) => void;
+    const decision = new Promise<boolean>((resolve) => {
+      resolveDecision = resolve;
+    });
+    const clearPending = () => {
+      const pending = this.pendingApprovals.get(approvalId);
+      if (!pending) return;
+      clearTimeout(pending.timeout);
+      if (pending.signal && pending.onAbort) {
+        pending.signal.removeEventListener("abort", pending.onAbort);
+      }
+      this.pendingApprovals.delete(approvalId);
+      pending.resolve(false);
+    };
+    const onAbort = () => {
+      void this.resolveApproval(
+        approvalId,
+        "denied",
+        "System (Requester disconnected)",
+      ).catch(clearPending);
+    };
+    const timeout = setTimeout(() => {
+      void this.resolveApproval(approvalId, "denied", "System (Approval timed out)")
+        .catch(clearPending);
+    }, 300_000);
+    this.pendingApprovals.set(approvalId, {
+      resolve: resolveDecision,
+      timeout,
+      request: approvalReq,
+      ...(input.signal ? { signal: input.signal, onAbort } : {}),
+    });
+    input.signal?.addEventListener("abort", onAbort, { once: true });
+    if (input.signal?.aborted) {
+      onAbort();
+      return decision;
+    }
+
+    try {
+      await this.store.mutate((database) => {
+        const agent = database.agents.find((item) => item.id === agentId);
+        const run = database.runs.find((item) => item.id === runId && item.agentId === agentId);
+        if (
+          !agent ||
+          run?.status !== "running" ||
+          this.cancellationRequests.has(agentId) ||
+          input.signal?.aborted
+        ) {
+          throw new HttpError(409, "Egress approval requires an active Agent run");
+        }
+        database.approvals.push(approvalReq);
+        agent.status = "waiting_approval";
+        agent.updatedAt = timestamp;
+        this.appendRunEvent(database, {
+          runId,
+          agentId,
+          type: "step.approval_requested",
+          severity: "warning",
+          title: "Outbound request held before connection",
+          detail: `Human approval required for ${actionDetail}; no upstream connection has been opened.`,
+          createdAt: timestamp,
+        });
+      });
+    } catch (error) {
+      clearPending();
+      if (input.signal?.aborted) return decision;
+      throw error;
+    }
+
+    return decision;
+  }
 
   async sendMessage(
     agentId: string,
@@ -683,7 +790,24 @@ export class AgentService {
 
         // 2. Action Risk Assessment (Human-in-the-Loop Gate)
         const risk = evaluateActionRisk(step);
-        if (risk.requiresApproval) {
+        if (risk.requiresApproval && step.phase !== "before") {
+          const explicitlyAfterExecution = step.phase === "after";
+          await this.store.mutate((database) => {
+            this.appendRunEvent(database, {
+              runId: run.id,
+              agentId: agentAtStart.id,
+              type: "step.risk_observed",
+              severity: "warning",
+              title: explicitlyAfterExecution
+                ? `Risk observed after execution (${risk.ruleId})`
+                : `Risk observed without a pre-execution guarantee (${risk.ruleId})`,
+              detail: explicitlyAfterExecution
+                ? `Telemetry only; this Runtime event arrived after execution. ${risk.reason}`
+                : `Telemetry only; this Runtime event did not assert a trusted before phase. ${risk.reason}`,
+              createdAt: now(),
+            });
+          });
+        } else if (risk.requiresApproval) {
           const approvalId = randomUUID();
           const timestamp = now();
           const approvalReq: ApprovalRequest = {
@@ -1069,6 +1193,9 @@ export class AgentService {
     for (const [approvalId, pending] of this.pendingApprovals.entries()) {
       if (pending.request.agentId !== agentId) continue;
       clearTimeout(pending.timeout);
+      if (pending.signal && pending.onAbort) {
+        pending.signal.removeEventListener("abort", pending.onAbort);
+      }
       this.pendingApprovals.delete(approvalId);
       pending.resolve(false);
     }
