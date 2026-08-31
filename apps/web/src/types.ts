@@ -123,6 +123,17 @@ export interface SystemInfo {
   runBudgetMaxOutputTokens: number | null;
   runBudgetMaxTotalTokens: number | null;
   runBudgetMaxDurationMs: number | null;
+  runBudgetEnforcement?: {
+    inputTokens: "observational";
+    cachedInputTokens: "observational";
+    outputTokens: "preventive";
+    totalTokens: "observational";
+    durationMs: "preventive";
+  };
+  runBudgetTokenSemantics?: {
+    cachedInputTokensIncludedInInput: true;
+    totalTokens: ["inputTokens", "outputTokens"];
+  };
 }
 
 export type PrincipalKind = "human" | "agent";

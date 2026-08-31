@@ -7,6 +7,21 @@ Use one of two Volcengine ECS paths:
 
 Both profiles require a Volcengine Ark API key and a Responses-capable endpoint.
 
+## Runtime and Gemini adapter routing
+
+The ECS image runs the server and Codex in the same application container with
+`RUNTIME_PROVIDER=local-process`. When Gemini is configured, Codex therefore
+uses `http://127.0.0.1:<port>/api/adapter`; `host.docker.internal` is not used or
+required on ECS. The server may still bind `HOST=0.0.0.0` for external traffic,
+while its internal Codex process reaches the adapter through loopback.
+
+Disposable local Docker, Docker Desktop/Colima, and Podman Runtime containers
+instead use `RUNTIME_PROVIDER=container` and the explicit
+`host.docker.internal:host-gateway` mapping documented in
+[`LOCAL_POC.md`](LOCAL_POC.md#gemini-adapter-routing). Native Linux Docker needs
+this explicit mapping; Docker Desktop/Colima and Podman follow the same
+configured alias for a consistent Runtime URL.
+
 ## Existing Linux ECS
 
 Recommended host:

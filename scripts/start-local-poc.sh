@@ -11,6 +11,8 @@ cli_openrouter_key="${OPENROUTER_API_KEY:-}"
 cli_openrouter_model="${OPENROUTER_MODEL:-}"
 cli_ark_key="${ARK_API_KEY:-}"
 cli_ark_model="${ARK_MODEL:-}"
+cli_host="${HOST:-}"
+cli_auth_token="${APP_AUTH_TOKEN:-}"
 
 if [[ -f .env ]]; then
   set -a
@@ -46,6 +48,8 @@ if [[ -n "$cli_openrouter_key" ]]; then export OPENROUTER_API_KEY="$cli_openrout
 if [[ -n "$cli_openrouter_model" ]]; then export OPENROUTER_MODEL="$cli_openrouter_model"; fi
 if [[ -n "$cli_ark_key" ]]; then export ARK_API_KEY="$cli_ark_key"; fi
 if [[ -n "$cli_ark_model" ]]; then export ARK_MODEL="$cli_ark_model"; fi
+if [[ -n "$cli_host" ]]; then export HOST="$cli_host"; fi
+if [[ -n "$cli_auth_token" ]]; then export APP_AUTH_TOKEN="$cli_auth_token"; fi
 
 if [[ -z "${MODEL_PROVIDER:-}" ]]; then
   configured_provider_count=0
@@ -163,6 +167,19 @@ if (( node_major < 22 )); then
   exit 2
 fi
 
+export NODE_ENV=production
+export HOST="${HOST:-127.0.0.1}"
+auth_token="${APP_AUTH_TOKEN:-}"
+if [[ "$HOST" != "127.0.0.1" && "$HOST" != "::1" && "$HOST" != "localhost" ]] \
+  && { (( ${#auth_token} < 24 || ${#auth_token} > 128 )) \
+    || [[ "$auth_token" == replace-* ]] \
+    || [[ ! "$auth_token" =~ ^[A-Za-z0-9._~-]+$ ]]; }; then
+  log "A non-loopback production HOST requires a URL-safe APP_AUTH_TOKEN of 24-128 characters."
+  log "Run locally without auth: HOST=127.0.0.1 npm run poc"
+  log "Or generate a token: APP_AUTH_TOKEN=\"\$(node -e 'process.stdout.write(require(\"node:crypto\").randomBytes(24).toString(\"base64url\"))')\" HOST=$HOST npm run poc"
+  exit 2
+fi
+
 engine="$(detect_engine)"
 log "Using $engine as the Agent Runtime engine."
 
@@ -231,8 +248,6 @@ if [[ "$codex_sandbox_mode" == "workspace-write" ]] \
   codex_sandbox_mode=danger-full-access
 fi
 
-export NODE_ENV=production
-export HOST="${HOST:-127.0.0.1}"
 export PORT="${PORT:-3000}"
 export CODEX_SANDBOX_MODE="$codex_sandbox_mode"
 export RUNTIME_PROVIDER=container
