@@ -8,6 +8,7 @@ import type {
   AgentRun,
   AgentRunner,
   AgentSession,
+  ApprovalActor,
   ApprovalRequest,
   ApprovalStatus,
   CreateAgentInput,
@@ -39,10 +40,48 @@ const now = () => new Date().toISOString();
 const PREVIEW_LENGTH = 180;
 const MEMORY_MESSAGE_LIMIT = 4;
 const MEMORY_MESSAGE_CHAR_LIMIT = 600;
+const SYSTEM_RESTART_ACTOR: ApprovalActor = {
+  principalId: "system:server-restart",
+  displayName: "System (Server restarted)",
+};
+const SYSTEM_TIMEOUT_ACTOR: ApprovalActor = {
+  principalId: "system:approval-timeout",
+  displayName: "System (Approval timed out)",
+};
+const SYSTEM_CANCEL_ACTOR: ApprovalActor = {
+  principalId: "system:run-cancelled",
+  displayName: "System (Run cancelled)",
+};
+const SYSTEM_PAUSE_FAILURE_ACTOR: ApprovalActor = {
+  principalId: "system:pause-failed",
+  displayName: "System (Runner failed to pause)",
+};
+
+function actionResource(detail: string, ruleId: string): string {
+  const url = detail.match(/https?:\/\/[^\s"'`]+/i)?.[0];
+  if (url) return url.replace(/[),.;]+$/, "");
+  const absolutePath = detail.match(/(?:^|\s)(\/[A-Za-z0-9._~!$&'()*+,;=:@%/-]+)/)?.[1];
+  if (absolutePath) return absolutePath;
+  if (ruleId === "SEC-CREDENTIALS-002") {
+    return detail.match(/(?:^|[\s/])((?:\.env(?:\.[\w-]+)?)|credentials\.env|id_rsa|id_ed25519|\.aws\/credentials)/i)?.[1]
+      ?? "unknown credential resource";
+  }
+  if (ruleId === "SEC-EGRESS-003") {
+    return detail.match(/\b(?:[a-z0-9-]+\.)+[a-z]{2,}(?:\/[^\s"'`]*)?/i)?.[0]
+      ?? "unknown network destination";
+  }
+  if (ruleId === "SEC-SUPPLY-004") {
+    const target = detail.match(/\b(?:npm|pnpm|yarn|twine|cargo|pip)\s+(?:publish|upload)\s+([^\s"'`]+)/i)?.[1];
+    return target && !target.startsWith("-") ? target : "unknown package registry resource";
+  }
+  if (ruleId === "SEC-PRIVILEGE-005") return "host privilege boundary";
+  return "unknown resource";
+}
 
 export class AgentService {
   private readonly activeExecutions = new Map<string, Promise<void>>();
   private readonly cancellationRequests = new Set<string>();
+  private readonly runnerLifecycleQueues = new Map<string, Promise<void>>();
   private readonly pendingApprovals = new Map<
     string,
     {
@@ -65,8 +104,10 @@ export class AgentService {
     await this.store.initialize();
     await this.workspaces.initialize();
     await this.store.mutate((database) => {
+      const cancelledRunIds = new Set<string>();
       for (const run of database.runs) {
         if (run.status === "queued" || run.status === "running") {
+          cancelledRunIds.add(run.id);
           run.status = "cancelled";
           run.error = "Server restarted while this run was active";
           run.completedAt = now();
@@ -79,10 +120,26 @@ export class AgentService {
         }
       }
       for (const approval of database.approvals) {
-        if (approval.status === "pending") {
+        if (approval.status === "approved" && cancelledRunIds.has(approval.runId)) {
+          approval.evidence.result = "execution_cancelled";
+        } else if (approval.status === "pending") {
+          const resolvedAt = now();
           approval.status = "denied";
-          approval.resolvedAt = now();
-          approval.resolvedBy = "System (Server restarted)";
+          approval.resolvedAt = resolvedAt;
+          approval.resolvedByPrincipalId = SYSTEM_RESTART_ACTOR.principalId;
+          approval.resolvedByDisplayName = SYSTEM_RESTART_ACTOR.displayName;
+          approval.evidence.decision = "denied";
+          approval.evidence.result = "execution_cancelled";
+          approval.evidence.resolvedBy = SYSTEM_RESTART_ACTOR;
+          this.appendRunEvent(database, {
+            runId: approval.runId,
+            agentId: approval.agentId,
+            type: "step.approval_denied",
+            severity: "error",
+            title: "System denied action after server restart",
+            detail: this.redact(JSON.stringify(approval.evidence)),
+            createdAt: resolvedAt,
+          });
         }
       }
     });
@@ -406,7 +463,7 @@ export class AgentService {
   async resolveApproval(
     id: string,
     decision: "approved" | "denied",
-    operatorName = "Operator",
+    actor: ApprovalActor,
   ): Promise<ApprovalRequest> {
     const timestamp = now();
     const updated = await this.store.mutate((database) => {
@@ -419,7 +476,17 @@ export class AgentService {
       }
       approval.status = decision;
       approval.resolvedAt = timestamp;
-      approval.resolvedBy = operatorName;
+      approval.resolvedByPrincipalId = actor.principalId;
+      approval.resolvedByDisplayName = actor.displayName;
+      approval.evidence.decision = decision;
+      approval.evidence.result = decision === "approved"
+        ? "execution_authorized"
+        : actor.principalId === SYSTEM_CANCEL_ACTOR.principalId
+          ? "execution_cancelled"
+          : actor.principalId === SYSTEM_PAUSE_FAILURE_ACTOR.principalId
+            ? "execution_failed"
+            : "execution_blocked";
+      approval.evidence.resolvedBy = actor;
 
       const agent = database.agents.find((item) => item.id === approval.agentId);
       if (agent && agent.status === "waiting_approval") {
@@ -433,7 +500,7 @@ export class AgentService {
         type: decision === "approved" ? "step.approval_granted" : "step.approval_denied",
         severity: decision === "approved" ? "success" : "error",
         title: decision === "approved" ? "Operator approved action" : "Operator denied action",
-        detail: `${decision === "approved" ? "Approved" : "Denied"} by ${operatorName}: ${this.redact(approval.actionDetail)}`,
+        detail: this.redact(JSON.stringify(approval.evidence)),
         createdAt: timestamp,
       });
 
@@ -455,6 +522,7 @@ export class AgentService {
   async sendMessage(
     agentId: string,
     prompt: string,
+    initiatingHuman?: ApprovalActor,
   ): Promise<{ run: AgentRun; message: Message }> {
     if (!isOpenRouterConfigured(this.config)) {
       throw new HttpError(
@@ -469,6 +537,8 @@ export class AgentService {
       id: runId,
       agentId,
       sessionId: null,
+      initiatedByPrincipalId: initiatingHuman?.principalId ?? "",
+      initiatedByDisplayName: initiatingHuman?.displayName ?? "",
       status: "queued",
       prompt: this.redact(prompt),
       output: null,
@@ -499,6 +569,11 @@ export class AgentService {
         throw new HttpError(409, "This Agent is already running");
       }
       const activeSessionId = storedAgent.activeSessionId ?? null;
+      if (!initiatingHuman) {
+        const owner = database.principals.find((principal) => principal.id === storedAgent.ownerId);
+        run.initiatedByPrincipalId = storedAgent.ownerId;
+        run.initiatedByDisplayName = owner?.name ?? storedAgent.ownerId;
+      }
       run.sessionId = activeSessionId;
       message.sessionId = activeSessionId;
       if (promptViolation) {
@@ -610,6 +685,10 @@ export class AgentService {
 
       let stepViolation: RunPolicyViolationError | null = null;
       const onStep = async (step: RunnerStepEvent) => {
+        if (this.cancellationRequests.has(agentAtStart.id)) {
+          throw new RunCancelledError();
+        }
+
         // 1. Canary exfiltration tripwire check
         if (
           this.config.guardrailCanaryToken &&
@@ -630,11 +709,12 @@ export class AgentService {
         if (risk.requiresApproval) {
           const approvalId = randomUUID();
           const timestamp = now();
+          const actionType = step.type === "message" ? "tool_call" : step.type;
           const approvalReq: ApprovalRequest = {
             id: approvalId,
             runId: run.id,
             agentId: agentAtStart.id,
-            actionType: step.type === "message" ? "tool_call" : step.type,
+            actionType,
             actionDetail: step.detail,
             ruleId: risk.ruleId,
             reason: risk.reason,
@@ -642,36 +722,84 @@ export class AgentService {
             status: "pending",
             createdAt: timestamp,
             resolvedAt: null,
-            resolvedBy: null,
+            resolvedByPrincipalId: null,
+            resolvedByDisplayName: null,
+            evidence: {
+              initiatingHuman: {
+                principalId: run.initiatedByPrincipalId,
+                displayName: run.initiatedByDisplayName,
+              },
+              executingAgent: {
+                principalId: agentAtStart.principalId,
+                displayName: agentAtStart.name,
+              },
+              action: { type: actionType, detail: step.detail },
+              resource: actionResource(step.detail, risk.ruleId),
+              decision: null,
+              result: "pending",
+              resolvedBy: null,
+            },
           };
 
-          await this.store.mutate((database) => {
-            database.approvals.push(approvalReq);
-            const agent = database.agents.find((item) => item.id === agentAtStart.id);
-            if (agent) {
-              agent.status = "waiting_approval";
-              agent.updatedAt = timestamp;
-            }
-            this.appendRunEvent(database, {
-              runId: run.id,
-              agentId: agentAtStart.id,
-              type: "step.approval_requested",
-              severity: "warning",
-              title: `High-Risk Action Intercepted (${risk.ruleId})`,
-              detail: `Human approval required: ${this.redact(step.detail)}. Policy: ${risk.reason}`,
-              createdAt: timestamp,
+          let resolveDecision!: (approved: boolean) => void;
+          const decisionPromise = new Promise<boolean>((resolve) => {
+            resolveDecision = resolve;
+          });
+          const timeout = setTimeout(() => {
+            void this.resolveApproval(approvalId, "denied", SYSTEM_TIMEOUT_ACTOR)
+              .catch(() => undefined);
+          }, 300_000);
+          this.pendingApprovals.set(approvalId, {
+            resolve: resolveDecision,
+            timeout,
+            request: approvalReq,
+          });
+
+          try {
+            await this.store.mutate((database) => {
+              database.approvals.push(approvalReq);
+              const agent = database.agents.find((item) => item.id === agentAtStart.id);
+              if (agent) {
+                agent.status = "waiting_approval";
+                agent.updatedAt = timestamp;
+              }
+              this.appendRunEvent(database, {
+                runId: run.id,
+                agentId: agentAtStart.id,
+                type: "step.approval_requested",
+                severity: "warning",
+                title: `High-Risk Action Intercepted (${risk.ruleId})`,
+                detail: `Human approval required: ${this.redact(step.detail)}. Policy: ${risk.reason}`,
+                createdAt: timestamp,
+              });
             });
-          });
+            const paused = await this.withRunnerLifecycle(agentAtStart.id, () => {
+              if (this.cancellationRequests.has(agentAtStart.id)) return Promise.resolve(false);
+              return this.runner.pause?.(agentAtStart.id) ?? Promise.resolve(undefined);
+            });
+            if (paused === false) {
+              await this.resolveApproval(approvalId, "denied", SYSTEM_PAUSE_FAILURE_ACTOR);
+              throw new Error("Runner failed to pause for required approval");
+            }
+          } catch (error) {
+            const stored = this.store.snapshot().approvals.find((item) => item.id === approvalId);
+            if (stored?.status === "pending") {
+              await this.resolveApproval(approvalId, "denied", SYSTEM_PAUSE_FAILURE_ACTOR)
+                .catch(() => undefined);
+            }
+            clearTimeout(timeout);
+            this.pendingApprovals.delete(approvalId);
+            void this.withRunnerLifecycle(agentAtStart.id, () =>
+              this.runner.cancel(agentAtStart.id)
+            );
+            throw error;
+          }
 
-          await this.runner.pause?.(agentAtStart.id);
+          const approved = await decisionPromise;
 
-          const approved = await new Promise<boolean>((resolve) => {
-            const timeout = setTimeout(() => {
-              void this.resolveApproval(approvalId, "denied", "System (Approval timed out)");
-            }, 300_000);
-            this.pendingApprovals.set(approvalId, { resolve, timeout, request: approvalReq });
-          });
-
+          if (this.cancellationRequests.has(agentAtStart.id)) {
+            throw new RunCancelledError();
+          }
           if (!approved) {
             stepViolation = new RunPolicyViolationError(
               "approval",
@@ -682,7 +810,22 @@ export class AgentService {
             throw stepViolation;
           }
 
-          await this.runner.resume?.(agentAtStart.id);
+          const resumed = await this.withRunnerLifecycle(agentAtStart.id, () => {
+            if (this.cancellationRequests.has(agentAtStart.id)) return Promise.resolve(false);
+            return this.runner.resume?.(agentAtStart.id) ?? Promise.resolve(undefined);
+          });
+          if (this.cancellationRequests.has(agentAtStart.id)) {
+            throw new RunCancelledError();
+          }
+          if (resumed === false) {
+            throw new Error("Runner failed to resume after approval");
+          }
+          await this.store.mutate((database) => {
+            const approval = database.approvals.find((item) => item.id === approvalId);
+            if (approval?.status === "approved") {
+              approval.evidence.result = "execution_resumed";
+            }
+          });
         } else if (step.type === "command" || step.type === "tool_call") {
           await this.store.mutate((database) => {
             this.appendRunEvent(database, {
@@ -817,6 +960,11 @@ export class AgentService {
           storedRun.error = this.redact(message);
           storedRun.completedAt = completedAt;
         }
+        for (const approval of database.approvals) {
+          if (approval.runId === run.id && approval.status === "approved") {
+            approval.evidence.result = cancelled ? "execution_cancelled" : "execution_failed";
+          }
+        }
         if (agent) {
           if (agent.status !== "stopped") {
             agent.status = cancelled || isApprovalDenial ? "ready" : policyViolation ? "stopped" : "error";
@@ -904,17 +1052,37 @@ export class AgentService {
     });
   }
 
+  private async withRunnerLifecycle<T>(agentId: string, operation: () => Promise<T>): Promise<T> {
+    const previous = this.runnerLifecycleQueues.get(agentId) ?? Promise.resolve();
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const queued = previous.then(() => gate);
+    this.runnerLifecycleQueues.set(agentId, queued);
+    await previous;
+    try {
+      return await operation();
+    } finally {
+      release();
+      if (this.runnerLifecycleQueues.get(agentId) === queued) {
+        this.runnerLifecycleQueues.delete(agentId);
+      }
+    }
+  }
+
   private async cancelExecution(agentId: string): Promise<void> {
     this.cancellationRequests.add(agentId);
-    for (const [approvalId, pending] of this.pendingApprovals.entries()) {
-      if (pending.request.agentId === agentId) {
-        clearTimeout(pending.timeout);
-        this.pendingApprovals.delete(approvalId);
-        pending.resolve(false);
+    for (const [approvalId, pending] of [...this.pendingApprovals.entries()]) {
+      if (pending.request.agentId !== agentId) continue;
+      try {
+        await this.resolveApproval(approvalId, "denied", SYSTEM_CANCEL_ACTOR);
+      } catch (error) {
+        if (!(error instanceof HttpError) || error.statusCode !== 409) throw error;
       }
     }
     try {
-      await this.runner.cancel(agentId);
+      await this.withRunnerLifecycle(agentId, () => this.runner.cancel(agentId));
       const execution = this.activeExecutions.get(agentId);
       if (execution) {
         await execution;

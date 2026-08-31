@@ -7,6 +7,7 @@ import type {
   AgentSession,
   ApprovalRequest,
   Database,
+  Grant,
   Message,
   MockResource,
   Principal,
@@ -23,7 +24,7 @@ const SEED_RESOURCES: MockResource[] = [
 ];
 
 const emptyDatabase = (): Database => ({
-  version: 4,
+  version: 5,
   agents: [],
   sessions: [],
   messages: [],
@@ -36,18 +37,30 @@ const emptyDatabase = (): Database => ({
 });
 
 type AgentV3 = Omit<Agent, "ownerId" | "principalId">;
+type LegacyAgentRun = Omit<AgentRun, "initiatedByPrincipalId" | "initiatedByDisplayName">;
+type LegacyGrant = Omit<Grant, "revokedBy">;
+type LegacyApprovalRequest = Omit<
+  ApprovalRequest,
+  "resolvedByPrincipalId" | "resolvedByDisplayName" | "evidence"
+> & { resolvedBy: string | null };
+type Database4Shape = Omit<Database, "version" | "runs" | "approvals" | "grants"> & {
+  version: 4;
+  runs: LegacyAgentRun[];
+  approvals: LegacyApprovalRequest[];
+  grants: LegacyGrant[];
+};
 
 interface Database3Shape {
   version: 3;
   agents: AgentV3[];
   sessions: AgentSession[];
   messages: Message[];
-  runs: AgentRun[];
+  runs: LegacyAgentRun[];
   runEvents: RunEvent[];
-  approvals: ApprovalRequest[];
+  approvals: LegacyApprovalRequest[];
 }
 
-function migrateV3ToV4(v3: Database3Shape): Database {
+function migrateV3ToV4(v3: Database3Shape): Database4Shape {
   const principals: Principal[] = [
     ...SEED_HUMANS,
     ...v3.agents.map((a) => ({
@@ -71,31 +84,113 @@ function migrateV3ToV4(v3: Database3Shape): Database {
         };
 }
 
-function migrateDatabase(parsed: Partial<Database> & { version?: number; sessions?: unknown[]; approvals?: unknown[] }): Database {
-  if (parsed.version === 4) {
+function legacyActionResource(detail: string, ruleId: string): string {
+  const url = detail.match(/https?:\/\/[^\s"'`]+/i)?.[0];
+  if (url) return url.replace(/[),.;]+$/, "");
+  const absolutePath = detail.match(/(?:^|\s)(\/[A-Za-z0-9._~!$&'()*+,;=:@%/-]+)/)?.[1];
+  if (absolutePath) return absolutePath;
+  if (ruleId === "SEC-CREDENTIALS-002") {
+    return detail.match(/(?:^|[\s/])((?:\.env(?:\.[\w-]+)?)|credentials\.env|id_rsa|id_ed25519|\.aws\/credentials)/i)?.[1]
+      ?? "unknown credential resource";
+  }
+  if (ruleId === "SEC-EGRESS-003") {
+    return detail.match(/\b(?:[a-z0-9-]+\.)+[a-z]{2,}(?:\/[^\s"'`]*)?/i)?.[0]
+      ?? "unknown network destination";
+  }
+  if (ruleId === "SEC-SUPPLY-004") {
+    return detail.match(/\b(?:npm|pnpm|yarn|twine|cargo|pip)\s+(?:publish|upload)\s+([^\s"'`]+)/i)?.[1]
+      ?? "unknown package registry resource";
+  }
+  if (ruleId === "SEC-PRIVILEGE-005") return "host privilege boundary";
+  return "unknown legacy resource";
+}
+
+function migrateV4ToV5(v4: Database4Shape): Database {
+  return {
+    ...v4,
+    version: 5,
+    runs: v4.runs.map((run) => {
+      return {
+        ...run,
+        initiatedByPrincipalId: "legacy:unverified-initiator",
+        initiatedByDisplayName: "Unknown legacy initiator",
+      };
+    }),
+    grants: v4.grants.map((grant) => ({ ...grant, revokedBy: null })),
+    approvals: v4.approvals.map((approval) => {
+      const { resolvedBy, ...rest } = approval;
+      const actor = resolvedBy
+        ? { principalId: "legacy:unverified-operator", displayName: resolvedBy }
+        : null;
+      const agent = v4.agents.find((candidate) => candidate.id === approval.agentId);
+      return {
+        ...rest,
+        resolvedByPrincipalId: actor?.principalId ?? null,
+        resolvedByDisplayName: actor?.displayName ?? null,
+        evidence: {
+          initiatingHuman: {
+            principalId: "legacy:unverified-initiator",
+            displayName: "Unknown legacy initiator",
+          },
+          executingAgent: {
+            principalId: agent?.principalId ?? `agent-${approval.agentId}`,
+            displayName: agent?.name ?? approval.agentId,
+          },
+          action: { type: approval.actionType, detail: approval.actionDetail },
+          resource: legacyActionResource(approval.actionDetail, approval.ruleId),
+          decision: approval.status === "pending" ? null : approval.status,
+          result: approval.status === "pending" ? "pending" : "unknown",
+          resolvedBy: actor,
+        },
+      };
+    }),
+  };
+}
+
+type PersistedDatabase = Partial<Omit<Database, "version" | "approvals">> & {
+  version?: number;
+  approvals?: unknown[];
+};
+
+function migrateDatabase(parsed: PersistedDatabase): Database {
+  if (parsed.version === 5) {
     return {
-      version: 4,
+      version: 5,
       agents: Array.isArray(parsed.agents) ? parsed.agents : [],
       sessions: Array.isArray(parsed.sessions) ? parsed.sessions : [],
       messages: Array.isArray(parsed.messages) ? parsed.messages : [],
       runs: Array.isArray(parsed.runs) ? parsed.runs : [],
       runEvents: Array.isArray(parsed.runEvents) ? parsed.runEvents : [],
-      approvals: Array.isArray(parsed.approvals) ? parsed.approvals : [],
+      approvals: Array.isArray(parsed.approvals) ? parsed.approvals as ApprovalRequest[] : [],
       principals: Array.isArray(parsed.principals) ? parsed.principals : [],
       grants: Array.isArray(parsed.grants) ? parsed.grants : [],
       resources: Array.isArray(parsed.resources) ? parsed.resources : [],
     };
   }
+  if (parsed.version === 4) {
+    return migrateV4ToV5({
+      version: 4,
+      agents: Array.isArray(parsed.agents) ? parsed.agents : [],
+      sessions: Array.isArray(parsed.sessions) ? parsed.sessions : [],
+      messages: Array.isArray(parsed.messages) ? parsed.messages : [],
+      runs: Array.isArray(parsed.runs) ? parsed.runs as LegacyAgentRun[] : [],
+      runEvents: Array.isArray(parsed.runEvents) ? parsed.runEvents : [],
+      approvals: Array.isArray(parsed.approvals) ? parsed.approvals as LegacyApprovalRequest[] : [],
+      principals: Array.isArray(parsed.principals) ? parsed.principals : [],
+      grants: Array.isArray(parsed.grants) ? parsed.grants as LegacyGrant[] : [],
+      resources: Array.isArray(parsed.resources) ? parsed.resources : [],
+    });
+  }
   if (parsed.version === 3) {
-    return migrateV3ToV4({
+    return migrateV4ToV5(migrateV3ToV4({
       version: 3,
       agents: Array.isArray(parsed.agents) ? parsed.agents : [],
       sessions: Array.isArray(parsed.sessions) ? parsed.sessions : [],
       messages: Array.isArray(parsed.messages) ? parsed.messages : [],
-      runs: Array.isArray(parsed.runs) ? parsed.runs : [],
+      runs: Array.isArray(parsed.runs) ? parsed.runs as LegacyAgentRun[] : [],
       runEvents: Array.isArray(parsed.runEvents) ? parsed.runEvents : [],
-      approvals: Array.isArray(parsed.approvals) ? parsed.approvals : [],
-    } as Database3Shape);
+      approvals: Array.isArray(parsed.approvals) ? parsed.approvals as LegacyApprovalRequest[] : [],
+    } as Database3Shape));
   }
   if (parsed.version === 2 || parsed.version === 1) {
     const rawAgents = Array.isArray(parsed.agents) ? parsed.agents : [];
@@ -138,15 +233,15 @@ function migrateDatabase(parsed: Partial<Database> & { version?: number; session
       return { ...r, sessionId: session?.id ?? null };
     });
 
-    return migrateV3ToV4({
+    return migrateV4ToV5(migrateV3ToV4({
       version: 3,
       agents,
       sessions,
       messages,
-      runs,
+      runs: runs as LegacyAgentRun[],
       runEvents: rawRunEvents,
-      approvals: rawApprovals,
-    } as Database3Shape);
+      approvals: rawApprovals as LegacyApprovalRequest[],
+    } as Database3Shape));
   }
   throw new Error("Unsupported database format");
 }
@@ -177,7 +272,7 @@ export class JsonStore {
     await mkdir(path.dirname(this.filePath), { recursive: true });
     try {
       const raw = await readFile(this.filePath, "utf8");
-      this.data = migrateDatabase(JSON.parse(raw) as Partial<Database> & { version?: number });
+      this.data = migrateDatabase(JSON.parse(raw) as PersistedDatabase);
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
         throw error;

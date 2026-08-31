@@ -478,7 +478,7 @@ export default function App() {
     setBusy(true);
     setError(null);
     try {
-      await api.approve(approvalId, "Human Operator");
+      await api.approve(approvalId);
       if (selectedId) {
         await Promise.all([
           refreshApprovals(selectedId),
@@ -497,7 +497,7 @@ export default function App() {
     setBusy(true);
     setError(null);
     try {
-      await api.deny(approvalId, "Human Operator");
+      await api.deny(approvalId);
       if (selectedId) {
         const currentSessId = selectedSessionIdRef.current ?? undefined;
         await Promise.all([

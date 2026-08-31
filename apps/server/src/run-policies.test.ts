@@ -7,7 +7,7 @@ const resA: MockResource = { id: "res-a", ownerId: "user-a", name: "r", content:
 const grant = (over: Partial<Grant>): Grant => ({
   id: "g1", principalId: "agent-1", grantedBy: "user-a",
   scope: "resource:read", target: "res-a",
-  expiresAt: null, revokedAt: null, createdAt: NOW, ...over,
+  expiresAt: null, revokedAt: null, revokedBy: null, createdAt: NOW, ...over,
 });
 
 describe("evaluateResourceAccess", () => {
