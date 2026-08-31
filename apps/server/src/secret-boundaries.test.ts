@@ -4,6 +4,7 @@ import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { AgentService } from "./agent-service.js";
 import { createApp } from "./app.js";
+import { IdentityService } from "./identity.js";
 import { loadConfig } from "./config.js";
 import { IdentityService } from "./identity.js";
 import { JsonStore } from "./store.js";
@@ -76,6 +77,8 @@ describe("credential secrecy across server boundaries", () => {
       new SecretEchoRunner(providerKey, config.geminiAdapterToken),
     );
     await service.initialize();
+    // Identity is wired as index.ts wires it: every action is attributed to a
+    // server-issued principal session rather than caller-provided display text.
     const app = await createApp(config, service, new IdentityService(store));
 
     try {
