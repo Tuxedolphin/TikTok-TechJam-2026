@@ -182,4 +182,3 @@ export const api = {
     return { resource: data.resource ?? null, decision: data.decision };
   },
 };
-
