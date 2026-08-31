@@ -81,7 +81,7 @@ egressAuthorizer = config.egressEnforcement
 const receiptKeys = await loadOrCreateReceiptKeyPair(config.dataDirectory);
 const terminator = new AgentTerminator(store, service, identity, receiptKeys, egressNetwork);
 const app = await createApp(
-  config, service, identity, egressAuthorizer, egressNetwork, terminator,
+  config, service, identity, egressAuthorizer, egressNetwork, terminator, memory,
 );
 
 const shutdown = async (signal: string) => {
