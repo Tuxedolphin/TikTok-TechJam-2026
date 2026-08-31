@@ -101,6 +101,9 @@ jobs:
       - name: Confused-deputy refusal and authority attenuation
         run: node scripts/demo-escalation.mjs
 
+      - name: Cross-session memory poisoning, diagnosed and receipted
+        run: node scripts/demo-memory-poison.mjs
+
   containment-proofs:
     name: Containment proofs (real containers)
     needs: check
