@@ -1022,13 +1022,25 @@ export default function App() {
                                   </strong>
                                 </div>
                                 <div className="policy-row">
-                                  <span>Token Budget</span>
+                                  <span>Input Budget (observational)</span>
+                                  <strong className="mono">
+                                    {system?.runBudgetMaxInputTokens ? `${system.runBudgetMaxInputTokens.toLocaleString()} tokens` : "None"}
+                                  </strong>
+                                </div>
+                                <div className="policy-row">
+                                  <span>Output Budget (preventive)</span>
+                                  <strong className="mono">
+                                    {system?.runBudgetMaxOutputTokens ? `${system.runBudgetMaxOutputTokens.toLocaleString()} tokens` : "None"}
+                                  </strong>
+                                </div>
+                                <div className="policy-row">
+                                  <span>Total Budget (observational)</span>
                                   <strong className="mono">
                                     {system?.runBudgetMaxTotalTokens ? `${system.runBudgetMaxTotalTokens.toLocaleString()} tokens` : "None"}
                                   </strong>
                                 </div>
                                 <div className="policy-row">
-                                  <span>Duration Watchdog</span>
+                                  <span>Duration Budget (preventive)</span>
                                   <strong className="mono">
                                     {system?.runBudgetMaxDurationMs ? `${system.runBudgetMaxDurationMs / 1000}s` : "None"}
                                   </strong>

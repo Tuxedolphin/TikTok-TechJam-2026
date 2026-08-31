@@ -234,6 +234,10 @@ cp deploy/volcengine/terraform.tfvars.example \
 | `RUNTIME_PROVIDER` | `local-process` | `container` for disposable local Runtime containers. |
 | `CODEX_SANDBOX_MODE` | `workspace-write` | Codex inner sandbox mode. |
 | `CODEX_TIMEOUT_MS` | `600000` | Maximum duration of one turn. |
+| `RUN_BUDGET_MAX_INPUT_TOKENS` | Optional | Observational post-run cap for all input tokens, including the cached subset. |
+| `RUN_BUDGET_MAX_OUTPUT_TOKENS` | Optional | Preventive provider generation cap; reported usage is also checked after the run. |
+| `RUN_BUDGET_MAX_TOTAL_TOKENS` | Optional | Observational post-run cap for input plus output; cached input is not double-counted. |
+| `RUN_BUDGET_MAX_DURATION_MS` | Optional | Preventive process/container deadline. |
 | `LOCAL_POC_DATA_ROOT` | Platform-specific | Local metadata, workspace, and session directory. |
 
 See [.env.example](.env.example) for all Runtime and resource-limit options.
