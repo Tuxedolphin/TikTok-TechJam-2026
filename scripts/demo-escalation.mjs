@@ -49,7 +49,14 @@ const attested = {
   "x-agent-attested-proof": egressProxySecret(agent.principalId, config.internalAgentSecret),
 };
 const grant = (headers, payload) => app.inject({ method: "POST", url: "/api/grants", headers, payload });
-const code = (r) => `HTTP ${r.statusCode}`;
+const code = (r) => {
+  if (r.statusCode < 300) return `HTTP ${r.statusCode} allowed`;
+  let reason = "";
+  try {
+    reason = JSON.parse(r.body).message ?? JSON.parse(r.body).error ?? "";
+  } catch {}
+  return `HTTP ${r.statusCode} ${reason}`.trimEnd();
+};
 
 let r = await grant(attested, {
   principalId: agent.principalId, scope: "network:egress", target: "attacker.example",
@@ -66,21 +73,48 @@ r = await grant({ "x-principal-id": "user-a" }, {
 });
 console.log(`3. The human operator grants npmjs               -> ${code(r)}`);
 
+// The rule is "only narrower", not "never". An agent re-issuing authority it
+// already holds, bounded to a shorter life, is the case that must be ALLOWED --
+// otherwise the narrowing rule is indistinguishable from refusing everything.
 r = await grant(attested, {
-  principalId: agent.principalId, scope: "resource:read", target: "registry.npmjs.org", ttlMinutes: 5,
+  principalId: agent.principalId, scope: "network:egress", target: "registry.npmjs.org",
+  ttlMinutes: 5,
 });
-console.log(`4. Agent passes along strictly less              -> ${code(r)}`);
+console.log(`4. Agent re-issues the same host, but time-boxed -> ${code(r)}`);
+
+// Scopes are only comparable within a family. Holding network authority must
+// never be spendable as resource authority, however "narrow" it looks.
+r = await grant(attested, {
+  principalId: agent.principalId, scope: "resource:read", target: "registry.npmjs.org",
+  ttlMinutes: 1,
+});
+console.log(`5. Agent trades egress for resource:read         -> ${code(r)}`);
 
 r = await grant(attested, {
   principalId: agent.principalId, scope: "network:egress", target: "attacker.example",
 });
-console.log(`5. Agent tries to widen again, now holding one   -> ${code(r)}`);
+console.log(`6. Agent tries to widen again, now holding one   -> ${code(r)}`);
+
+// Each refusal names the rule that produced it, so the trace reads as an
+// explanation rather than a boolean.
+const decisions = store.snapshot().runEvents
+  .filter((event) => event.type === "policy.decision")
+  .map((event) => JSON.parse(event.detail))
+  .filter((decision) => decision.ruleId.startsWith("AUTHORITY-"));
+console.log("\nWhat the trace recorded:");
+for (const decision of decisions) {
+  console.log(`   ${decision.allowed ? "allow" : "deny "}  ${decision.ruleId}`);
+}
 
 const live = identity.listGrants(agent.principalId).filter((g) => !g.revokedAt);
 console.log(`\nAgent ends holding: ${live.map((g) => `${g.scope}:${g.target}`).join(", ") || "nothing"}`);
+const leaked = live.some((g) => g.target === "attacker.example" || g.scope.startsWith("resource:"));
+const delegated = live.some((g) => g.target === "registry.npmjs.org" && g.expiresAt !== null);
 console.log(
-  live.some((g) => g.target === "attacker.example")
+  leaked
     ? ">>> STILL VULNERABLE"
-    : ">>> Escalation refused. Only human-granted authority survives.",
+    : delegated
+      ? ">>> Attenuation holds: narrower delegation survived, every widening was refused."
+      : ">>> Narrowing delegation was refused too -- the rule is too strict.",
 );
 await app.close();

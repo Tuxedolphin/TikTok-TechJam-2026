@@ -88,21 +88,36 @@ describe("IdentityService", () => {
     expect(after.resource?.content).toBe("alpha,beta,gamma");
   });
   it("records a policy.decision for both allow and deny", async () => {
-    const recorded: Array<{ runId: string; agentId: string; ruleId: string }> = [];
-    const service = await makeService((runId, agentId, decision) => {
-      recorded.push({ runId, agentId, ruleId: decision.ruleId });
+    const recorded: Array<{ ruleId: string; allowed: boolean }> = [];
+    const service = await makeService((_runId, _agentId, decision) => {
+      recorded.push({ ruleId: decision.ruleId, allowed: decision.allowed });
     });
     await service.readResourceAsAgent("res-a", "agent-1");           // deny, no grant
     await service.createGrant({
       principalId: "agent-1", grantedBy: "user-a", scope: "resource:read", target: "res-a",
     });
     await service.readResourceAsAgent("res-a", "agent-1");           // allow
-    expect(recorded.map((entry) => entry.ruleId)).toEqual([
-      "AUTHZ-GRANT-011",
-      "AUTHORITY-HUMAN-030",
-      "AUTHZ-GRANT-011",
+    // The verdict is the point of the trace: a decision recorded with the
+    // wrong `allowed` renders as a warning and reads as a denial in the feed.
+    expect(recorded).toEqual([
+      { ruleId: "AUTHZ-GRANT-011", allowed: false },
+      { ruleId: "AUTHORITY-HUMAN-030", allowed: true },
+      { ruleId: "AUTHZ-GRANT-011", allowed: true },
     ]);
-    expect(recorded).toHaveLength(3);
+  });
+
+  it("records a refused escalation as denied", async () => {
+    const recorded: Array<{ ruleId: string; allowed: boolean }> = [];
+    const service = await makeService((_runId, _agentId, decision) => {
+      recorded.push({ ruleId: decision.ruleId, allowed: decision.allowed });
+    });
+    await expect(service.createGrant({
+      principalId: "agent-1", grantedBy: "agent-1",
+      scope: "network:egress", target: "attacker.example",
+    })).rejects.toMatchObject({ statusCode: 403 });
+    expect(recorded).toEqual([
+      { ruleId: "AUTHORITY-SELF-ESCALATION-031", allowed: false },
+    ]);
   });
   it("records grant.created and grant.revoked in the trace", async () => {
     const lifecycle: Array<"grant.created" | "grant.revoked"> = [];

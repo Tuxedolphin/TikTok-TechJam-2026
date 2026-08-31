@@ -124,7 +124,10 @@ export class IdentityService {
     if (!agent) return;
     const latestRun = latestRunFor(database.runs, agent.id);
     await this.recordDecision(latestRun?.id ?? `authority-${agent.id}`, agent.id, {
-      allowed: false,
+      // This used to record denials only, so `false` was a constant. It now
+      // records allows too, and a trace that reports an allowed grant as
+      // denied is worse than no trace at all.
+      allowed: decision.allowed,
       ruleId: decision.ruleId,
       reason: decision.reason,
       principalId: actorPrincipalId,
