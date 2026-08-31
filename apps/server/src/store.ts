@@ -7,6 +7,7 @@ import type {
   AgentSession,
   ApprovalRequest,
   Database,
+  MemoryEntry,
   Message,
   MockResource,
   Principal,
@@ -23,7 +24,7 @@ const SEED_RESOURCES: MockResource[] = [
 ];
 
 const emptyDatabase = (): Database => ({
-  version: 4,
+  version: 5,
   agents: [],
   sessions: [],
   messages: [],
@@ -33,6 +34,7 @@ const emptyDatabase = (): Database => ({
   principals: [...SEED_HUMANS],
   grants: [],
   resources: [...SEED_RESOURCES],
+  memories: [],
 });
 
 type AgentV3 = Omit<Agent, "ownerId" | "principalId">;
@@ -47,7 +49,7 @@ interface Database3Shape {
   approvals: ApprovalRequest[];
 }
 
-function migrateV3ToV4(v3: Database3Shape): Database {
+function migrateV3ToV4(v3: Database3Shape): Database4Shape {
   const principals: Principal[] = [
     ...SEED_HUMANS,
     ...v3.agents.map((a) => ({
@@ -71,9 +73,32 @@ function migrateV3ToV4(v3: Database3Shape): Database {
         };
 }
 
+/** The shape a v4 file has on disk: everything in v5 except `memories`. */
+type Database4Shape = Omit<Database, "version" | "memories"> & { version: 4 };
+
+/** Additive: a v4 database simply had no memory yet. */
+function migrateV4ToV5(v4: Database4Shape): Database {
+  return { ...v4, version: 5, memories: [] };
+}
+
 function migrateDatabase(parsed: Partial<Database> & { version?: number; sessions?: unknown[]; approvals?: unknown[] }): Database {
-  if (parsed.version === 4) {
+  if (parsed.version === 5) {
     return {
+      version: 5,
+      agents: Array.isArray(parsed.agents) ? parsed.agents : [],
+      sessions: Array.isArray(parsed.sessions) ? parsed.sessions : [],
+      messages: Array.isArray(parsed.messages) ? parsed.messages : [],
+      runs: Array.isArray(parsed.runs) ? parsed.runs : [],
+      runEvents: Array.isArray(parsed.runEvents) ? parsed.runEvents : [],
+      approvals: Array.isArray(parsed.approvals) ? parsed.approvals : [],
+      principals: Array.isArray(parsed.principals) ? parsed.principals : [],
+      grants: Array.isArray(parsed.grants) ? parsed.grants : [],
+      resources: Array.isArray(parsed.resources) ? parsed.resources : [],
+      memories: Array.isArray(parsed.memories) ? parsed.memories : [],
+    };
+  }
+  if (parsed.version === 4) {
+    return migrateV4ToV5({
       version: 4,
       agents: Array.isArray(parsed.agents) ? parsed.agents : [],
       sessions: Array.isArray(parsed.sessions) ? parsed.sessions : [],
@@ -84,10 +109,10 @@ function migrateDatabase(parsed: Partial<Database> & { version?: number; session
       principals: Array.isArray(parsed.principals) ? parsed.principals : [],
       grants: Array.isArray(parsed.grants) ? parsed.grants : [],
       resources: Array.isArray(parsed.resources) ? parsed.resources : [],
-    };
+    });
   }
   if (parsed.version === 3) {
-    return migrateV3ToV4({
+    return migrateV4ToV5(migrateV3ToV4({
       version: 3,
       agents: Array.isArray(parsed.agents) ? parsed.agents : [],
       sessions: Array.isArray(parsed.sessions) ? parsed.sessions : [],
@@ -95,7 +120,7 @@ function migrateDatabase(parsed: Partial<Database> & { version?: number; session
       runs: Array.isArray(parsed.runs) ? parsed.runs : [],
       runEvents: Array.isArray(parsed.runEvents) ? parsed.runEvents : [],
       approvals: Array.isArray(parsed.approvals) ? parsed.approvals : [],
-    } as Database3Shape);
+    } as Database3Shape));
   }
   if (parsed.version === 2 || parsed.version === 1) {
     const rawAgents = Array.isArray(parsed.agents) ? parsed.agents : [];
@@ -138,7 +163,7 @@ function migrateDatabase(parsed: Partial<Database> & { version?: number; session
       return { ...r, sessionId: session?.id ?? null };
     });
 
-    return migrateV3ToV4({
+    return migrateV4ToV5(migrateV3ToV4({
       version: 3,
       agents,
       sessions,
@@ -146,7 +171,7 @@ function migrateDatabase(parsed: Partial<Database> & { version?: number; session
       runs,
       runEvents: rawRunEvents,
       approvals: rawApprovals,
-    } as Database3Shape);
+    } as Database3Shape));
   }
   throw new Error("Unsupported database format");
 }

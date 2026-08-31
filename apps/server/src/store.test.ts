@@ -54,7 +54,7 @@ describe("JsonStore", () => {
     ]);
   });
 
-  it("migrates v3 databases to v4 with seeded principals and resources", async () => {
+  it("migrates v3 databases through v4 to v5 with seeded principals and resources", async () => {
     const root = await mkdtemp(path.join(tmpdir(), "launchpad-store-test-"));
     temporaryDirectories.push(root);
     const filePath = path.join(root, "db.json");
@@ -72,7 +72,8 @@ describe("JsonStore", () => {
     const store = new JsonStore(filePath);
     await store.initialize();
     const database = store.snapshot();
-    expect(database.version).toBe(4);
+    expect(database.version).toBe(5);
+    expect(database.memories).toEqual([]);
     expect(database.principals.map((p) => p.id)).toEqual(
       expect.arrayContaining(["user-a", "user-b", "agent-agent-1"]),
     );
@@ -80,5 +81,40 @@ describe("JsonStore", () => {
     expect(database.agents[0]?.ownerId).toBe("user-a");
     expect(database.agents[0]?.principalId).toBe("agent-agent-1");
     expect(database.grants).toEqual([]);
+  });
+
+  it("migrates a v4 database to v5 with an empty memory table", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "launchpad-store-test-"));
+    temporaryDirectories.push(root);
+    const filePath = path.join(root, "db.json");
+    const v4 = {
+      version: 4,
+      agents: [{
+        id: "agent-1", name: "A", description: "", instructions: "",
+        ownerId: "user-a", principalId: "agent-agent-1",
+        status: "ready", workspacePath: "/tmp/ws", codexThreadId: null,
+        activeSessionId: null, lastError: null,
+        createdAt: "2026-08-29T00:00:00.000Z", updatedAt: "2026-08-29T00:00:00.000Z",
+      }],
+      sessions: [], messages: [], runs: [], runEvents: [], approvals: [],
+      principals: [{ id: "user-a", kind: "human", name: "User A", createdAt: "2026-08-29T00:00:00.000Z" }],
+      grants: [{
+        id: "grant-1", principalId: "agent-agent-1", grantedBy: "user-a",
+        scope: "resource:read", target: "res-a",
+        expiresAt: null, revokedAt: null, createdAt: "2026-08-29T00:00:00.000Z",
+      }],
+      resources: [{ id: "res-a", ownerId: "user-a", name: "A", content: "alpha" }],
+    };
+    await writeFile(filePath, JSON.stringify(v4), "utf8");
+    const store = new JsonStore(filePath);
+    await store.initialize();
+    const database = store.snapshot();
+
+    expect(database.version).toBe(5);
+    expect(database.memories).toEqual([]);
+    // Additive only: nothing a v4 file already held may be dropped.
+    expect(database.agents).toHaveLength(1);
+    expect(database.grants.map((grant) => grant.id)).toEqual(["grant-1"]);
+    expect(database.resources.map((resource) => resource.id)).toEqual(["res-a"]);
   });
 });
