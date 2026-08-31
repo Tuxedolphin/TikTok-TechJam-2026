@@ -286,6 +286,23 @@ flowchart LR
 
 Container pause/resume controls remain available to Runtime integrations that can emit a trusted `before` event. Production Codex `item.completed` events are explicitly marked `after` and are never presented as if a late pause prevented the command.
 
+## Acceptance checklist
+
+Where each required item is demonstrated, for a reviewer working through the
+track's core acceptance list.
+
+| Required item | Where it is shown |
+| --- | --- |
+| Clone, start, create/test an Agent from the frontend | [Local browser SOP](#local-browser-sop); `npm run poc`, then the Playground |
+| Meaningful middleware capability, selected and designed by the team | Agent identity, scoped/expiring/revocable grants, and enforced network containment — [docs/AGENT-PASSPORT.md](docs/AGENT-PASSPORT.md) |
+| Executes in a backend/Runtime/infrastructure path, not the UI | Proxy authorizes every connection before the socket opens; the container has no route off-box |
+| Repository sufficient to understand and reproduce | This README, [Architecture](docs/ARCHITECTURE.md), [Local POC](docs/LOCAL_POC.md) |
+| `npm run check` passes | Typecheck, build, and 177 tests; see [Validation](#validation) |
+| No secret in source, history, logs, traces, or demo output | Canary tripwire plus adapter-level redaction; provider keys never reach the browser or the engine's argv |
+| *Optional:* delegated permission scoped, revocable, enforced outside the UI | `npm run demo:identity` — grant, delegate, revoke, and watch the cascade bite |
+| *Optional:* correlated trace across policy and infrastructure events | Trace tab; every allow and deny lands with a rule ID |
+| *Optional:* defined threat contained, asset unchanged, cleanup shown | `npm run demo` — real containers, real proxy, real blocked exfiltration |
+
 ## Playtesting the Middleware (Judge Evaluation Guide)
 
 ### 1. Safe-operation telemetry (`ALLOW-STANDARD-000`)
@@ -345,7 +362,7 @@ terraform fmt -check -recursive deploy/volcengine
 docker compose config
 ```
 
-All 26 automated unit and integration tests run via:
+All 177 automated unit and integration tests run via:
 ```bash
 npm test
 ```
