@@ -44,8 +44,8 @@ export function containerEngineEnvironment(
 ): NodeJS.ProcessEnv {
   const environment: NodeJS.ProcessEnv = { NO_COLOR: "1" };
   if (includeRuntimeConfig) {
-    environment.OPENROUTER_API_KEY = config.runtimeApiKey;
-    environment.OPENAI_API_KEY = config.runtimeApiKey;
+    environment.OPENROUTER_API_KEY = config.openRouterApiKey;
+    environment.OPENAI_API_KEY = config.openRouterApiKey;
     environment.OPENROUTER_BASE_URL = config.openRouterBaseUrl;
     environment.OPENAI_BASE_URL = config.openRouterBaseUrl;
   }

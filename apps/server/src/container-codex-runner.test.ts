@@ -79,7 +79,7 @@ describe("Container Codex runner", () => {
       const argv = args.join("\0");
 
       expect(argv).not.toContain(providerKey);
-      expect(argv).not.toContain(config.adapterApiKey);
+      expect(argv).not.toContain(config.geminiAdapterToken);
       expect(args).toContain("OPENROUTER_API_KEY");
       expect(args).toContain("OPENAI_API_KEY");
       expect(args).toContain("OPENROUTER_BASE_URL");
@@ -124,8 +124,8 @@ fi
       OPENAI_API_KEY: expect.anything(),
     });
     expect(containerEngineEnvironment(config, true)).toMatchObject({
-      OPENROUTER_API_KEY: config.runtimeApiKey,
-      OPENAI_API_KEY: config.runtimeApiKey,
+      OPENROUTER_API_KEY: config.geminiAdapterToken,
+      OPENAI_API_KEY: config.geminiAdapterToken,
     });
 
     expect(await runner.isAvailable()).toBe(true);
@@ -139,7 +139,7 @@ fi
     const records = (await readFile(recordPath, "utf8")).trim().split("\n");
     expect(records[0]).toMatch(/^version\|<unset>\|<unset>$/);
     expect(records[1]).toMatch(/^image\|<unset>\|<unset>$/);
-    expect(records[2]).toBe(`run|${config.runtimeApiKey}|${config.runtimeApiKey}`);
+    expect(records[2]).toBe(`run|${config.geminiAdapterToken}|${config.geminiAdapterToken}`);
     expect(records[2]).not.toContain(config.geminiApiKey);
   });
 

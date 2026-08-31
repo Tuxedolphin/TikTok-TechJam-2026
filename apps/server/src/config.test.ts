@@ -38,11 +38,11 @@ describe("egress enforcement configuration", () => {
     });
 
     expect(config.geminiApiKey).toBe(providerKey);
-    expect(config.openRouterApiKey).toBe(providerKey);
     expect(config.openRouterBaseUrl).toContain("/api/adapter");
-    expect(config.adapterApiKey).toBe(config.runtimeApiKey);
-    expect(config.runtimeApiKey).not.toBe(providerKey);
-    expect(config.runtimeApiKey).toMatch(/^[A-Za-z0-9_-]+$/);
+    // One Runtime credential, and it is never the provider key.
+    expect(config.openRouterApiKey).toBe(config.geminiAdapterToken);
+    expect(config.geminiAdapterToken).not.toBe(providerKey);
+    expect(config.geminiAdapterToken).toMatch(/^[A-Za-z0-9._~-]{24,}$/);
   });
 
   it("represents empty provider credentials as empty rather than a placeholder", () => {
@@ -56,6 +56,6 @@ describe("egress enforcement configuration", () => {
 
     expect(config.geminiApiKey).toBe("");
     expect(config.openRouterApiKey).toBe("");
-    expect(config.runtimeApiKey).toBe("");
+    expect(config.geminiAdapterToken).toBe("");
   });
 });

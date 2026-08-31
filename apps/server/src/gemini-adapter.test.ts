@@ -52,19 +52,19 @@ describe("Gemini adapter credential boundary", () => {
       expect(missing.statusCode).toBe(401);
       expect(wrong.statusCode).toBe(401);
       expect(`${missing.body}\n${wrong.body}`).not.toContain(providerKey);
-      expect(`${missing.body}\n${wrong.body}`).not.toContain(config.adapterApiKey);
+      expect(`${missing.body}\n${wrong.body}`).not.toContain(config.geminiAdapterToken);
       expect(upstream).not.toHaveBeenCalled();
 
       const accepted = await app.inject({
         method: "POST",
         url: "/api/adapter/responses",
-        headers: { authorization: "Bearer " + config.adapterApiKey },
+        headers: { authorization: "Bearer " + config.geminiAdapterToken },
         payload,
       });
       expect(accepted.statusCode).toBe(200);
       expect(accepted.body).toContain("response.completed");
       expect(accepted.body).not.toContain(providerKey);
-      expect(accepted.body).not.toContain(config.adapterApiKey);
+      expect(accepted.body).not.toContain(config.geminiAdapterToken);
       const upstreamInit = upstream.mock.calls[0]?.[1] as RequestInit;
       expect((upstreamInit.headers as Record<string, string>).Authorization).toBe(
         "Bearer " + providerKey,
@@ -75,12 +75,12 @@ describe("Gemini adapter credential boundary", () => {
       const upstreamError = await app.inject({
         method: "POST",
         url: "/api/adapter/responses",
-        headers: { authorization: "Bearer " + config.adapterApiKey },
+        headers: { authorization: "Bearer " + config.geminiAdapterToken },
         payload,
       });
       expect(upstreamError.statusCode).toBe(502);
       expect(upstreamError.body).not.toContain(providerKey);
-      expect(upstreamError.body).not.toContain(config.adapterApiKey);
+      expect(upstreamError.body).not.toContain(config.geminiAdapterToken);
     } finally {
       await app.close();
     }

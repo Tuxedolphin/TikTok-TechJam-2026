@@ -874,9 +874,8 @@ export class AgentService {
     for (const secret of [
       this.config.guardrailCanaryToken,
       this.config.geminiApiKey,
+      this.config.geminiAdapterToken,
       this.config.openRouterApiKey,
-      this.config.adapterApiKey,
-      this.config.runtimeApiKey,
     ]) {
       if (secret) {
         output = output.split(secret).join("[redacted]");

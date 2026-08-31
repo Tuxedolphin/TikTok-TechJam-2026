@@ -1,5 +1,5 @@
 import type { FastifyReply, FastifyRequest } from "fastify";
-import { randomUUID, timingSafeEqual } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import type { AppConfig } from "./config.js";
 
 const thoughtSignatureStore = new Map<string, unknown>();
@@ -9,9 +9,8 @@ function redactSecrets(value: string, config: AppConfig): string {
   let output = value;
   for (const secret of [
     config.geminiApiKey,
+    config.geminiAdapterToken,
     config.openRouterApiKey,
-    config.adapterApiKey,
-    config.runtimeApiKey,
   ]) {
     if (secret) output = output.split(secret).join("[redacted]");
   }
@@ -24,21 +23,10 @@ export async function handleGeminiResponsesAdapter(
   reply: FastifyReply,
   config: AppConfig,
 ): Promise<void> {
-  const authorization = request.headers.authorization ?? "";
-  const candidate = authorization.startsWith("Bearer ") ? authorization.slice(7) : "";
-  const expectedBuffer = Buffer.from(config.adapterApiKey);
-  const candidateBuffer = Buffer.from(candidate);
-  const authenticated =
-    candidateBuffer.length === expectedBuffer.length &&
-    timingSafeEqual(candidateBuffer, expectedBuffer);
-  if (!authenticated) {
-    return reply.code(401).send({ error: "Invalid adapter credential" });
-  }
-
   const body = (request.body || {}) as Record<string, unknown>;
   const apiKey = config.geminiApiKey;
   if (!apiKey) {
-    return reply.code(401).send({ error: "No GEMINI_API_KEY configured" });
+    return reply.code(404).send({ error: "Gemini adapter is not configured" });
   }
 
   let targetModel =

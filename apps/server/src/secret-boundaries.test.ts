@@ -64,7 +64,7 @@ describe("credential secrecy across server boundaries", () => {
       config,
       store,
       new WorkspaceManager(path.join(root, "workspaces")),
-      new SecretEchoRunner(providerKey, config.adapterApiKey),
+      new SecretEchoRunner(providerKey, config.geminiAdapterToken),
     );
     await service.initialize();
     const app = await createApp(config, service);
@@ -77,7 +77,7 @@ describe("credential secrecy across server boundaries", () => {
       });
       expect(createResponse.statusCode).toBe(201);
       const agentId = createResponse.json().agent.id as string;
-      const prompt = `please use ${providerKey} and ${config.adapterApiKey}`;
+      const prompt = `please use ${providerKey} and ${config.geminiAdapterToken}`;
       const sendResponse = await app.inject({
         method: "POST",
         url: `/api/agents/${agentId}/messages`,
@@ -100,11 +100,11 @@ describe("credential secrecy across server boundaries", () => {
       const persistedState = await readFile(storePath, "utf8");
 
       expect(traceLog).not.toContain(providerKey);
-      expect(traceLog).not.toContain(config.adapterApiKey);
+      expect(traceLog).not.toContain(config.geminiAdapterToken);
       expect(visibleBodies).not.toContain(providerKey);
-      expect(visibleBodies).not.toContain(config.adapterApiKey);
+      expect(visibleBodies).not.toContain(config.geminiAdapterToken);
       expect(persistedState).not.toContain(providerKey);
-      expect(persistedState).not.toContain(config.adapterApiKey);
+      expect(persistedState).not.toContain(config.geminiAdapterToken);
     } finally {
       await app.close();
     }
