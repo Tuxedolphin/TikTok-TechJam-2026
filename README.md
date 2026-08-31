@@ -27,8 +27,11 @@ The Agent Launchpad starter kit already provided agent CRUD, the Playground, the
 - **Enforced network containment.** Not pattern-matching on command text after the fact: the agent container has no route off-box, and a proxy authorizes every connection. A blocked host is unreachable, not merely disapproved.
 - **Containment escalation.** Repeated blocked attempts — the signature of a hijacked agent hunting for an exfil route — quarantine the agent automatically.
 - **A receipt for everything.** Every allow and every deny lands on the run timeline with a rule ID explaining itself.
+- **Memory with a passport.** A belief the agent picked up on its own is recalled labeled, never silently, and can never become a permission. Poisoning survives a session; a per-run sandbox cannot see it.
 - **Verifiable termination.** Termination freezes or blocks execution, atomically closes the authority channel, revokes grants, tears down the runtime, verifies state, and signs the evidence with Ed25519.
 
+One-page architecture and trust boundary: **[docs/assets/architecture.md](docs/assets/architecture.md)**.
+Three-minute demo beat sheet: **[docs/DEMO-WALKTHROUGH.md](docs/DEMO-WALKTHROUGH.md)**.
 Full detail, including what is *not* solved: **[docs/AGENT-PASSPORT.md](docs/AGENT-PASSPORT.md)**.
 
 ## Try the containment demo first

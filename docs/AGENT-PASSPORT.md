@@ -11,6 +11,7 @@ Every capability answers one question: what can a hijacked agent actually do?
 | Exfiltrate over the network | No route off-box; the proxy authorizes every connection | `egress-network.ts`, `egress-proxy.ts` |
 | Keep probing for a way out | Quarantine after repeated denials | `egress-authorizer.ts` |
 | Hide what it did | Every decision is a trace event | `recordPolicyDecision`, `recordEgressBlocked` |
+| Carry a planted belief into a later session | Memory provenance, expiry, quarantine, and bounded recall | `memory.ts` |
 | Continue after termination | Freeze, authority barrier, revoke, kill, and state verification | `terminator.ts`, `termination.ts` |
 
 ## What "enforced" means here
@@ -37,8 +38,8 @@ This topology was chosen after testing, not assumed: a host-side proxy does **no
 ## Reproducing the evidence
 
 ```bash
-npm run proofs             # all five, needs a container engine
-npm run proofs:no-engine   # identity and attenuation only
+npm run proofs             # all six, needs a container engine
+npm run proofs:no-engine   # identity, attenuation, and memory -- no engine needed
 ```
 
 Or one at a time:
@@ -48,13 +49,14 @@ npm run build --workspace apps/server
 node scripts/demo-passport.mjs   # identity: ownership denial, grants, revocation
 node scripts/demo-egress.mjs     # containment: real containers, real blocked exfiltration
 node scripts/demo-escalation.mjs # confused-deputy refusal, and attenuated delegation allowed
+node scripts/demo-memory-poison.mjs # cross-session memory poisoning, diagnosed and receipted
 node scripts/demo-tunnel-bypass.mjs # opaque control-plane tunnel refusal
 node scripts/demo-kill.mjs       # freeze/revoke/kill/verify receipt
 ```
 
 Each script **asserts** its invariants and exits non-zero when one breaks, so a
 regression fails rather than scrolling past in the output. They are not
-illustrations of a claim; they are the check on it. Every push runs all five —
+illustrations of a claim; they are the check on it. Every push runs all six —
 the container ones against real Docker containers on the CI runner — so the
 badge above tracks whether containment actually holds, not just whether the
 code compiles.
@@ -96,6 +98,9 @@ Decisions are named so a trace reads as an explanation rather than a boolean.
 | `AUTHORITY-HUMAN-030` | A known human principal originated authority. |
 | `AUTHORITY-SELF-ESCALATION-031` | An agent attempted to grant itself authority it did not hold. |
 | `AUTHORITY-NARROWING-032` | Agent delegation was allowed or denied by capability, target, and lifetime attenuation. |
+| `MEM-PROVENANCE-040` | A memory was recorded with its source and trust, or refused for flooding one run. |
+| `MEM-EXPIRED-041` | A memory reached its expiry and was not recalled. |
+| `MEM-QUARANTINE-042` | A quarantined memory was kept out of the agent's context. |
 
 ## Configuration
 
@@ -116,4 +121,5 @@ Enforcement applies to the container runtime. `RUNTIME_PROVIDER=local-process` r
 - **Non-HTTP TCP is refused outright.** `git+ssh` and raw sockets do not traverse an HTTP proxy. Under default-deny that is the correct outcome, not a bug — but it does constrain what agents can do.
 - **The topology is verified on Docker/OrbStack only.** Rootless Podman is documented as unable to route an internal network to the host; re-run the measurements before trusting another engine.
 - **Quarantine is per-process.** Strike counts live in memory and reset when the server restarts.
+- **Memory trust is derived from provenance, not content.** We do not detect a poisoned belief by reading it — that is the same losing game as detecting injection. The claim is that a planted belief arrives labeled, cannot become a permission, and can be pulled from circulation. The timeline links a recalled memory to a blocked step in the same run; that is correlation, not proof the model acted because of it.
 - **The resources the authz layer guards are mock fixtures.** `res-a` / `res-b` demonstrate ownership isolation; wiring grants to real workspace files is the natural next step and is not done.
