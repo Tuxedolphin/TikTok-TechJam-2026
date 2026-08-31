@@ -425,5 +425,3 @@ describe("Agent lifecycle", () => {
     expect(events[0]?.severity).toBe("warning");
   });
 });
-
-

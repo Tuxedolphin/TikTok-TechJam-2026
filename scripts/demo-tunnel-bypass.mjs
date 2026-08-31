@@ -18,6 +18,7 @@ const { AgentService } = await import(`${D}/agent-service.js`);
 const { WorkspaceManager } = await import(`${D}/workspace.js`);
 const { IdentityService } = await import(`${D}/identity.js`);
 const { createApp } = await import(`${D}/app.js`);
+const { check, finish } = await import("./demo-assert.mjs");
 const { createEgressProxy } = await import(`${D}/egress-proxy.js`);
 const { egressProxySecret } = await import(`${D}/egress-authorizer.js`);
 const { mkdtemp } = await import("node:fs/promises");
@@ -86,7 +87,8 @@ function viaConnect() {
   });
 }
 
-console.log(`Tunnelled POST /api/grants -> ${await viaConnect()}`);
+const tunnelResult = await viaConnect();
+console.log(`Tunnelled POST /api/grants -> ${tunnelResult}`);
 const live = identity.listGrants(agent.principalId).filter((g) => !g.revokedAt);
 console.log(`Agent holds: ${live.map((g) => `${g.scope}:${g.target}`).join(", ") || "nothing"}`);
 console.log(
@@ -94,5 +96,11 @@ console.log(
     ? ">>> BYPASS CONFIRMED: CONNECT tunnel evades attestation."
     : ">>> Tunnel did not grant authority.",
 );
+check("an opaque CONNECT tunnel to the control plane is refused",
+  String(tunnelResult).includes("403") || String(tunnelResult).toLowerCase().includes("refused"),
+  String(tunnelResult));
+check("no authority was created through the tunnel",
+  !live.some((g) => g.target === "attacker.example"));
+finish("Tunnel invariants");
 proxy.close();
 await app.close();

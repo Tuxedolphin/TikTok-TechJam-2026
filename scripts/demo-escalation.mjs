@@ -18,6 +18,7 @@ const { WorkspaceManager } = await import(`${D}/workspace.js`);
 const { IdentityService } = await import(`${D}/identity.js`);
 const { createApp } = await import(`${D}/app.js`);
 const { egressProxySecret } = await import(`${D}/egress-authorizer.js`);
+const { check, finish } = await import("./demo-assert.mjs");
 const { mkdtemp } = await import("node:fs/promises");
 const { tmpdir } = await import("node:os");
 const path = (await import("node:path")).default;
@@ -62,16 +63,19 @@ let r = await grant(attested, {
   principalId: agent.principalId, scope: "network:egress", target: "attacker.example",
 });
 console.log(`1. Agent grants itself egress to attacker.example -> ${code(r)}`);
+const selfGrant = r.statusCode;
 
 r = await grant({ ...attested, "x-principal-id": "user-a" }, {
   principalId: agent.principalId, scope: "network:egress", target: "attacker.example",
 });
 console.log(`2. Same, while claiming to be the human operator  -> ${code(r)}`);
+const impersonation = r.statusCode;
 
 r = await grant({ "x-principal-id": "user-a" }, {
   principalId: agent.principalId, scope: "network:egress", target: "registry.npmjs.org",
 });
 console.log(`3. The human operator grants npmjs               -> ${code(r)}`);
+const humanGrant = r.statusCode;
 
 // The rule is "only narrower", not "never". An agent re-issuing authority it
 // already holds, bounded to a shorter life, is the case that must be ALLOWED --
@@ -81,6 +85,7 @@ r = await grant(attested, {
   ttlMinutes: 5,
 });
 console.log(`4. Agent re-issues the same host, but time-boxed -> ${code(r)}`);
+const attenuated = r.statusCode;
 
 // Scopes are only comparable within a family. Holding network authority must
 // never be spendable as resource authority, however "narrow" it looks.
@@ -89,11 +94,13 @@ r = await grant(attested, {
   ttlMinutes: 1,
 });
 console.log(`5. Agent trades egress for resource:read         -> ${code(r)}`);
+const crossFamily = r.statusCode;
 
 r = await grant(attested, {
   principalId: agent.principalId, scope: "network:egress", target: "attacker.example",
 });
 console.log(`6. Agent tries to widen again, now holding one   -> ${code(r)}`);
+const widenAgain = r.statusCode;
 
 // Each refusal names the rule that produced it, so the trace reads as an
 // explanation rather than a boolean.
@@ -117,4 +124,15 @@ console.log(
       ? ">>> Attenuation holds: narrower delegation survived, every widening was refused."
       : ">>> Narrowing delegation was refused too -- the rule is too strict.",
 );
+check("an agent cannot grant itself new authority", selfGrant === 403, `HTTP ${selfGrant}`);
+check("claiming to be the operator does not outrank attestation", impersonation === 403, `HTTP ${impersonation}`);
+check("a human can originate authority", humanGrant === 201, `HTTP ${humanGrant}`);
+check("an agent MAY delegate strictly narrower authority", attenuated === 201, `HTTP ${attenuated}`);
+check("network authority is not spendable as resource authority", crossFamily === 403, `HTTP ${crossFamily}`);
+check("holding one grant does not enable widening", widenAgain === 403, `HTTP ${widenAgain}`);
+check("the agent never ends up holding attacker.example", !leaked);
+check("both AUTHORITY rules appear in the trace",
+  decisions.some((d) => d.ruleId === "AUTHORITY-NARROWING-032" && d.allowed) &&
+  decisions.some((d) => d.ruleId === "AUTHORITY-SELF-ESCALATION-031" && !d.allowed));
+finish("Attenuation invariants");
 await app.close();

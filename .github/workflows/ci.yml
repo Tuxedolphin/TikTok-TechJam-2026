@@ -1,0 +1,148 @@
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+  workflow_dispatch:
+
+# A newer push to the same branch makes the older run irrelevant.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  NODE_VERSION: "22"
+
+jobs:
+  check:
+    name: Typecheck, test, build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+
+      - run: npm ci
+
+      - name: Typecheck both workspaces
+        run: npm run typecheck
+
+      - name: Unit and integration tests
+        run: npm test
+
+      - name: Build server and web
+        run: npm run build
+
+      # The built server is what every demo imports, so publish it once and let
+      # the proof jobs reuse it instead of rebuilding three more times.
+      - name: Upload server build
+        uses: actions/upload-artifact@v4
+        with:
+          name: server-dist
+          path: apps/server/dist
+          retention-days: 1
+
+  config:
+    name: Compose and scripts
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      # .env.example is the file a judge copies first. If Compose cannot parse
+      # it, the very first command in the README fails.
+      - name: Validate docker-compose against .env.example
+        run: LAUNCHPAD_ENV_FILE=.env.example docker compose config --quiet
+
+      - name: Shell syntax
+        run: bash -n scripts/bootstrap-local.sh scripts/start-local-poc.sh
+
+      - name: Reject trailing whitespace and merge markers
+        run: |
+          git diff --check "$(git rev-list --max-parents=0 HEAD | tail -1)" HEAD
+          if git grep -nE '^(<<<<<<<|>>>>>>>) ' -- . ; then
+            echo "::error::merge conflict markers are committed"
+            exit 1
+          fi
+
+  identity-proofs:
+    name: Identity and attenuation proofs
+    needs: check
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+
+      - run: npm ci
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: server-dist
+          path: apps/server/dist
+
+      # These assert their own invariants and exit non-zero when one breaks,
+      # so a regression fails the build rather than scrolling past in the log.
+      - name: Ownership, grants, revocation
+        run: node scripts/demo-passport.mjs
+
+      - name: Confused-deputy refusal and authority attenuation
+        run: node scripts/demo-escalation.mjs
+
+  containment-proofs:
+    name: Containment proofs (real containers)
+    needs: check
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+
+      - run: npm ci
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: server-dist
+          path: apps/server/dist
+
+      # Pulled up front so the proxy's startup grace period is not racing a
+      # cold image pull on a fresh runner.
+      - name: Pre-pull runtime images
+        run: |
+          docker pull node:22-alpine
+          docker pull curlimages/curl:latest
+
+      - name: Docker environment
+        run: docker version && docker network ls
+
+      - name: Default-deny egress, revocation, quarantine, no-route
+        run: node scripts/demo-egress.mjs
+
+      - name: CONNECT tunnel cannot reach the control plane
+        run: node scripts/demo-tunnel-bypass.mjs
+
+      - name: Freeze, revoke, kill, and a verifiable receipt
+        run: node scripts/demo-kill.mjs
+
+      - name: Clean up stray containers and networks
+        if: always()
+        run: |
+          docker rm -f launchpad-egress-proxy 2>/dev/null || true
+          docker network rm launchpad-egress-internal 2>/dev/null || true
+          docker network rm launchpad-egress-uplink 2>/dev/null || true

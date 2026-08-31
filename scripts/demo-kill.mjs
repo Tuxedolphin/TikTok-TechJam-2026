@@ -27,6 +27,7 @@ const { EgressNetworkManager, INTERNAL_NETWORK } = await import(`${D}/egress-net
 const { AgentTerminator } = await import(`${D}/terminator.js`);
 const { loadOrCreateReceiptKeyPair } = await import(`${D}/termination.js`);
 const { createApp } = await import(`${D}/app.js`);
+const { check, finish } = await import("./demo-assert.mjs");
 
 const execFileAsync = promisify(execFile);
 const PORT = 3211;
@@ -116,13 +117,15 @@ try {
     log(`   ${step.ok ? "ok  " : "FAIL"}  ${step.step.padEnd(7)} ${step.detail}`);
   }
 
-  log(`\n3. Agent status now: ${service.getAgent(agent.id).status}`);
-  log(`   agent reaches ${TARGET} -> HTTP ${await reach(TARGET)}   (authority is gone)\n`);
+  const finalStatus = service.getAgent(agent.id).status;
+  log(`\n3. Agent status now: ${finalStatus}`);
+  const reachAfter = await reach(TARGET);
+  log(`   agent reaches ${TARGET} -> HTTP ${reachAfter}   (authority is gone)\n`);
 
   const file = path.join(root, "receipt.json");
   await writeFile(file, JSON.stringify(receipt, null, 2));
   log("4. Receipt written. Verify it independently -- this program does not get a vote:\n");
-  const { stdout } = await execFileAsync(
+  const verified = await execFileAsync(
     "node",
     [
       new URL("./verify-receipt.mjs", import.meta.url).pathname,
@@ -131,8 +134,9 @@ try {
       path.join(root, "receipt-signing-public.pem"),
     ],
     { timeout: 30_000 },
-  );
-  log(stdout.split("\n").map((line) => `   ${line}`).join("\n"));
+  ).then((result) => ({ ok: true, stdout: result.stdout }))
+    .catch((error) => ({ ok: false, stdout: error.stdout ?? "" }));
+  log(verified.stdout.split("\n").map((line) => `   ${line}`).join("\n"));
 
   log("5. Tamper with the receipt and verify again:");
   const forged = { ...receipt, contained: true, reason: "Nothing to see here" };
@@ -147,8 +151,19 @@ try {
       path.join(root, "receipt-signing-public.pem"),
     ],
     { timeout: 30_000 },
-  ).catch((error) => ({ stdout: error.stdout ?? "" }));
+  ).then((result) => ({ rejected: false, stdout: result.stdout }))
+    .catch((error) => ({ rejected: true, stdout: error.stdout ?? "" }));
   log(tampered.stdout.split("\n").slice(-3).map((line) => `   ${line}`).join("\n"));
+
+  check("the receipt claims containment", receipt.contained === true);
+  check("every termination step succeeded", receipt.steps.every((step) => step.ok));
+  check("the receipt names the key published before termination",
+    receipt.keyId === trustedKey.keyId, `${receipt.keyId} vs ${trustedKey.keyId}`);
+  check("the runtime is stopped", finalStatus === "stopped", finalStatus);
+  check("egress is refused after termination", reachAfter === "403", String(reachAfter));
+  check("an independent verifier accepts the receipt", verified.ok);
+  check("an edited receipt is rejected", tampered.rejected);
+  finish("Termination invariants");
 } finally {
   await app.close();
   await network.shutdown();

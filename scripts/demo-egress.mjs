@@ -26,6 +26,7 @@ import {
   PROXY_CONTAINER,
 } from "../apps/server/dist/egress-network.js";
 import { createApp } from "../apps/server/dist/app.js";
+import { check, finish } from "./demo-assert.mjs";
 
 const execFileAsync = promisify(execFile);
 const PORT = 3199;
@@ -110,18 +111,21 @@ try {
   await new Promise((resolve) => setTimeout(resolve, 2500));
 
   log(`\n1. Agent tries to reach ${TARGET} with NO grant`);
-  log(`   -> HTTP ${await agentCurl(`http://${TARGET}/`)}   (403 = proxy refused to connect)`);
+  const noGrant = await agentCurl(`http://${TARGET}/`);
+  log(`   -> HTTP ${noGrant}   (403 = proxy refused to connect)`);
 
   log("\n2. Operator issues a network:egress grant");
   const grant = await identity.createGrant({
     principalId: agent.principalId, grantedBy: "user-a",
     scope: "network:egress", target: TARGET,
   });
-  log(`   -> HTTP ${await agentCurl(`http://${TARGET}/`)}   (200 = allowed through)`);
+  const withGrant = await agentCurl(`http://${TARGET}/`);
+  log(`   -> HTTP ${withGrant}   (200 = allowed through)`);
 
   log("\n3. Operator REVOKES the grant mid-flight");
   await identity.revokeGrant(grant.id);
-  log(`   -> HTTP ${await agentCurl(`http://${TARGET}/`)}   (403 = revocation bit immediately)`);
+  const afterRevoke = await agentCurl(`http://${TARGET}/`);
+  log(`   -> HTTP ${afterRevoke}   (403 = revocation bit immediately)`);
 
   log("\n4. Agent keeps probing until the quarantine threshold trips");
   await agentCurl("http://attacker.example/");
@@ -159,6 +163,17 @@ try {
   for (const event of events.filter((e) => e.type === "egress.blocked" || e.type === "policy.decision")) {
     log(`   [${event.severity.padEnd(7)}] ${event.type.padEnd(16)} ${event.title}`);
   }
+
+  check("no grant means no route", noGrant === "403", `HTTP ${noGrant}`);
+  check("a grant opens exactly that host", withGrant === "200", `HTTP ${withGrant}`);
+  check("revocation is felt on the next connection", afterRevoke === "403", `HTTP ${afterRevoke}`);
+  check("repeated denials quarantine the agent", status === "stopped", status);
+  check("one agent cannot borrow another's principal", impersonated === "403", String(impersonated));
+  check("the network refuses a direct, proxy-less attempt",
+    String(direct).startsWith("blocked"), String(direct));
+  check("every refusal reached the trace",
+    events.some((e) => e.type === "egress.blocked"));
+  finish("Containment invariants");
 } finally {
   await app.close();
   await network.shutdown();
