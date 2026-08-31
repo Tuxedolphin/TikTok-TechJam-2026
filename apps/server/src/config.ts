@@ -187,6 +187,10 @@ export function loadConfig(environment: Record<string, unknown> = process.env) {
     // keeps every consumer from having to remember the second one.
     egressEnforcement:
       env.EGRESS_ENFORCEMENT === "on" && env.RUNTIME_PROVIDER === "container",
+    // The collapse above is lossy: it cannot distinguish "enforcement was never
+    // asked for" from "it was asked for and cannot be provided". Keeping the
+    // request lets `describeEgressGap` tell the operator which one they are in.
+    egressEnforcementRequested: env.EGRESS_ENFORCEMENT === "on",
     egressProxyPort: env.EGRESS_PROXY_PORT,
     egressProxyImage: env.EGRESS_PROXY_IMAGE,
     egressQuarantineThreshold: env.EGRESS_QUARANTINE_THRESHOLD,
@@ -212,6 +216,26 @@ export function loadConfig(environment: Record<string, unknown> = process.env) {
     runBudgetMaxDurationMs: env.RUN_BUDGET_MAX_DURATION_MS ?? null,
     nodeEnv: env.NODE_ENV,
   };
+}
+
+/**
+ * Explains a configuration that asks for containment and cannot get it.
+ *
+ * `.env.example` ships `EGRESS_ENFORCEMENT=on` next to
+ * `RUNTIME_PROVIDER=local-process`, so the default file requests enforcement
+ * that the host-process runtime has no way to provide. Silently resolving that
+ * to "off" leaves an operator believing agents are contained when nothing is.
+ * Returns null when nothing was promised, so there is nothing to warn about.
+ */
+export function describeEgressGap(config: AppConfig): string | null {
+  if (!config.egressEnforcementRequested || config.egressEnforcement) return null;
+  return (
+    "EGRESS_ENFORCEMENT=on was requested, but RUNTIME_PROVIDER=" +
+    config.runtimeProvider +
+    " runs agents as host processes with no network boundary to enforce. " +
+    "Agents can reach the network directly. Start with `npm run poc` " +
+    "(RUNTIME_PROVIDER=container) for the contained runtime."
+  );
 }
 
 export function isModelConfigured(config: AppConfig): boolean {

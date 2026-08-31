@@ -1,7 +1,7 @@
 import path from "node:path";
 import { AgentService } from "./agent-service.js";
 import { createApp } from "./app.js";
-import { loadConfig, writeCodexConfig, type AppConfig } from "./config.js";
+import { describeEgressGap, loadConfig, writeCodexConfig, type AppConfig } from "./config.js";
 import { EgressAuthorizer } from "./egress-authorizer.js";
 import { EgressNetworkManager } from "./egress-network.js";
 import { IdentityService } from "./identity.js";
@@ -58,6 +58,12 @@ egressAuthorizer = config.egressEnforcement
   : undefined;
 
 const app = await createApp(config, service, identity, egressAuthorizer, egressNetwork);
+
+// Said at startup rather than only in the UI: an operator running the server
+// headless would otherwise never learn that the containment they configured is
+// not active.
+const egressGap = describeEgressGap(config);
+if (egressGap) app.log.warn(egressGap);
 
 const shutdown = async (signal: string) => {
   app.log.info({ signal }, "Shutting down");
