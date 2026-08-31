@@ -26,12 +26,16 @@ let authToken = "";
 
 export function setAuthToken(token: string): void {
   authToken = token.trim();
+  principalSessionTokens.clear();
+  principalSessionRequests.clear();
 }
 
-// The "human" principal driving the identity/delegation demo. Every request
-// is sent as this principal via the x-principal-id header so grant issuance,
-// revocation, and ownership checks reflect whoever is "acting as" in the UI.
+// The UI explicitly selects a mock human before acting. The server exchanges
+// that selection for an opaque session token, so later action requests cannot
+// rewrite their actor by supplying a display name or principal header.
 let currentPrincipalId = "user-a";
+const principalSessionTokens = new Map<string, string>();
+const principalSessionRequests = new Map<string, Promise<string>>();
 
 export function getCurrentPrincipalId(): string {
   return currentPrincipalId;
@@ -41,18 +45,63 @@ export function setCurrentPrincipalId(principalId: string): void {
   currentPrincipalId = principalId;
 }
 
-async function request<T>(url: string, options?: RequestInit): Promise<T> {
-  const headers = {
-    ...(options?.body ? { "Content-Type": "application/json" } : {}),
-    ...(authToken ? { Authorization: "Bearer " + authToken } : {}),
-    "x-principal-id": currentPrincipalId,
-    ...options?.headers,
-  };
-  const response = await fetch(url, {
-    ...options,
-    headers,
+async function principalSessionToken(principalId: string): Promise<string> {
+  const existing = principalSessionTokens.get(principalId);
+  if (existing) return existing;
+  const pending = principalSessionRequests.get(principalId);
+  if (pending) return pending;
+
+  const request = fetch("/api/mock-principal-session", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      ...(authToken ? { Authorization: "Bearer " + authToken } : {}),
+    },
+    body: JSON.stringify({ principalId }),
+  }).then(async (response) => {
+    const data = (await response.json().catch(() => ({}))) as {
+      sessionToken?: string;
+      error?: string;
+    };
+    if (!response.ok || !data.sessionToken) {
+      throw new ApiError(data.error ?? "Failed to select mock principal", response.status);
+    }
+    principalSessionTokens.set(principalId, data.sessionToken);
+    return data.sessionToken;
+  }).finally(() => {
+    principalSessionRequests.delete(principalId);
   });
-  const data = (await response.json().catch(() => ({}))) as T & { error?: string };
+  principalSessionRequests.set(principalId, request);
+  return request;
+}
+
+async function request<T>(url: string, options?: RequestInit): Promise<T> {
+  const principalId = currentPrincipalId;
+  let sessionToken = url === "/api/auth"
+    ? null
+    : await principalSessionToken(principalId);
+  const send = (token: string | null) => fetch(url, {
+    ...options,
+    headers: {
+      ...options?.headers,
+      ...(options?.body ? { "Content-Type": "application/json" } : {}),
+      ...(authToken ? { Authorization: "Bearer " + authToken } : {}),
+      ...(token ? { "x-mock-principal-session": token } : {}),
+    },
+  });
+
+  let response = await send(sessionToken);
+  let data = (await response.json().catch(() => ({}))) as T & { error?: string };
+  if (
+    response.status === 401 &&
+    sessionToken &&
+    data.error === "A valid mock principal session is required"
+  ) {
+    principalSessionTokens.delete(principalId);
+    sessionToken = await principalSessionToken(principalId);
+    response = await send(sessionToken);
+    data = (await response.json().catch(() => ({}))) as T & { error?: string };
+  }
   if (!response.ok) {
     throw new ApiError(data.error ?? "Request failed", response.status);
   }
@@ -132,15 +181,13 @@ export const api = {
     return request<{ approvals: ApprovalRequest[] }>("/api/approvals" + (qs ? "?" + qs : ""));
   },
   getApproval: (id: string) => request<{ approval: ApprovalRequest }>("/api/approvals/" + id),
-  approve: (id: string, operatorName = "Human Operator") =>
+  approve: (id: string) =>
     request<{ approval: ApprovalRequest }>("/api/approvals/" + id + "/approve", {
       method: "POST",
-      body: JSON.stringify({ operatorName }),
     }),
-  deny: (id: string, operatorName = "Human Operator") =>
+  deny: (id: string) =>
     request<{ approval: ApprovalRequest }>("/api/approvals/" + id + "/deny", {
       method: "POST",
-      body: JSON.stringify({ operatorName }),
     }),
   listPrincipals: () => request<{ principals: Principal[] }>("/api/principals"),
   listGrants: (principalId: string) =>
@@ -182,4 +229,3 @@ export const api = {
     return { resource: data.resource ?? null, decision: data.decision };
   },
 };
-

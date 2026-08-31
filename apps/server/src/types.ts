@@ -38,7 +38,9 @@ export interface Message {
 }
 
 export interface RunUsage {
+  /** All provider-reported input tokens, including the cached subset. */
   inputTokens?: number;
+  /** Input tokens served from cache; this is a subset of inputTokens. */
   cachedInputTokens?: number;
   outputTokens?: number;
   costUsd?: number | null;
@@ -58,6 +60,7 @@ export type RunEventType =
   | "step.file_change"
   | "step.message"
   | "step.auto_approved"
+  | "step.risk_observed"
   | "step.approval_requested"
   | "step.approval_granted"
   | "step.approval_denied"
@@ -81,6 +84,31 @@ export interface RunEvent {
 export type ApprovalStatus = "pending" | "approved" | "denied";
 export type ActionRiskLevel = "low" | "medium" | "high" | "critical";
 
+export interface ApprovalActor {
+  principalId: string;
+  displayName: string;
+}
+
+export interface ApprovalEvidence {
+  initiatingHuman: ApprovalActor;
+  executingAgent: ApprovalActor;
+  action: {
+    type: "command" | "tool_call" | "file_change";
+    detail: string;
+  };
+  resource: string;
+  decision: ApprovalStatus | null;
+  result:
+    | "pending"
+    | "execution_authorized"
+    | "execution_resumed"
+    | "execution_blocked"
+    | "execution_cancelled"
+    | "execution_failed"
+    | "unknown";
+  resolvedBy: ApprovalActor | null;
+}
+
 export interface ApprovalRequest {
   id: string;
   runId: string;
@@ -93,13 +121,17 @@ export interface ApprovalRequest {
   status: ApprovalStatus;
   createdAt: string;
   resolvedAt: string | null;
-  resolvedBy: string | null;
+  resolvedByPrincipalId: string | null;
+  resolvedByDisplayName: string | null;
+  evidence: ApprovalEvidence;
 }
 
 export interface AgentRun {
   id: string;
   agentId: string;
   sessionId?: string | null | undefined;
+  initiatedByPrincipalId: string;
+  initiatedByDisplayName: string;
   status: RunStatus;
   prompt: string;
   output: string | null;
@@ -129,6 +161,7 @@ export interface Grant {
   target: string;          // resourceId for resource:*, hostname for network:egress
   expiresAt: string | null; // ISO; null = no expiry
   revokedAt: string | null;
+  revokedBy: string | null;
   createdAt: string;
 }
 
@@ -151,7 +184,7 @@ export interface PolicyDecision {
 
 
 export interface Database {
-  version: 4;
+  version: 5;
   agents: Agent[];
   sessions: AgentSession[];
   messages: Message[];
@@ -185,6 +218,8 @@ export interface RunnerStepEvent {
   type: "command" | "tool_call" | "file_change" | "message";
   title: string;
   detail: string;
+  /** Whether the Runtime observed the step before or after its side effect. */
+  phase?: "before" | "after";
   rawPayload?: unknown;
 }
 
@@ -206,8 +241,8 @@ export interface RunnerRequest {
 export interface AgentRunner {
   run(request: RunnerRequest): Promise<RunnerResult>;
   cancel(agentId: string): Promise<boolean>;
-  pause?(agentId: string): Promise<boolean>;
-  resume?(agentId: string): Promise<boolean>;
+  /** Required: a high-risk step is refused outright if the runtime cannot be frozen. */
+  pause(agentId: string): Promise<boolean>;
+  resume(agentId: string): Promise<boolean>;
   isAvailable(): Promise<boolean>;
 }
-

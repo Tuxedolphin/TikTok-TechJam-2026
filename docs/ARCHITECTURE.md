@@ -1,121 +1,179 @@
 # Implemented architecture and trust boundaries
 
 Volc Agent Launchpad is a single-node hackathon control plane. This page
-separates controls enforced at a boundary from signals observed after an action.
+separates controls enforced before a side effect from telemetry observed after
+one. It describes the implementation on this branch; it does not claim the
+signed termination-receipt features from the separate `feature/standout` work.
 
 ```mermaid
 flowchart LR
-    Operator["Operator / browser"] -->|shared bearer token| API["Fastify API"]
-    API --> Service["AgentService"]
-    Service --> Policy["policy + approval workflow"]
-    Service --> Store["mutable JSON store"]
-    Service --> Workspace["Agent workspace"]
+    Human["Explicitly selected mock human"] --> Session["Server-issued principal session"]
+    Browser["React UI"] -->|optional APP_AUTH_TOKEN + session| API["Fastify control plane"]
+    Human --> Session --> Browser
+    API --> Service["AgentService + policy workflow"]
+    Service --> Store["Mutable JSON metadata"]
+    Service --> Workspace["Per-Agent workspace"]
     Service --> Runner{"Runtime provider"}
-    Runner -->|local POC| Container["disposable Agent container"]
-    Runner -->|development / ECS| Process["Codex process in control-plane boundary"]
-    Container -->|internal network only| Proxy["authorizing egress proxy"]
-    Proxy -->|active host grant| Internet["Internet"]
-    Proxy -->|standing platform allow| Adapter["Gemini adapter on control plane"]
-    Process -->|host network| Adapter
-    Process -->|provider key| Internet
-    Adapter -->|server-held key| Gemini["Google Gemini API"]
+    Runner -->|container| Agent["Disposable Agent container"]
+    Runner -->|local-process| Process["Codex process in control-plane boundary"]
+    Agent -->|internal network; HMAC-attested Agent| Proxy["Default-deny egress proxy"]
+    Proxy -->|authorize every request / CONNECT| Authorizer["Control-plane egress authorizer"]
+    Authorizer -->|live grant, platform host:port, or one approval| Provider["Approved destination"]
+    Agent -->|adapter token| Adapter["Authenticated Gemini adapter"]
+    Adapter -->|server-held Gemini key| Gemini["Google Gemini"]
+    Agent -->|selected provider key, through proxy| Compatible["OpenRouter / ModelArk"]
 ```
 
-## Data and credential flow
+## Data, identity, and credential flow
 
-The React UI submits lifecycle and approval decisions to Fastify and polls Runs,
-approvals, and events. It does not receive a model-provider key. The optional
-`APP_AUTH_TOKEN` protects most `/api/*` routes on a remote demo, but it is one
-shared bearer secret, not user identity or role-based authorization. Mock human
-and Agent principals come from trusted request headers; resource fixtures and
-grants demonstrate policy behavior rather than production authentication.
+The React UI sends lifecycle and approval actions to Fastify and polls Agents,
+Runs, approvals, and events. `APP_AUTH_TOKEN` is an optional shared access
+secret for a remote demo. It is not a user identity or RBAC system. For action
+attribution, the UI explicitly selects a seeded mock human and exchanges that
+selection for an opaque, expiring server session. Approval routes reject
+caller-supplied `operatorName` and `resolvedBy` fields and derive the resolving
+actor only from that session. Because any client holding the shared access
+secret can select a seeded mock principal, this remains a demonstrator rather
+than production authentication.
+
+Each Run stores its initiating human. Each Agent has its own principal. An
+approval evidence object correlates the initiating human, executing Agent,
+action, resource, decision, result, and resolving actor. Timeouts, cancellation,
+request disconnects, restart recovery, and other automatic decisions use fixed
+system principal IDs rather than display text supplied by a caller.
 
 `AgentService` stores Agents, sessions, messages, Runs, events, approvals,
 principals, and grants in `data/launchpad.json`. `JsonStore` serializes writes
-within one process and atomically replaces the file with mode `0600`. The file
-is mutable, not append-only or tamper-evident, and deleting an Agent deletes its
-stored Runs, events, and approvals. Workspaces and Codex state live separately
-under `workspaces/` and `codex-home/`.
+within one process and atomically replaces the file with mode `0600`. Migration
+reads approval fields by shape so independently evolved version-5 files remain
+compatible. The file is mutable, not append-only or tamper-evident. Deleting an
+Agent removes its mutable metadata and timeline and archives its workspace under
+`workspaces/.deleted/`.
 
-Both Runtime providers receive the configured provider key through environment
-variables. In Gemini mode, Codex calls `/api/adapter/responses` on the control
-plane; the adapter translates the Responses protocol and sends the key to
-Google. The adapter route is exempt from `APP_AUTH_TOKEN`. In OpenRouter mode,
-the Runtime calls the configured provider directly. Treat the Runtime as able
-to read its model credential, use a scoped demo key, and do not mount unrelated
-secrets.
+The Runtime never receives the browser access token or the Gemini provider key.
+In Gemini mode, it receives a dedicated adapter token and calls the authenticated
+`/api/adapter/responses` route; the control plane translates the Responses
+protocol and sends the provider key to Google. In OpenRouter and ModelArk modes,
+the selected provider key is a Runtime credential because Codex calls that
+provider directly. Container-engine commands pass secrets by environment name,
+not as `NAME=value` arguments. Treat all Runtime-visible credentials as scoped
+demo credentials.
 
-## Execution and approval boundary
+## Enforcement boundaries
 
-`evaluateActionRisk` classifies command, tool, file, and message text into the
-`ALLOW-STANDARD-000` and `SEC-*` rules. Codex emits these records as
-`item.completed` events. The service therefore evaluates a command only after
-Codex reports that item completed, persists an approval, and then requests
-`docker pause`/`podman pause` or `SIGSTOP`. Approval can hold later activity,
-but it does **not** prove that the reported command was stopped before it ran.
-Pause/resume return values are not currently enforced, so this path is a
-detective and recovery control, not a fail-closed pre-execution gate.
+### Pre-action network approval
 
-Approval records and their normal resolutions are persisted. The Promise that
-blocks an active execution is in memory. Pending approvals time out as denied
-after five minutes; on restart, pending approvals are marked denied, active Runs
-are marked cancelled, and busy/waiting Agents return to ready. This recovery
-does not resume work across a restart.
+With `RUNTIME_PROVIDER=container` and `EGRESS_ENFORCEMENT=on`, the Agent joins an
+internal container network and has no direct external route. Every HTTP request
+and CONNECT tunnel reaches the proxy first. The proxy authenticates the Agent,
+rejects private/link-local destinations, and asks the control-plane authorizer
+before opening an upstream socket. Authorization is request-scoped and checks a
+live grant, a port-scoped platform allowance, or a pending `HITL-EGRESS-025`
+approval. Denial returns `403` while the destination request counter remains
+zero; approval releases that exact held request once.
+
+The approval waiter is registered before the record is persisted, so an
+immediate decision or disconnect cannot leave a published approval without an
+in-memory owner. Concurrent approvals keep the Agent in `waiting_approval`
+until the final one is resolved. An authorizer error, invalid attestation,
+provisioning failure, aborted request, timeout, or missing active Run fails
+closed.
+
+### Runtime step approval
+
+`RunnerStepEvent.phase` distinguishes a trusted pre-action callback from an
+observation. A Runtime integration that explicitly emits `before` enters the
+pause gate. `AgentService` serializes pause, resume, and cancellation; requires
+pause to return `true` before publishing the approval; cancels if approval
+persistence fails; and cancels if resume is unsupported, throws, or returns
+false. The UI says **Runtime Frozen** only for this verified state.
+
+Production Codex emits command and tool details as `item.completed`, which the
+parser marks `after`. `evaluateActionRisk` therefore records `SEC-*`
+`step.risk_observed` telemetry and does not create a late approval or claim the
+command was prevented. An event with no trusted phase is also observational.
+For production Codex, filesystem, credential-read, privilege, and package-risk
+classification is detective; preventive network safety comes from the proxy.
 
 ## Preventive, detective, and recovery controls
 
 | Class | Implemented controls | Boundary and limitation |
 | --- | --- | --- |
-| Preventive | Request validation; optional shared bearer token; prompt canary check; container resource limits; internal-network egress proxy | The bearer token is not identity. Prompt blocking covers the configured literal token. Network containment applies only to `RUNTIME_PROVIDER=container` with egress enforcement on. |
-| Preventive | Per-connection egress authorization against live, expiring, revocable grants; private-address denial | The proxy denies before opening a request or CONNECT tunnel. Platform hosts are standing-allowed, and revocation affects the next authorization, not an established tunnel. |
-| Detective | `evaluateActionRisk`, completed-step events, output canary check, token/cost accounting, trace timeline | Step classification and token budgets run after the corresponding work. Events are mutable and not tamper-evident. |
-| Recovery | Pause/resume after a risky completed-step event; operator denial/cancel; duration timeout; egress quarantine; restart reconciliation | Pause is best-effort. Quarantine strike counts are in memory and reset on restart or operator start. |
+| Preventive | Request schemas; optional shared bearer access check; opaque mock-principal session; prompt canary check | The session provides trustworthy demo attribution, not production authentication or authorization. Prompt blocking covers the configured literal token. |
+| Preventive | Internal container network; per-Agent proxy attestation; private-address denial; live expiring grants; host-and-port platform allowances; one-request HITL release | Active only for container Runtime with egress enforcement on. An established tunnel is not continuously re-authorized. |
+| Preventive | Verified pause before approvals from trusted `before` integrations; process/container duration deadline; container CPU, memory, PID, and filesystem limits | Production Codex events are `after`, so its shell-risk classifications do not use this gate. Ordinary containers are not hardened multi-tenant isolation. |
+| Preventive / detective | Gemini `maxOutputTokens` request cap; post-run input, output, total-token, duration, and cost accounting | OpenRouter/ModelArk output usage is checked after the Run; cached input is a subset of input and is not added twice. |
+| Detective | Completed-step risk events; output/step canary checks; correlated approval evidence; policy and lifecycle timeline | Stored events are mutable and not tamper-evident. Output detection happens after generation. |
+| Recovery | Operator denial; Run cancellation; fail-closed pause/resume handling; approval timeout; egress-strike quarantine; restart reconciliation | Strike counts and principal sessions are in memory. Restart does not resume work. |
 
-## Runtime and network trust boundaries
+## Runtime and network profiles
 
-| Profile | Agent boundary | Network behavior |
+| Profile | Agent boundary | Network and model behavior |
 | --- | --- | --- |
-| Local POC | Disposable Docker, Colima, or Podman container with a workspace and `codex-home` bind mount | With enforcement on, the Agent joins an `--internal` network and can leave only through the proxy. |
-| ECS / Compose | Codex process in the application container | `local-process` shares the control-plane container and its network; proxy containment is not active. |
-| Local development | Codex process on the host | No process or network isolation; use only with test data and scoped credentials. |
+| Local POC container | Disposable Docker, OrbStack, Colima, or Podman container with workspace and `codex-home` bind mounts | With enforcement on, outbound traffic must cross the proxy. Gemini uses the adapter token; OpenRouter/ModelArk use their selected Runtime credential. |
+| ECS / Compose `local-process` | Codex process shares the application container | No proxy containment. Use a tightly scoped credential and do not describe this profile as fail-closed network isolation. |
+| Host development `local-process` | Codex process runs on the host | No process or network isolation; use only test data and scoped credentials. |
 
-The egress proxy asks the control-plane authorizer before each HTTP request or
-CONNECT tunnel and denies if the authorizer throws. Provisioning failure stops
-the Run before the Agent container starts. `EGRESS_ENFORCEMENT=off` or either
-`local-process` profile restores ordinary network access and must not be
-described as fail-closed containment.
+The proxy and Agent container use fixed, labeled names only after validating
+that existing resources match the expected configuration. Agent identity is
+bound to signed request material rather than a caller-selected principal
+header. The control-plane-to-proxy authorization call uses a separate secret.
+Turning `EGRESS_ENFORCEMENT=off` restores ordinary bridge networking.
 
-The enforced container topology has been exercised on Docker/OrbStack. Ordinary
-containers are not hardened multi-tenant isolation. The proxy trusts existing
-resources with its fixed network/container names, platform allowances are
-host-based rather than port/path-based, and an established CONNECT tunnel is
-not re-authorized after grant revocation. These are residual risks, alongside
-mock header identity, Runtime-visible provider keys, mutable history, and the
-post-action approval boundary.
+## Failure behavior
+
+- Unsupported, rejected, or throwing pause cancels the Runtime before an
+  approval is published.
+- Approval persistence failure after a verified pause cleans the waiter and
+  cancels the Runtime.
+- Unsupported, rejected, or throwing resume cancels the approved Run and marks
+  its result failed.
+- A stop/delete race sets cancellation first, serializes the Runtime control,
+  denies pending approvals with a system actor, and prevents a second active
+  Run.
+- Egress denial, authorizer error, invalid Agent attestation, or requester
+  disconnect opens no new upstream connection.
+- On startup, persisted pending approvals are denied by
+  `system:server-restart`; active Runs are cancelled; busy/waiting Agents return
+  to ready; and no execution is resumed.
+- Provider keys, adapter tokens, and the guardrail canary are redacted from
+  messages, approval details, events, errors, and the mutable store.
+
+## Residual risks
+
+- `APP_AUTH_TOKEN` plus mock-principal sessions are a demo identity system, not
+  per-user login, RBAC, or non-repudiation.
+- JSON history can be edited or deleted and has no signed receipt. Do not claim
+  Ed25519 termination receipts unless the separate implementation providing
+  them is merged and its proofs are run.
+- Production Codex shell/tool events arrive after execution. Only the proxy and
+  explicitly trusted `before` integrations provide pre-action gates.
+- OpenRouter and ModelArk keys remain visible to their Runtime; Gemini keeps its
+  provider key in the control plane but exposes a scoped adapter token.
+- Container isolation is not a multi-tenant sandbox. The `local-process`
+  profiles provide no network containment.
+- Grant revocation affects the next proxy authorization. A connection already
+  released by this branch is not continuously re-authorized or drained.
+- Platform allowances are host-and-port scoped, not URL-path or request-body
+  policy.
+- OpenRouter/ModelArk output-token limits are observational after the Run.
 
 ## Reproducible evidence
-
-Build before running either demo:
 
 ```bash
 npm run build --workspace apps/server
 node scripts/demo-passport.mjs
-```
-
-The identity demo is the normal and authorization-negative path: it prints a
-`403` without a grant, `200` with an own-resource grant, `403` for another
-owner's resource, and `403` after revocation, followed by policy events.
-
-The network-negative path needs a running supported container engine:
-
-```bash
 node scripts/demo-egress.mjs
+npm exec --workspace @launchpad/server -- \
+  vitest run src/egress-hitl.integration.test.ts \
+             src/container-codex-runner-pause.test.ts \
+             src/secret-boundaries.test.ts
 ```
 
-It prints `403` without an egress grant, `200` after granting `example.com`,
-`403` on the next request after revocation, `stopped` after repeated denials,
-`403` for a guessed Agent proxy secret, and a blocked direct no-proxy attempt.
-The scripts use the real store, API/proxy, and container network, but print
-observations rather than assertions; compare every line above. They do not
-demonstrate pre-execution command interception or termination of an already
-open connection.
+`demo-passport` prints deny/allow/cross-owner/revocation decisions.
+`demo-egress` needs a supported container engine and prints default denial,
+grant/revocation, quarantine, proxy-credential rejection, and direct-route
+containment observations. The integration tests assert that egress denial
+opens zero destination requests, approval opens exactly one, Runtime controls
+fail closed, and provider secrets stay out of API responses, events, and the
+store.

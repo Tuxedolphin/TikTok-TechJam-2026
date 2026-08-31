@@ -1,10 +1,11 @@
 import cors from "@fastify/cors";
 import fastifyStatic from "@fastify/static";
 import Fastify, { type FastifyInstance } from "fastify";
-import { timingSafeEqual } from "node:crypto";
+import { randomUUID, timingSafeEqual } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { z } from "zod";
 import type { AppConfig } from "./config.js";
+import type { ApprovalActor } from "./types.js";
 import { HttpError } from "./errors.js";
 import type { AgentService } from "./agent-service.js";
 import { handleGeminiResponsesAdapter } from "./gemini-adapter.js";
@@ -41,9 +42,10 @@ const approvalQuery = z.object({
   agentId: z.string().uuid().optional(),
   status: z.enum(["pending", "approved", "denied"]).optional(),
 });
-const resolveApprovalBody = z.object({
-  operatorName: z.string().trim().min(1).max(80).optional(),
-}).optional();
+const resolveApprovalBody = z.object({}).strict().optional();
+const mockPrincipalSessionBody = z.object({
+  principalId: z.string().trim().min(1).max(128),
+}).strict();
 const grantBody = z.object({
   principalId: z.string().min(1).max(128),
   scope: z.enum(["resource:read", "resource:write", "network:egress"]),
@@ -68,8 +70,37 @@ const egressAuthorizeBody = z.object({
   secret: z.string().max(256).optional(),
 });
 const resourceIdParams = z.object({ id: z.string().min(1).max(128) });
+const MOCK_SESSION_TTL_MS = 8 * 60 * 60 * 1000;
+const MAX_MOCK_SESSIONS = 1_000;
 
+interface MockPrincipalSession {
+  actor: ApprovalActor;
+  expiresAt: number;
+}
 
+function sessionActor(
+  sessionHeader: string | string[] | undefined,
+  sessions: Map<string, MockPrincipalSession>,
+): ApprovalActor {
+  const sessionToken = Array.isArray(sessionHeader) ? sessionHeader[0] : sessionHeader;
+  const session = sessionToken ? sessions.get(sessionToken) : undefined;
+  if (!session || session.expiresAt <= Date.now()) {
+    if (sessionToken) sessions.delete(sessionToken);
+    throw new HttpError(401, "A valid mock principal session is required");
+  }
+  return session.actor;
+}
+
+function hasValidBearerToken(header: string | undefined, expected: string): boolean {
+  if (!expected) return false;
+  const candidate = header?.startsWith("Bearer ") ? header.slice(7) : "";
+  const expectedBuffer = Buffer.from(expected);
+  const candidateBuffer = Buffer.from(candidate);
+  return (
+    candidateBuffer.length === expectedBuffer.length &&
+    timingSafeEqual(candidateBuffer, expectedBuffer)
+  );
+}
 
 export async function createApp(
   config: AppConfig,
@@ -78,6 +109,7 @@ export async function createApp(
   egressAuthorizer?: EgressAuthorizer,
   egressNetwork?: EgressNetworkManager,
 ): Promise<FastifyInstance> {
+  const principalSessions = new Map<string, MockPrincipalSession>();
   const app = Fastify({
     logger: {
       level: config.logLevel,
@@ -94,23 +126,30 @@ export async function createApp(
   });
 
   app.addHook("onRequest", async (request, reply) => {
+    const routePath = request.routeOptions.url;
+    const rawPath = request.url
+      .split(/[?#]/, 1)[0]
+      ?.replace(/\\/g, "/")
+      .replace(/\/{2,}/g, "/") ?? "/";
+    let decodedPath = rawPath;
+    try {
+      decodedPath = decodeURIComponent(rawPath)
+        .replace(/\\/g, "/")
+        .replace(/\/{2,}/g, "/");
+    } catch {
+      // Malformed encodings remain protected when their raw path targets /api.
+    }
+    const targetsApi = routePath?.startsWith("/api/") || decodedPath.startsWith("/api/");
     if (
       !config.authToken ||
-      !request.url.startsWith("/api/") ||
-      request.url === "/api/health" ||
-      request.url === "/api/auth" ||
-      request.url.startsWith("/api/adapter/")
+      !targetsApi ||
+      routePath === "/api/health" ||
+      routePath === "/api/auth" ||
+      routePath?.startsWith("/api/adapter/")
     ) {
       return;
     }
-    const header = request.headers.authorization ?? "";
-    const candidate = header.startsWith("Bearer ") ? header.slice(7) : "";
-    const expectedBuffer = Buffer.from(config.authToken);
-    const candidateBuffer = Buffer.from(candidate);
-    const valid =
-      candidateBuffer.length === expectedBuffer.length &&
-      timingSafeEqual(candidateBuffer, expectedBuffer);
-    if (!valid) {
+    if (!hasValidBearerToken(request.headers.authorization, config.authToken)) {
       return reply.code(401).send({ error: "Authentication required" });
     }
   });
@@ -122,14 +161,46 @@ export async function createApp(
 
   app.get("/api/auth", async () => ({ required: config.authToken.length > 0 }));
 
+  app.post("/api/mock-principal-session", async (request, reply) => {
+    if (!identity) {
+      throw new HttpError(503, "Mock identity service is unavailable");
+    }
+    const { principalId } = mockPrincipalSessionBody.parse(request.body);
+    const principal = identity.listPrincipals().find((candidate) => candidate.id === principalId);
+    if (!principal) {
+      throw new HttpError(404, "Unknown mock principal");
+    }
+    if (principal.kind !== "human") {
+      throw new HttpError(403, "Only human principals may start mock sessions");
+    }
+    const timestamp = Date.now();
+    for (const [token, session] of principalSessions) {
+      if (session.expiresAt <= timestamp) principalSessions.delete(token);
+    }
+    while (principalSessions.size >= MAX_MOCK_SESSIONS) {
+      const oldestToken = principalSessions.keys().next().value as string | undefined;
+      if (!oldestToken) break;
+      principalSessions.delete(oldestToken);
+    }
+    const sessionToken = randomUUID();
+    const actor = { principalId: principal.id, displayName: principal.name };
+    const expiresAt = timestamp + MOCK_SESSION_TTL_MS;
+    principalSessions.set(sessionToken, { actor, expiresAt });
+    return reply.code(201).send({
+      sessionToken,
+      expiresAt: new Date(expiresAt).toISOString(),
+      principal: actor,
+    });
+  });
+
   app.get("/api/system", async () => service.systemInfo());
 
   app.get("/api/agents", async () => ({ agents: service.listAgents() }));
 
   app.post("/api/agents", async (request, reply) => {
     const body = createAgentBody.parse(request.body);
-    const actor = (request.headers["x-principal-id"] as string | undefined) ?? "user-a";
-    const agent = await service.createAgent(body, actor);
+    const actor = sessionActor(request.headers["x-mock-principal-session"], principalSessions);
+    const agent = await service.createAgent(body, actor.principalId);
     return reply.code(201).send({ agent });
   });
 
@@ -192,7 +263,8 @@ export async function createApp(
   app.post("/api/agents/:id/messages", async (request, reply) => {
     const { id } = agentIdParams.parse(request.params);
     const body = messageBody.parse(request.body);
-    const result = await service.sendMessage(id, body.content);
+    const actor = sessionActor(request.headers["x-mock-principal-session"], principalSessions);
+    const result = await service.sendMessage(id, body.content, actor);
     return reply.code(202).send(result);
   });
 
@@ -236,15 +308,17 @@ export async function createApp(
 
   app.post("/api/approvals/:id/approve", async (request) => {
     const { id } = approvalIdParams.parse(request.params);
-    const body = resolveApprovalBody.parse(request.body);
-    const approval = await service.resolveApproval(id, "approved", body?.operatorName);
+    resolveApprovalBody.parse(request.body);
+    const actor = sessionActor(request.headers["x-mock-principal-session"], principalSessions);
+    const approval = await service.resolveApproval(id, "approved", actor);
     return { approval };
   });
 
   app.post("/api/approvals/:id/deny", async (request) => {
     const { id } = approvalIdParams.parse(request.params);
-    const body = resolveApprovalBody.parse(request.body);
-    const approval = await service.resolveApproval(id, "denied", body?.operatorName);
+    resolveApprovalBody.parse(request.body);
+    const actor = sessionActor(request.headers["x-mock-principal-session"], principalSessions);
+    const approval = await service.resolveApproval(id, "denied", actor);
     return { approval };
   });
 
@@ -258,20 +332,21 @@ export async function createApp(
 
     app.post("/api/grants", async (request, reply) => {
       const body = grantBody.parse(request.body);
-      const grantedBy = (request.headers["x-principal-id"] as string | undefined) ?? "user-a";
+      const actor = sessionActor(request.headers["x-mock-principal-session"], principalSessions);
       const grant = await identity.createGrant({
         principalId: body.principalId,
         scope: body.scope,
         target: body.target,
         ttlMinutes: body.ttlMinutes ?? null,
-        grantedBy,
+        grantedBy: actor.principalId,
       });
       return reply.code(201).send({ grant });
     });
 
     app.post("/api/grants/:id/revoke", async (request) => {
       const { id } = grantIdParams.parse(request.params);
-      return { grant: await identity.revokeGrant(id) };
+      const actor = sessionActor(request.headers["x-mock-principal-session"], principalSessions);
+      return { grant: await identity.revokeGrant(id, actor.principalId) };
     });
 
     app.get("/api/resources/:id", async (request, reply) => {
@@ -292,9 +367,17 @@ export async function createApp(
     // Called by the egress proxy sidecar for EVERY outbound connection an
     // agent container attempts. Answering slowly or failing here makes the
     // proxy fail closed, which is the safe direction.
-    app.post("/api/egress/authorize", async (request) => {
+    app.post("/api/egress/authorize", async (request, reply) => {
       const body = egressAuthorizeBody.parse(request.body);
-      const result = await egressAuthorizer.authorize(body);
+      const controller = new AbortController();
+      request.raw.once("aborted", () => controller.abort());
+      reply.raw.once("close", () => {
+        if (!reply.raw.writableEnded) controller.abort();
+      });
+      const result = await egressAuthorizer.authorize({
+        ...body,
+        signal: controller.signal,
+      });
       return {
         allowed: result.allowed,
         ruleId: result.ruleId,
@@ -305,6 +388,12 @@ export async function createApp(
   }
 
   app.post("/api/adapter/responses", async (request, reply) => {
+    if (!config.geminiApiKey) {
+      return reply.code(404).send({ error: "Gemini adapter is not configured" });
+    }
+    if (!hasValidBearerToken(request.headers.authorization, config.geminiAdapterToken)) {
+      return reply.code(401).send({ error: "Runtime authentication required" });
+    }
     await handleGeminiResponsesAdapter(request, reply, config);
   });
 

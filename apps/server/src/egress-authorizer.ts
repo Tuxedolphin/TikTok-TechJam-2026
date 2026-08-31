@@ -11,6 +11,8 @@ export interface EgressAuthorizationRequest {
   method: string;
   /** Per-agent proxy secret, presented as the proxy-auth password. */
   secret?: string | undefined;
+  /** Aborted when the originating Runtime request disconnects while held. */
+  signal?: AbortSignal | undefined;
 }
 
 /**
@@ -53,6 +55,11 @@ export interface EgressAuthorizerOptions {
     decision: PolicyDecision,
     strikes: number,
   ) => Promise<void> | void;
+  requestApproval?: (
+    runId: string,
+    agentId: string,
+    input: EgressAuthorizationRequest,
+  ) => Promise<boolean>;
   quarantineAgent?: (agentId: string, reason: string) => Promise<void> | void;
 }
 
@@ -106,7 +113,13 @@ export class EgressAuthorizer {
       }
     }
 
-    const decision = this.options.standingAllowHosts.includes(input.host)
+    // Reuse the snapshot taken above: it is a deep clone of the whole store, so
+    // taking a second one per connection would double an already hot cost.
+    const runId = agentId
+      ? (latestRunFor(database.runs, agentId)?.id ?? `egress-${agentId}`)
+      : `egress-${input.agentPrincipalId}`;
+
+    let decision: PolicyDecision = this.options.standingAllowHosts.includes(input.host)
       ? {
           allowed: true,
           ruleId: "NET-EGRESS-PLATFORM-021",
@@ -121,11 +134,30 @@ export class EgressAuthorizer {
           new Date().toISOString(),
         );
 
-    // Reuse the snapshot taken above: it is a deep clone of the whole store, so
-    // taking a second one per connection would double an already hot cost.
-    const runId = agentId
-      ? (latestRunFor(database.runs, agentId)?.id ?? `egress-${agentId}`)
-      : `egress-${input.agentPrincipalId}`;
+    // An ungranted request is held at the proxy boundary while a human decides.
+    // Approval applies only to this request; it does not create a reusable grant.
+    if (
+      !decision.allowed &&
+      decision.ruleId === "NET-EGRESS-020" &&
+      agentId &&
+      this.options.requestApproval
+    ) {
+      let approved = false;
+      try {
+        approved = await this.options.requestApproval(runId, agentId, input);
+      } catch {
+        approved = false;
+      }
+      decision = {
+        allowed: approved,
+        ruleId: approved ? "HITL-EGRESS-APPROVED-025" : "HITL-EGRESS-DENIED-026",
+        reason: approved
+          ? `Operator approved this ${input.method} request to ${input.host}:${input.port}.`
+          : `Operator denied this ${input.method} request to ${input.host}:${input.port}.`,
+        principalId: input.agentPrincipalId,
+        grantId: null,
+      };
+    }
 
     // Platform endpoints are noise on the timeline; agent-initiated egress is not.
     if (decision.ruleId !== "NET-EGRESS-PLATFORM-021" && agentId) {

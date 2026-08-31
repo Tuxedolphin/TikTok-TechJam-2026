@@ -51,6 +51,7 @@ function grant(over: Partial<Grant> = {}): Grant {
     target: "registry.npmjs.org",
     expiresAt: null,
     revokedAt: null,
+    revokedBy: null,
     createdAt: new Date().toISOString(),
     ...over,
   };

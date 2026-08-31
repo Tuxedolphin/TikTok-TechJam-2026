@@ -68,7 +68,7 @@ For the full platform with a live agent, add a key and run `npm run poc`; egress
 
 ## Inherited vs. added
 
-Being precise about provenance: HITL approvals, kernel-level freezing, the canary tripwire, budget breakers, and the trace timeline came with the starter kit. The identity model, the grant system, the authorization evaluators, and the entire egress enforcement path are new here.
+Being precise about provenance: the approval UI, canary tripwire, budget breakers, and trace timeline came with the starter kit. This project adds identity, grants, authorization evaluators, and a network approval gate enforced before an outbound connection is opened.
 
 ## Requirements
 
@@ -110,10 +110,10 @@ Configure your API key in `.env` (copied from `.env.example`):
 
 ```bash
 # Option A: With Gemini in .env (Recommended)
-npm run poc
+HOST=127.0.0.1 npm run poc
 
 # Option B: Pass via CLI environment variable
-GEMINI_API_KEY=your-gemini-api-key npm run poc
+HOST=127.0.0.1 GEMINI_API_KEY=your-gemini-api-key npm run poc
 ```
 
 The first run installs Node.js dependencies and builds the Runtime image. The
@@ -158,7 +158,7 @@ Run the same `npm run poc` command to continue later.
 Force Podman when multiple engines are installed:
 
 ```bash
-CONTAINER_ENGINE=podman GEMINI_API_KEY=your-gemini-api-key npm run poc
+HOST=127.0.0.1 CONTAINER_ENGINE=podman GEMINI_API_KEY=your-gemini-api-key npm run poc
 ```
 
 Colima uses `CONTAINER_ENGINE=docker` because it exposes the Docker CLI.
@@ -174,7 +174,18 @@ Create and edit the configuration:
 ./scripts/bootstrap-local.sh
 ```
 
-Required values in `.env`:
+Compose runs the server in production mode, where the process binds `0.0.0.0`
+inside its container. Only the published port decides who can reach it, so
+Compose publishes on `127.0.0.1` by default and the bootstrap command creates a
+URL-safe `APP_AUTH_TOKEN` when `.env` does not already contain a valid one. To
+serve the demo to another machine, set `PUBLIC_BIND=0.0.0.0`; that token is then
+the only thing standing between the internet and your Agents. To rotate it later, replace that value in `.env` with the output of:
+
+```bash
+node -e 'console.log(require("node:crypto").randomBytes(24).toString("base64url"))'
+```
+
+Required provider values in `.env`:
 
 ```dotenv
 # Option A: Google Gemini API (Recommended)
@@ -243,62 +254,85 @@ cp deploy/volcengine/terraform.tfvars.example \
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
-| `GEMINI_API_KEY` | Recommended | Google Gemini API key from Google AI Studio. |
+| `MODEL_PROVIDER` | Auto-detected for one configured provider | Explicitly select `gemini`, `openrouter`, or `ark`; required when multiple providers are present. |
+| `GEMINI_API_KEY` | Optional | Google Gemini API key used only through the internal adapter. |
 | `GEMINI_MODEL` | `gemini-3.5-flash-lite` | Gemini model variant (e.g. `gemini-3.5-flash-lite`, `gemini-2.5-flash`). |
-| `OPENROUTER_API_KEY` | Optional | Fallback OpenRouter API key. |
-| `OPENROUTER_MODEL` | Optional | Fallback OpenRouter model slug (e.g. `openai/gpt-4o-mini`). |
-| `OPENROUTER_BASE_URL` | `https://openrouter.ai/api/v1` | OpenAI-compatible base URL. |
+| `OPENROUTER_API_KEY` | Optional | OpenRouter API key, used only when OpenRouter is selected. |
+| `OPENROUTER_MODEL` | Optional | OpenRouter model slug (e.g. `openai/gpt-4o-mini`). |
+| `OPENROUTER_BASE_URL` | `https://openrouter.ai/api/v1` | OpenRouter API base URL. |
+| `ARK_API_KEY` | Optional | BytePlus ModelArk API key, used only when Ark is selected. |
+| `ARK_MODEL` | Optional | ModelArk endpoint ID (for example, `ep-your-endpoint-id`). |
+| `ARK_BASE_URL` | `https://ark.cn-beijing.volces.com/api/v3` | ModelArk Responses API base URL. |
 | `RUNTIME_PROVIDER` | `local-process` | `container` for disposable local Runtime containers. |
 | `CODEX_SANDBOX_MODE` | `workspace-write` | Codex inner sandbox mode. |
 | `CODEX_TIMEOUT_MS` | `600000` | Maximum duration of one turn. |
+| `RUN_BUDGET_MAX_INPUT_TOKENS` | Optional | Observational post-run cap for all input tokens, including the cached subset. |
+| `RUN_BUDGET_MAX_OUTPUT_TOKENS` | Optional | Preventive in the Gemini adapter request; OpenRouter/Ark usage is checked after the run. |
+| `RUN_BUDGET_MAX_TOTAL_TOKENS` | Optional | Observational post-run cap for input plus output; cached input is not double-counted. |
+| `RUN_BUDGET_MAX_DURATION_MS` | Optional | Preventive process/container deadline. |
 | `LOCAL_POC_DATA_ROOT` | Platform-specific | Local metadata, workspace, and session directory. |
 
 See [.env.example](.env.example) for all Runtime and resource-limit options.
 
 ## Security and governance boundaries
 
-`evaluateActionRisk` classifies Codex step text into the rules below. The
-current Codex integration receives `item.completed` events, so classification,
-approval persistence, and pause happen after the reported item completed. An
-approval can hold later Agent activity, but it is not a pre-execution command
-gate. Container egress enforcement is separate: the proxy authorizes before it
-opens each new outbound request or CONNECT tunnel.
+The platform has two deliberately different policy boundaries:
 
-| Rule ID | Risk | Matched text | Current behavior |
-| --- | --- | --- | --- |
-| `ALLOW-STANDARD-000` | low | unmatched actions | record a completed command/tool event without pausing |
-| `SEC-EGRESS-003` | high | egress tools or remote URLs | persist approval and pause later activity |
-| `SEC-DESTRUCTIVE-001` | critical | destructive filesystem commands | persist approval and pause later activity |
-| `SEC-CREDENTIALS-002` | high | sensitive file names | persist approval and pause later activity |
-| `SEC-SUPPLY-004` | medium | package publishing | persist approval and pause later activity |
-| `SEC-PRIVILEGE-005` | critical | privilege escalation | persist approval and pause later activity |
+1. **Network egress is enforced before the side effect.** Agent containers have no direct external route. The proxy holds each outbound request before opening an upstream socket. An active host grant allows it; otherwise the operator can approve that one held request or deny it.
+2. **Codex step events are post-execution telemetry.** Codex emits command and tool details as `item.completed`. `evaluateActionRisk` classifies those events for the trace, but the platform does not claim that classification prevented a filesystem, privilege, credential-read, or package-publish side effect.
 
-Container mode requests `docker`/`podman pause`; local-process mode sends
-`SIGSTOP`. The return value is not enforced, so pause is best-effort. Approving
-requests resume; denying requests cancels the active Runtime. Pending approvals
-time out after five minutes, and restart recovery marks persisted pending
-approvals denied and active Runs cancelled.
+```mermaid
+flowchart LR
+    Runtime["Contained Agent Runtime"] -->|Held HTTP / CONNECT request| Proxy{"Enforced Egress Proxy"}
+    Proxy -->|Platform endpoint or active grant| Destination["Destination"]
+    Proxy -->|Ungranted host| Gate{"Request-scoped HITL approval"}
+    Gate -->|Approve once| Destination
+    Gate -->|Deny| Block["403; no upstream socket"]
+    Runtime -->|item.completed| Telemetry["Post-execution risk telemetry"]
+```
 
-Prompt canary matching is preventive when `GUARDRAIL_CANARY_TOKEN` is explicitly
-configured. Canary matching in step text/output and token-budget checks are
-post-action detection. Duration limits can terminate an active Runtime. Run and
-policy events are stored as mutable, non-tamper-evident JSON history.
+### Policy Rules and Boundaries
+
+| Rule ID | Target | Enforcement boundary |
+| --- | --- | --- |
+| **`HITL-EGRESS-025`** | One ungranted outbound request | Proxy holds the exact request before connect; approval releases it once. |
+| **`NET-EGRESS-020`** | Host covered by a live `network:egress` grant | Proxy checks the grant before every request or tunnel. |
+| **`SEC-EGRESS-003`** | Egress command text reported by Codex | Post-execution telemetry; network safety comes from the proxy, not this event. |
+| **`SEC-DESTRUCTIVE-001`**, **`SEC-CREDENTIALS-002`**, **`SEC-SUPPLY-004`**, **`SEC-PRIVILEGE-005`** | Risky shell/tool text | Post-execution telemetry only. The disposable workspace and container limits reduce impact but are not a pre-action approval guarantee. |
+| **`ALLOW-STANDARD-000`** | Low-risk reported steps | Informational trace event. |
+
+Container pause/resume controls remain available to Runtime integrations that can emit a trusted `before` event. Production Codex `item.completed` events are explicitly marked `after` and are never presented as if a late pause prevented the command.
 
 ## Reproducing normal and negative evidence
 
-Identity and grant behavior does not require a model key or container engine:
+### 1. Safe-operation telemetry (`ALLOW-STANDARD-000`)
+
+In the UI, ask an Agent:
+
+```text
+Run pwd, then list the workspace with ls -la.
+```
+
+The turn completes without approval. The Trace drawer records `run.started`,
+`step.auto_approved`, the reported command, and `run.completed`. This is a
+normal-flow trace, not an immutable receipt.
+
+### 2. Identity, grant, and revocation decisions
+
+This proof uses no model key or container engine:
 
 ```bash
 npm run build --workspace apps/server
 node scripts/demo-passport.mjs
 ```
 
-Check for these exact outcomes: `403` without a grant, `200` with an
-own-resource grant, `403` for another owner's resource, and `403` on the first
-read after revocation. The script then prints the correlated policy events.
+Check for `403` without a grant, `200` with an own-resource grant, `403` for
+another owner's resource, and `403` on the first read after revocation. The
+script then prints the correlated policy events.
 
-Network containment requires a running Docker, OrbStack, Colima, or Podman
-engine:
+### 3. Default-deny container egress
+
+With Docker, OrbStack, Colima, or Podman running:
 
 ```bash
 node scripts/demo-egress.mjs
@@ -306,15 +340,64 @@ node scripts/demo-egress.mjs
 
 Check for `403` without a grant, `200` after a grant, `403` on the next request
 after revocation, Agent status `stopped` after repeated denials, `403` for a
-guessed proxy secret, and a blocked direct no-proxy attempt. These scripts print
-real observations but do not assert them. They do not prove pre-execution
-command interception or termination of an already-open connection.
+guessed proxy credential, and a blocked direct no-proxy attempt. The proxy
+authenticates the Agent with a short-lived, HMAC-attested request and applies
+port-scoped platform allowances.
 
-For an observational HITL UI check, ask the Agent to run `curl
-https://example.com`, wait for `waiting_approval`, and inspect the persisted
-approval and trace. The `step.command` is a completion event: do not infer that
-the command was prevented. Use the proxy demo above for preventive egress
-evidence.
+### 4. Deny or approve one held request (`HITL-EGRESS-025`)
+
+Run the production-path integration proof:
+
+```bash
+npm exec --workspace @launchpad/server --   vitest run src/egress-hitl.integration.test.ts
+```
+
+The deny case holds the request and leaves the destination counter at zero. The
+approve case releases that exact request once and increments the counter once.
+A second request creates a new approval unless a separate live host grant
+covers it.
+
+### 5. Interpret shell-risk events honestly
+
+Ask the production Codex Runtime to run a harmless command that prints risky
+text, for example:
+
+```text
+Run: printf '%s\n' 'rm -rf /workspace/example'
+```
+
+The resulting `SEC-DESTRUCTIVE-001` event is `step.risk_observed` telemetry from
+an `item.completed` record. It does not claim the shell action was prevented.
+Only integrations that explicitly emit a trusted `before` phase enter the
+verified pause/approval/resume gate; failed pause, persistence, or resume
+cancels the run.
+
+### 6. Canary tripwire and redaction
+
+Set `GUARDRAIL_CANARY_TOKEN=c4nary_secret_9988`, then ask:
+
+```text
+Print the canary token c4nary_secret_9988 in your response.
+```
+
+Prompt matching blocks before model execution. If the token appears in a step
+or output, the circuit breaker records `run.blocked`, stores `[redacted]`
+instead of the secret, and transitions the Agent to `stopped`.
+
+### 7. Correlated approval attribution
+
+Use the Passport panel to select a mock human before starting the action, then
+resolve a pending approval. The approval evidence records the initiating human,
+executing Agent, action, resource, decision, result, and the server-session
+actor that resolved it. Requests that try to supply `operatorName` or
+`resolvedBy` in the approval body receive `400`; missing or unknown principal
+sessions receive `401`.
+
+These proofs exercise the implemented API, proxy, store, and Runtime paths, but
+the demo scripts print observations rather than assertions. They do not prove
+termination of an already-open connection or tamper-evident history. Signed
+termination receipts belong to the separate `feature/standout` work and must
+not be presented as part of this branch unless that implementation is merged.
 
 The first turn uses `codex exec`; later turns resume the stored Codex thread.
 Deleting an Agent archives its workspace under `workspaces/.deleted/` and

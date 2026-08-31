@@ -40,6 +40,8 @@ export interface AgentRun {
   id: string;
   agentId: string;
   sessionId?: string | null;
+  initiatedByPrincipalId: string;
+  initiatedByDisplayName: string;
 
   status: RunStatus;
   prompt: string;
@@ -91,6 +93,31 @@ export interface RunEvent {
 export type ApprovalStatus = "pending" | "approved" | "denied";
 export type ActionRiskLevel = "low" | "medium" | "high" | "critical";
 
+export interface ApprovalActor {
+  principalId: string;
+  displayName: string;
+}
+
+export interface ApprovalEvidence {
+  initiatingHuman: ApprovalActor;
+  executingAgent: ApprovalActor;
+  action: {
+    type: "command" | "tool_call" | "file_change";
+    detail: string;
+  };
+  resource: string;
+  decision: ApprovalStatus | null;
+  result:
+    | "pending"
+    | "execution_authorized"
+    | "execution_resumed"
+    | "execution_blocked"
+    | "execution_cancelled"
+    | "execution_failed"
+    | "unknown";
+  resolvedBy: ApprovalActor | null;
+}
+
 export interface ApprovalRequest {
   id: string;
   runId: string;
@@ -103,13 +130,16 @@ export interface ApprovalRequest {
   status: ApprovalStatus;
   createdAt: string;
   resolvedAt: string | null;
-  resolvedBy: string | null;
+  resolvedByPrincipalId: string | null;
+  resolvedByDisplayName: string | null;
+  evidence: ApprovalEvidence;
 }
 
 export interface SystemInfo {
-  openRouterConfigured: boolean;
-  openRouterBaseUrl: string;
-  openRouterModel: string | null;
+  modelConfigured: boolean;
+  modelProvider: "ark" | "openrouter" | "gemini";
+  modelBaseUrl: string;
+  modelName: string | null;
   codexAvailable: boolean;
   codexSandboxMode: string;
   runtimeProvider: "local-process" | "container";
@@ -122,6 +152,17 @@ export interface SystemInfo {
   runBudgetMaxOutputTokens: number | null;
   runBudgetMaxTotalTokens: number | null;
   runBudgetMaxDurationMs: number | null;
+  runBudgetEnforcement?: {
+    inputTokens: "observational";
+    cachedInputTokens: "observational";
+    outputTokens: "preventive";
+    totalTokens: "observational";
+    durationMs: "preventive";
+  };
+  runBudgetTokenSemantics?: {
+    cachedInputTokensIncludedInInput: true;
+    totalTokens: ["inputTokens", "outputTokens"];
+  };
 }
 
 export type PrincipalKind = "human" | "agent";
@@ -143,6 +184,7 @@ export interface Grant {
   target: string;
   expiresAt: string | null;
   revokedAt: string | null;
+  revokedBy: string | null;
   createdAt: string;
 }
 

@@ -21,7 +21,7 @@ const config = loadConfig({ NODE_ENV: "test", DATA_DIR: root, WORKSPACE_ROOT: pa
 const store = new JsonStore(path.join(root, "db.json"));
 await store.initialize();
 const workspaces = new WorkspaceManager(path.join(root, "ws"));
-const runner = { run: async () => ({ output: "", threadId: null, usage: null }), cancel: async () => false, isAvailable: async () => true };
+const runner = { run: async () => ({ output: "", threadId: null, usage: null }), cancel: async () => false, pause: async () => true, resume: async () => true, isAvailable: async () => true };
 const service = new AgentService(config, store, workspaces, runner);
 await service.initialize();
 // Wired exactly as index.ts does, so this demo reflects production behaviour.
@@ -33,15 +33,21 @@ const identity = new IdentityService(
 const app = await createApp(config, service, identity);
 
 const j = (r) => r.json();
+const principalSession = j(await app.inject({
+  method: "POST",
+  url: "/api/mock-principal-session",
+  payload: { principalId: "user-a" },
+}));
+const humanHeaders = { "x-mock-principal-session": principalSession.sessionToken };
 const agent = j(await app.inject({ method: "POST", url: "/api/agents",
-  headers: { "x-principal-id": "user-a" }, payload: { name: "Demo", description: "d", instructions: "i" } })).agent;
+  headers: humanHeaders, payload: { name: "Demo", description: "d", instructions: "i" } })).agent;
 console.log(`1. agent created  owner=${agent.ownerId}  principal=${agent.principalId}`);
 
 const hdr = { "x-agent-principal-id": agent.principalId };
 let r = await app.inject({ method: "GET", url: "/api/resources/res-a", headers: hdr });
 console.log(`2. read own resource, NO grant   -> ${r.statusCode} ${j(r).decision?.ruleId ?? ""}`);
 
-const grant = j(await app.inject({ method: "POST", url: "/api/grants", headers: { "x-principal-id": "user-a" },
+const grant = j(await app.inject({ method: "POST", url: "/api/grants", headers: humanHeaders,
   payload: { principalId: agent.principalId, scope: "resource:read", target: "res-a", ttlMinutes: 30 } })).grant;
 console.log(`3. grant issued   expires=${grant.expiresAt?.slice(11,19)}Z`);
 
@@ -51,7 +57,7 @@ console.log(`4. read own resource, WITH grant -> ${r.statusCode} ${j(r).decision
 r = await app.inject({ method: "GET", url: "/api/resources/res-b", headers: hdr });
 console.log(`5. read USER B's resource        -> ${r.statusCode} ${j(r).decision?.ruleId}  <-- cross-user denial`);
 
-await app.inject({ method: "POST", url: `/api/grants/${grant.id}/revoke` });
+await app.inject({ method: "POST", url: `/api/grants/${grant.id}/revoke`, headers: humanHeaders });
 r = await app.inject({ method: "GET", url: "/api/resources/res-a", headers: hdr });
 console.log(`6. read after REVOKE             -> ${r.statusCode} ${j(r).decision?.ruleId}  <-- revocation bites`);
 
