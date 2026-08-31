@@ -93,10 +93,10 @@ Configure your API key in `.env` (copied from `.env.example`):
 
 ```bash
 # Option A: With Gemini in .env (Recommended)
-npm run poc
+HOST=127.0.0.1 npm run poc
 
 # Option B: Pass via CLI environment variable
-GEMINI_API_KEY=your-gemini-api-key npm run poc
+HOST=127.0.0.1 GEMINI_API_KEY=your-gemini-api-key npm run poc
 ```
 
 The first run installs Node.js dependencies and builds the Runtime image. The
@@ -141,7 +141,7 @@ Run the same `npm run poc` command to continue later.
 Force Podman when multiple engines are installed:
 
 ```bash
-CONTAINER_ENGINE=podman GEMINI_API_KEY=your-gemini-api-key npm run poc
+HOST=127.0.0.1 CONTAINER_ENGINE=podman GEMINI_API_KEY=your-gemini-api-key npm run poc
 ```
 
 Colima uses `CONTAINER_ENGINE=docker` because it exposes the Docker CLI.
@@ -157,7 +157,18 @@ Create and edit the configuration:
 ./scripts/bootstrap-local.sh
 ```
 
-Required values in `.env`:
+Compose runs the server in production mode, where the process binds `0.0.0.0`
+inside its container. Only the published port decides who can reach it, so
+Compose publishes on `127.0.0.1` by default and the bootstrap command creates a
+URL-safe `APP_AUTH_TOKEN` when `.env` does not already contain a valid one. To
+serve the demo to another machine, set `PUBLIC_BIND=0.0.0.0`; that token is then
+the only thing standing between the internet and your Agents. To rotate it later, replace that value in `.env` with the output of:
+
+```bash
+node -e 'console.log(require("node:crypto").randomBytes(24).toString("base64url"))'
+```
+
+Required provider values in `.env`:
 
 ```dotenv
 # Option A: Google Gemini API (Recommended)
@@ -226,14 +237,22 @@ cp deploy/volcengine/terraform.tfvars.example \
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
-| `GEMINI_API_KEY` | Recommended | Google Gemini API key from Google AI Studio. |
+| `MODEL_PROVIDER` | Auto-detected for one configured provider | Explicitly select `gemini`, `openrouter`, or `ark`; required when multiple providers are present. |
+| `GEMINI_API_KEY` | Optional | Google Gemini API key used only through the internal adapter. |
 | `GEMINI_MODEL` | `gemini-3.5-flash-lite` | Gemini model variant (e.g. `gemini-3.5-flash-lite`, `gemini-2.5-flash`). |
-| `OPENROUTER_API_KEY` | Optional | Fallback OpenRouter API key. |
-| `OPENROUTER_MODEL` | Optional | Fallback OpenRouter model slug (e.g. `openai/gpt-4o-mini`). |
-| `OPENROUTER_BASE_URL` | `https://openrouter.ai/api/v1` | OpenAI-compatible base URL. |
+| `OPENROUTER_API_KEY` | Optional | OpenRouter API key, used only when OpenRouter is selected. |
+| `OPENROUTER_MODEL` | Optional | OpenRouter model slug (e.g. `openai/gpt-4o-mini`). |
+| `OPENROUTER_BASE_URL` | `https://openrouter.ai/api/v1` | OpenRouter API base URL. |
+| `ARK_API_KEY` | Optional | BytePlus ModelArk API key, used only when Ark is selected. |
+| `ARK_MODEL` | Optional | ModelArk endpoint ID (for example, `ep-your-endpoint-id`). |
+| `ARK_BASE_URL` | `https://ark.cn-beijing.volces.com/api/v3` | ModelArk Responses API base URL. |
 | `RUNTIME_PROVIDER` | `local-process` | `container` for disposable local Runtime containers. |
 | `CODEX_SANDBOX_MODE` | `workspace-write` | Codex inner sandbox mode. |
 | `CODEX_TIMEOUT_MS` | `600000` | Maximum duration of one turn. |
+| `RUN_BUDGET_MAX_INPUT_TOKENS` | Optional | Observational post-run cap for all input tokens, including the cached subset. |
+| `RUN_BUDGET_MAX_OUTPUT_TOKENS` | Optional | Preventive provider generation cap; reported usage is also checked after the run. |
+| `RUN_BUDGET_MAX_TOTAL_TOKENS` | Optional | Observational post-run cap for input plus output; cached input is not double-counted. |
+| `RUN_BUDGET_MAX_DURATION_MS` | Optional | Preventive process/container deadline. |
 | `LOCAL_POC_DATA_ROOT` | Platform-specific | Local metadata, workspace, and session directory. |
 
 See [.env.example](.env.example) for all Runtime and resource-limit options.
@@ -287,10 +306,10 @@ Judges can independently playtest each governance and security layer directly fr
 
 ### 1. Zero-Friction Safe Operations (`ALLOW-STANDARD-000`)
 - **Objective**: Verify that low-risk development tasks execute seamlessly without unnecessary human interruption while maintaining an immutable audit log.
-- **Action**: In the chat playground, click the starter prompt **`Safe turn: Run npm test to verify current tests (Auto-Approved)`** or ask the agent to inspect files / check git status.
+- **Action**: Create a new Agent, then click **`Safe turn: Run pwd, then list workspace files with ls -la (Auto-Approved)`**. The command works in a fresh workspace without requiring a `package.json` or Git repository.
 - **Verification**:
-  - The agent completes the task without pausing.
-  - Open the **Trace** drawer (bottom-right bar): observe the blue **`Action Auto-Approved (ALLOW-STANDARD-000)`** event recorded in the audit trail.
+  - The output shows the Agent workspace path and its platform-managed files without pausing.
+  - Open the **Trace** drawer (bottom-right bar). The starter action records `run.created`, `run.started`, `step.auto_approved` with **`ALLOW-STANDARD-000`**, `step.command`, and `run.completed`, in that order.
 
 ### 2. High-Risk Action Interception & Operator Denial (`SEC-EGRESS-003`)
 - **Objective**: Test how the middleware arrests unauthorized outbound network traffic and safely recovers the agent upon human rejection.

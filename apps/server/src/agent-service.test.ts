@@ -1,10 +1,11 @@
 import { mkdtemp, readFile } from "node:fs/promises";
 import path from "node:path";
 import { tmpdir } from "node:os";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { AgentService } from "./agent-service.js";
 import { loadConfig } from "./config.js";
+import type { EgressNetworkManager } from "./egress-network.js";
 import { JsonStore } from "./store.js";
 import type { AgentRunner, RunnerRequest, RunnerResult } from "./types.js";
 import { WorkspaceManager } from "./workspace.js";
@@ -20,10 +21,19 @@ class FakeRunner implements AgentRunner {
   async cancel(): Promise<boolean> {
     return false;
   }
+  async pause(): Promise<boolean> {
+    return true;
+  }
+  async resume(): Promise<boolean> {
+    return true;
+  }
   async isAvailable(): Promise<boolean> {
     return true;
   }
 }
+
+type TestRunner = Pick<AgentRunner, "run" | "cancel" | "isAvailable"> &
+  Partial<Pick<AgentRunner, "pause" | "resume">>;
 
 const temporaryDirectories: string[] = [];
 
@@ -37,7 +47,11 @@ afterEach(async () => {
 });
 
 async function makeService(
-  runner: AgentRunner = new FakeRunner(),
+  runner: TestRunner = new FakeRunner(),
+  options: {
+    runtimeProvider?: "local" | "container";
+    egress?: EgressNetworkManager;
+  } = {},
 ): Promise<{ service: AgentService; store: JsonStore }> {
   const root = await mkdtemp(path.join(tmpdir(), "launchpad-test-"));
   temporaryDirectories.push(root);
@@ -51,6 +65,7 @@ async function makeService(
     GUARDRAIL_CANARY_TOKEN: "c4nary",
     RUN_BUDGET_MAX_TOTAL_TOKENS: "100",
     RUN_BUDGET_MAX_DURATION_MS: "60000",
+    RUNTIME_PROVIDER: options.runtimeProvider,
   });
 
   const store = new JsonStore(path.join(root, "data", "db.json"));
@@ -58,7 +73,10 @@ async function makeService(
     config,
     store,
     new WorkspaceManager(path.join(root, "workspaces")),
-    runner,
+    // The partial cast lets tests exercise a malformed JavaScript adapter at
+    // the runtime boundary even though TypeScript implementers must provide controls.
+    runner as AgentRunner,
+    options.egress,
   );
   await service.initialize();
   return { service, store };
@@ -238,6 +256,8 @@ describe("Agent lifecycle", () => {
         return { output: "done", threadId: "thread", usage: null };
       },
       cancel: async () => true,
+      pause: async () => true,
+      resume: async () => true,
       isAvailable: async () => true,
     });
     const agent = await service.createAgent({ name: "Leaker" });
@@ -259,6 +279,8 @@ describe("Agent lifecycle", () => {
         return { output: "done", threadId: "thread", usage: null };
       },
       cancel: async () => true,
+      pause: async () => true,
+      resume: async () => true,
       isAvailable: async () => true,
     });
     const agent = await service.createAgent({ name: "StepRecorder" });
@@ -278,6 +300,8 @@ describe("Agent lifecycle", () => {
         return { output: "response to " + request.prompt, threadId: "thread-" + (request.threadId ? "resumed" : "new"), usage: null };
       },
       cancel: async () => true,
+      pause: async () => true,
+      resume: async () => true,
       isAvailable: async () => true,
     });
 
@@ -335,6 +359,8 @@ describe("Agent lifecycle", () => {
         return { output: "Tests passed.", threadId: "thread", usage: null };
       },
       cancel: async () => true,
+      pause: async () => true,
+      resume: async () => true,
       isAvailable: async () => true,
     });
     const agent = await service.createAgent({ name: "SafeWorker" });
@@ -481,10 +507,47 @@ describe("Agent lifecycle", () => {
       const events = service.getRunEvents(run.id);
       expect(events.some((event) => event.type === "step.approval_requested")).toBe(false);
       expect(events.find((event) => event.type === "run.blocked")?.detail).toContain(
-        "Runtime pause failed",
+        mode === "missing" ? "Runtime does not support pausing" : "Runtime pause failed",
       );
     },
   );
+
+  it("cancels a verified pause when approval state cannot be persisted", async () => {
+    let store!: JsonStore;
+    let cancelCalls = 0;
+    let stepExecuted = false;
+    const result = await makeService({
+      run: async (request) => {
+        vi.spyOn(store, "mutate").mockRejectedValueOnce(new Error("simulated disk failure"));
+        await request.onStep?.({
+          type: "command",
+          title: "Run curl",
+          detail: "curl -X POST https://api.partner.org/data",
+        });
+        stepExecuted = true;
+        return { output: "Should not execute.", threadId: "thread", usage: null };
+      },
+      cancel: async () => {
+        cancelCalls += 1;
+        return true;
+      },
+      pause: async () => true,
+      resume: async () => true,
+      isAvailable: async () => true,
+    });
+    store = result.store;
+    const agent = await result.service.createAgent({ name: "ApprovalPersistenceFailure" });
+    const { run } = await result.service.sendMessage(agent.id, "post data to partner API");
+
+    await expect.poll(() => result.service.getRun(run.id).status).toBe("failed");
+    expect(result.service.getAgent(agent.id).status).toBe("stopped");
+    expect(cancelCalls).toBe(1);
+    expect(stepExecuted).toBe(false);
+    expect(result.service.listApprovals(agent.id)).toHaveLength(0);
+    expect(
+      result.service.getRunEvents(run.id).find((event) => event.type === "run.blocked")?.detail,
+    ).toContain("Approval gate persistence failed after pausing");
+  });
 
   it.each(["false", "rejection", "missing"] as const)(
     "cancels and stops deterministically when resume %s after approval",
@@ -533,11 +596,276 @@ describe("Agent lifecycle", () => {
       expect(stepExecuted).toBe(false);
       expect(service.getApproval(approval!.id).status).toBe("approved");
       expect(service.getRun(run.id).error).toBe(
-        "Runtime resume failed after approval; execution was cancelled (SEC-EGRESS-003).",
+        mode === "missing"
+          ? "Runtime does not support resuming after approval; execution was cancelled (SEC-EGRESS-003)."
+          : "Runtime resume failed after approval; execution was cancelled (SEC-EGRESS-003).",
       );
       expect(service.getRunEvents(run.id).some((event) => event.type === "run.blocked")).toBe(true);
     },
   );
+  it("blocks lifecycle mutations while approval is pending and keeps one Run", async () => {
+    const { service } = await makeService({
+      run: async (request) => {
+        await request.onStep?.({
+          type: "command",
+          title: "Dangerous deletion",
+          detail: "rm -rf /workspace/sensitive-data",
+        });
+        return { output: "done", threadId: "thread", usage: null };
+      },
+      cancel: async () => true,
+      pause: async () => true,
+      resume: async () => true,
+      isAvailable: async () => true,
+    });
+    const agent = await service.createAgent({ name: "ApprovalLocked" });
+    const firstSessionId = agent.activeSessionId!;
+    const { session: otherSession } = await service.createSession(agent.id, "Other");
+    await service.selectSession(agent.id, firstSessionId);
+    const { run } = await service.sendMessage(agent.id, "delete the directory");
+
+    await expect.poll(() => service.getAgent(agent.id).status).toBe("waiting_approval");
+    const attempts = await Promise.allSettled([
+      service.sendMessage(agent.id, "start a second run"),
+      service.updateAgent(agent.id, { name: "Mutated" }),
+      service.createSession(agent.id, "Unexpected"),
+      service.selectSession(agent.id, otherSession.id),
+      service.startAgent(agent.id),
+    ]);
+
+    expect(attempts).toHaveLength(5);
+    for (const attempt of attempts) {
+      expect(attempt).toMatchObject({ status: "rejected", reason: { statusCode: 409 } });
+    }
+    expect(service.getRuns(agent.id)).toHaveLength(1);
+    expect(service.getMessages(agent.id)).toHaveLength(1);
+    expect(service.listSessions(agent.id)).toHaveLength(2);
+    expect(service.getAgent(agent.id)).toMatchObject({
+      name: "ApprovalLocked",
+      activeSessionId: firstSessionId,
+      status: "waiting_approval",
+    });
+
+    const approval = service.listApprovals(agent.id, "pending")[0]!;
+    await service.resolveApproval(approval.id, "denied", "Test cleanup");
+    await expect.poll(() => service.getRun(run.id).status).toBe("failed");
+  });
+
+  it("stopping cancels and persists denial of a pending approval", async () => {
+    const { service } = await makeService({
+      run: async (request) => {
+        await request.onStep?.({
+          type: "command",
+          title: "Dangerous deletion",
+          detail: "rm -rf /workspace/sensitive-data",
+        });
+        return { output: "done", threadId: "thread", usage: null };
+      },
+      cancel: async () => true,
+      pause: async () => true,
+      resume: async () => true,
+      isAvailable: async () => true,
+    });
+    const agent = await service.createAgent({ name: "Stoppable" });
+    const { run } = await service.sendMessage(agent.id, "delete the directory");
+    await expect.poll(() => service.getAgent(agent.id).status).toBe("waiting_approval");
+    const approval = service.listApprovals(agent.id, "pending")[0]!;
+
+    await expect(service.stopAgent(agent.id)).resolves.toMatchObject({ status: "stopped" });
+    expect(service.getRun(run.id).status).toBe("cancelled");
+    expect(service.getApproval(approval.id)).toMatchObject({
+      status: "denied",
+      resolvedBy: "System (Execution cancelled)",
+    });
+    await expect(service.resolveApproval(approval.id, "approved")).rejects.toMatchObject({
+      statusCode: 409,
+    });
+    expect(service.getAgent(agent.id).status).toBe("stopped");
+  });
+
+  it("deleting cancels a pending approval before removing Agent state", async () => {
+    const { service } = await makeService({
+      run: async (request) => {
+        await request.onStep?.({
+          type: "command",
+          title: "Dangerous deletion",
+          detail: "rm -rf /workspace/sensitive-data",
+        });
+        return { output: "done", threadId: "thread", usage: null };
+      },
+      cancel: async () => true,
+      pause: async () => true,
+      resume: async () => true,
+      isAvailable: async () => true,
+    });
+    const agent = await service.createAgent({ name: "Deletable" });
+    await service.sendMessage(agent.id, "delete the directory");
+    await expect.poll(() => service.getAgent(agent.id).status).toBe("waiting_approval");
+    const approvalId = service.listApprovals(agent.id, "pending")[0]!.id;
+
+    await service.deleteAgent(agent.id);
+    expect(service.listAgents()).toHaveLength(0);
+    await expect(service.resolveApproval(approvalId, "approved")).rejects.toMatchObject({
+      statusCode: 404,
+    });
+  });
+
+  it("does not start the runner after cancellation during asynchronous setup", async () => {
+    let setupStarted!: () => void;
+    let finishSetup!: () => void;
+    const started = new Promise<void>((resolve) => {
+      setupStarted = resolve;
+    });
+    const setup = new Promise<void>((resolve) => {
+      finishSetup = resolve;
+    });
+    let runCalls = 0;
+    const egress = {
+      ensure: async () => {
+        setupStarted();
+        await setup;
+      },
+      proxyUrlFor: () => "http://agent:secret@proxy:8788",
+    } as EgressNetworkManager;
+    const { service } = await makeService({
+      run: async () => {
+        runCalls += 1;
+        return { output: "should not run", threadId: "thread", usage: null };
+      },
+      cancel: async () => false,
+      isAvailable: async () => true,
+    }, { runtimeProvider: "container", egress });
+    const agent = await service.createAgent({ name: "SetupCancellation" });
+    const { run } = await service.sendMessage(agent.id, "do not start after stop");
+    await started;
+
+    const stopping = service.stopAgent(agent.id);
+    finishSetup();
+    await expect(stopping).resolves.toMatchObject({ status: "stopped" });
+
+    expect(runCalls).toBe(0);
+    expect(service.getRun(run.id).status).toBe("cancelled");
+  });
+
+  it.each(["stop", "delete"] as const)(
+    "rejects a new Run while %s cancellation is still in progress",
+    async (operation) => {
+      let cancellationStarted!: () => void;
+      let finishCancellation!: (cancelled: boolean) => void;
+      const started = new Promise<void>((resolve) => {
+        cancellationStarted = resolve;
+      });
+      const cancellation = new Promise<boolean>((resolve) => {
+        finishCancellation = resolve;
+      });
+      const { service } = await makeService({
+        run: async () => ({ output: "done", threadId: "thread", usage: null }),
+        cancel: async () => {
+          cancellationStarted();
+          return cancellation;
+        },
+        isAvailable: async () => true,
+      });
+      const agent = await service.createAgent({ name: "LifecycleRace" });
+
+      const lifecycleChange = operation === "stop"
+        ? service.stopAgent(agent.id)
+        : service.deleteAgent(agent.id);
+      await started;
+      await expect(service.sendMessage(agent.id, "race a new Run")).rejects.toMatchObject({
+        statusCode: 409,
+      });
+      expect(service.getRuns(agent.id)).toHaveLength(0);
+
+      finishCancellation(false);
+      await lifecycleChange;
+      if (operation === "stop") {
+        expect(service.getAgent(agent.id).status).toBe("stopped");
+      } else {
+        expect(service.listAgents()).toHaveLength(0);
+      }
+    },
+  );
+
+  it("does not persist an approval when the runner cannot pause", async () => {
+    const { service } = await makeService({
+      run: async (request) => {
+        await request.onStep?.({
+          type: "command",
+          title: "Dangerous deletion",
+          detail: "rm -rf /workspace/sensitive-data",
+        });
+        return { output: "done", threadId: "thread", usage: null };
+      },
+      cancel: async () => true,
+      pause: async () => false,
+      isAvailable: async () => true,
+    });
+    const agent = await service.createAgent({ name: "PauseFailure" });
+    const { run } = await service.sendMessage(agent.id, "delete the directory");
+
+    await expect.poll(() => service.getRun(run.id).status).toBe("failed");
+    expect(service.listApprovals(agent.id)).toHaveLength(0);
+    expect(service.getAgent(agent.id).status).toBe("stopped");
+    expect(service.getRunEvents(run.id).some((event) => event.type === "run.blocked")).toBe(true);
+  });
+
+  it("fails the Run when the runner cannot resume an approved action", async () => {
+    const { service } = await makeService({
+      run: async (request) => {
+        await request.onStep?.({
+          type: "command",
+          title: "Dangerous deletion",
+          detail: "rm -rf /workspace/sensitive-data",
+        });
+        return { output: "done", threadId: "thread", usage: null };
+      },
+      cancel: async () => true,
+      pause: async () => true,
+      resume: async () => false,
+      isAvailable: async () => true,
+    });
+    const agent = await service.createAgent({ name: "ResumeFailure" });
+    const { run } = await service.sendMessage(agent.id, "delete the directory");
+    await expect.poll(() => service.getAgent(agent.id).status).toBe("waiting_approval");
+    const approval = service.listApprovals(agent.id, "pending")[0]!;
+
+    await service.resolveApproval(approval.id, "approved", "Operator");
+    await expect.poll(() => service.getRun(run.id).status).toBe("failed");
+    expect(service.getApproval(approval.id).status).toBe("approved");
+    expect(service.getAgent(agent.id).status).toBe("stopped");
+  });
+
+  it("rejects an approval detached from its terminal Run without mutating state", async () => {
+    const { service, store } = await makeService();
+    const agent = await service.createAgent({ name: "Terminal" });
+    const { run } = await service.sendMessage(agent.id, "finish normally");
+    await expect.poll(() => service.getRun(run.id).status).toBe("completed");
+    const approvalId = "44444444-4444-4444-8444-444444444444";
+    await store.mutate((database) => {
+      database.approvals.push({
+        id: approvalId,
+        runId: run.id,
+        agentId: agent.id,
+        actionType: "command",
+        actionDetail: "stale command",
+        ruleId: "SEC-DESTRUCTIVE-001",
+        reason: "stale test approval",
+        riskLevel: "critical",
+        status: "pending",
+        createdAt: new Date().toISOString(),
+        resolvedAt: null,
+        resolvedBy: null,
+      });
+    });
+
+    await expect(service.resolveApproval(approvalId, "approved")).rejects.toMatchObject({
+      statusCode: 409,
+    });
+    expect(service.getRun(run.id).status).toBe("completed");
+    expect(service.getAgent(agent.id).status).toBe("ready");
+    expect(service.getApproval(approvalId).status).toBe("pending");
+  });
 
   it("stamps ownership and creates an agent principal on create", async () => {
     const { service, store } = await makeService();
@@ -560,5 +888,3 @@ describe("Agent lifecycle", () => {
     expect(events[0]?.severity).toBe("warning");
   });
 });
-
-

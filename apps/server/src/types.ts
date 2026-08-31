@@ -38,7 +38,9 @@ export interface Message {
 }
 
 export interface RunUsage {
+  /** All provider-reported input tokens, including the cached subset. */
   inputTokens?: number;
+  /** Input tokens served from cache; this is a subset of inputTokens. */
   cachedInputTokens?: number;
   outputTokens?: number;
   costUsd?: number | null;
@@ -211,4 +213,3 @@ export interface AgentRunner {
   resume(agentId: string): Promise<boolean>;
   isAvailable(): Promise<boolean>;
 }
-
