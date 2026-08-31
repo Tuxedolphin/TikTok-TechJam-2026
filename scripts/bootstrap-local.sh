@@ -16,7 +16,11 @@ const { chmodSync, readFileSync, writeFileSync } = require("node:fs");
 const path = ".env";
 const input = readFileSync(path, "utf8");
 const match = input.match(/^APP_AUTH_TOKEN=(.*)$/m);
-const configured = match?.[1]?.trim().replace(/^['"]|['"]$/g, "") ?? "";
+// \x27 is an escaped apostrophe. A literal one anywhere in this heredoc
+// breaks the enclosing bash $( ): command substitution tracks quotes even
+// inside a quoted heredoc, so the script fails to parse and exits 2 before
+// running a single line.
+const configured = match?.[1]?.trim().replace(/^["\x27]|["\x27]$/g, "") ?? "";
 const valid =
   configured.length >= 24 &&
   configured.length <= 128 &&

@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type { AppConfig } from "./config.js";
-import { isOpenRouterConfigured } from "./config.js";
+import { isModelConfigured } from "./config.js";
 import { HttpError, RunCancelledError } from "./errors.js";
 import { JsonStore, latestRunFor } from "./store.js";
 import type {
@@ -8,6 +8,7 @@ import type {
   AgentRun,
   AgentRunner,
   AgentSession,
+  ApprovalActor,
   ApprovalRequest,
   ApprovalStatus,
   CreateAgentInput,
@@ -37,17 +38,67 @@ import {
 const now = () => new Date().toISOString();
 
 const PREVIEW_LENGTH = 180;
+const MEMORY_MESSAGE_LIMIT = 4;
+const MEMORY_MESSAGE_CHAR_LIMIT = 600;
+const SYSTEM_RESTART_ACTOR: ApprovalActor = {
+  principalId: "system:server-restart",
+  displayName: "System (Server restarted)",
+};
+const SYSTEM_TIMEOUT_ACTOR: ApprovalActor = {
+  principalId: "system:approval-timeout",
+  displayName: "System (Approval timed out)",
+};
+const SYSTEM_CANCEL_ACTOR: ApprovalActor = {
+  principalId: "system:run-cancelled",
+  displayName: "System (Run cancelled)",
+};
+const SYSTEM_PAUSE_FAILURE_ACTOR: ApprovalActor = {
+  principalId: "system:pause-failed",
+  displayName: "System (Runner failed to pause)",
+};
+const SYSTEM_REQUEST_DISCONNECTED_ACTOR: ApprovalActor = {
+  principalId: "system:requester-disconnected",
+  displayName: "System (Requester disconnected)",
+};
+
+function actionResource(detail: string, ruleId: string): string {
+  const url = detail.match(/https?:\/\/[^\s"'`]+/i)?.[0];
+  if (url) return url.replace(/[),.;]+$/, "");
+  const absolutePath = detail.match(/(?:^|\s)(\/[A-Za-z0-9._~!$&'()*+,;=:@%/-]+)/)?.[1];
+  if (absolutePath) return absolutePath;
+  if (ruleId === "SEC-CREDENTIALS-002") {
+    return detail.match(/(?:^|[\s/])((?:\.env(?:\.[\w-]+)?)|credentials\.env|id_rsa|id_ed25519|\.aws\/credentials)/i)?.[1]
+      ?? "unknown credential resource";
+  }
+  if (ruleId === "SEC-EGRESS-003") {
+    return detail.match(/\b(?:[a-z0-9-]+\.)+[a-z]{2,}(?:\/[^\s"'`]*)?/i)?.[0]
+      ?? "unknown network destination";
+  }
+  if (ruleId === "SEC-SUPPLY-004") {
+    const target = detail.match(/\b(?:npm|pnpm|yarn|twine|cargo|pip)\s+(?:publish|upload)\s+([^\s"'`]+)/i)?.[1];
+    return target && !target.startsWith("-") ? target : "unknown package registry resource";
+  }
+  if (ruleId === "SEC-PRIVILEGE-005") return "host privilege boundary";
+  return "unknown resource";
+}
+
+const hasActiveLifecycle = (status: Agent["status"]) =>
+  status === "busy" || status === "waiting_approval";
 
 export class AgentService {
   private readonly activeExecutions = new Map<string, Promise<void>>();
   private readonly cancellationRequests = new Set<string>();
   private readonly terminationBarriers = new Set<string>();
+  private readonly lifecycleMutations = new Set<string>();
+  private readonly runnerLifecycleQueues = new Map<string, Promise<void>>();
   private readonly pendingApprovals = new Map<
     string,
     {
       resolve: (approved: boolean) => void;
       timeout: NodeJS.Timeout;
       request: ApprovalRequest;
+      signal?: AbortSignal;
+      onAbort?: () => void;
     }
   >();
 
@@ -64,8 +115,10 @@ export class AgentService {
     await this.store.initialize();
     await this.workspaces.initialize();
     await this.store.mutate((database) => {
+      const cancelledRunIds = new Set<string>();
       for (const run of database.runs) {
         if (run.status === "queued" || run.status === "running") {
+          cancelledRunIds.add(run.id);
           run.status = "cancelled";
           run.error = "Server restarted while this run was active";
           run.completedAt = now();
@@ -78,10 +131,26 @@ export class AgentService {
         }
       }
       for (const approval of database.approvals) {
-        if (approval.status === "pending") {
+        if (approval.status === "approved" && cancelledRunIds.has(approval.runId)) {
+          approval.evidence.result = "execution_cancelled";
+        } else if (approval.status === "pending") {
+          const resolvedAt = now();
           approval.status = "denied";
-          approval.resolvedAt = now();
-          approval.resolvedBy = "System (Server restarted)";
+          approval.resolvedAt = resolvedAt;
+          approval.resolvedByPrincipalId = SYSTEM_RESTART_ACTOR.principalId;
+          approval.resolvedByDisplayName = SYSTEM_RESTART_ACTOR.displayName;
+          approval.evidence.decision = "denied";
+          approval.evidence.result = "execution_cancelled";
+          approval.evidence.resolvedBy = SYSTEM_RESTART_ACTOR;
+          this.appendRunEvent(database, {
+            runId: approval.runId,
+            agentId: approval.agentId,
+            type: "step.approval_denied",
+            severity: "error",
+            title: "System denied action after server restart",
+            detail: this.redact(JSON.stringify(approval.evidence)),
+            createdAt: resolvedAt,
+          });
         }
       }
     });
@@ -205,73 +274,31 @@ export class AgentService {
   }
 
   /**
-   * Raised at the very start of termination, before freeze. `freezeAgent`
-   * returns "idle" and short-circuits when no execution is registered yet, so
-   * installing the barrier only inside freeze left a window: a message admitted
-   * but not yet in `activeExecutions` would see no barrier and run after
-   * termination believed the agent idle. Admission now checks this set.
-   */
-  beginTermination(agentId: string): void {
-    this.terminationBarriers.add(agentId);
-  }
-
-  async freezeAgent(
-    agentId: string,
-  ): Promise<"paused" | "idle" | "blocked" | "failed" | "unsupported"> {
-    this.getAgent(agentId);
-    if (!this.activeExecutions.has(agentId)) return "idle";
-
-    // The barrier closes the race where termination arrives after a run is
-    // queued but before the runner process or container has been created.
-    this.terminationBarriers.add(agentId);
-    // `pause` is optional on AgentRunner, so a live run under a runner with no
-    // freeze control is a different fact from a freeze that was attempted and
-    // failed. Both refuse containment; the receipt should not report the
-    // second when the first is true.
-    if (!this.runner.pause) return "unsupported";
-    const result = await this.runner.pause(agentId);
-    if (result === "paused" || result === "failed") return result;
-    if (result === "idle") return "blocked";
-    return "failed";
-  }
-
-  async recordTermination(agentId: string, receipt: unknown): Promise<void> {
-    const summary = receipt as { contained?: boolean; signature?: string };
-    await this.store.mutate((database) => {
-      this.appendRunEvent(database, {
-        runId: latestRunFor(database.runs, agentId)?.id ?? `termination-${agentId}`,
-        agentId,
-        type: "agent.terminated",
-        severity: summary.contained ? "success" : "error",
-        title: summary.contained
-          ? "Agent terminated and containment verified"
-          : "Agent termination incomplete",
-        detail: JSON.stringify(receipt),
-        createdAt: now(),
-      });
-    });
-  }
-
-  /**
    * Stops an agent that keeps trying to reach hosts it has no grant for.
    * Repeated denials are the signature of a hijacked agent probing for an
    * exfiltration route, so containment escalates from blocking each attempt to
    * halting the agent outright.
    */
   async quarantineAgent(agentId: string, reason: string): Promise<void> {
-    await this.cancelExecution(agentId);
-    await this.store.mutate((database) => {
-      const agent = database.agents.find((item) => item.id === agentId);
-      if (!agent) return;
-      agent.status = "stopped";
-      agent.lastError = reason;
-      agent.updatedAt = now();
-    });
+    const ownsLifecycleMutation = !this.lifecycleMutations.has(agentId);
+    if (ownsLifecycleMutation) this.lifecycleMutations.add(agentId);
+    try {
+      await this.cancelExecution(agentId);
+      await this.store.mutate((database) => {
+        const agent = database.agents.find((item) => item.id === agentId);
+        if (!agent) return;
+        agent.status = "stopped";
+        agent.lastError = reason;
+        agent.updatedAt = now();
+      });
+    } finally {
+      if (ownsLifecycleMutation) this.lifecycleMutations.delete(agentId);
+    }
   }
 
   async updateAgent(id: string, input: UpdateAgentInput): Promise<Agent> {
     const current = this.getAgent(id);
-    if (current.status === "busy") {
+    if (hasActiveLifecycle(current.status)) {
       throw new HttpError(409, "Stop the active run before editing this Agent");
     }
     const updated = await this.store.mutate((database) => {
@@ -279,7 +306,7 @@ export class AgentService {
       if (!agent) {
         throw new HttpError(404, "Agent not found");
       }
-      if (agent.status === "busy") {
+      if (hasActiveLifecycle(agent.status) || this.lifecycleMutations.has(id)) {
         throw new HttpError(409, "Stop the active run before editing this Agent");
       }
       if (input.name !== undefined) agent.name = input.name.trim();
@@ -295,17 +322,25 @@ export class AgentService {
 
   async deleteAgent(id: string): Promise<{ archivedWorkspace: string }> {
     const agent = this.getAgent(id);
-    await this.cancelExecution(id);
-    const archivedWorkspace = await this.workspaces.archive(agent);
-    await this.store.mutate((database) => {
-      database.agents = database.agents.filter((item) => item.id !== id);
-      database.sessions = database.sessions.filter((item) => item.agentId !== id);
-      database.messages = database.messages.filter((item) => item.agentId !== id);
-      database.runs = database.runs.filter((item) => item.agentId !== id);
-      database.runEvents = database.runEvents.filter((item) => item.agentId !== id);
-      database.approvals = database.approvals.filter((item) => item.agentId !== id);
-    });
-    return { archivedWorkspace };
+    if (this.lifecycleMutations.has(id)) {
+      throw new HttpError(409, "Another lifecycle change is already in progress");
+    }
+    this.lifecycleMutations.add(id);
+    try {
+      await this.cancelExecution(id);
+      const archivedWorkspace = await this.workspaces.archive(agent);
+      await this.store.mutate((database) => {
+        database.agents = database.agents.filter((item) => item.id !== id);
+        database.sessions = database.sessions.filter((item) => item.agentId !== id);
+        database.messages = database.messages.filter((item) => item.agentId !== id);
+        database.runs = database.runs.filter((item) => item.agentId !== id);
+        database.runEvents = database.runEvents.filter((item) => item.agentId !== id);
+        database.approvals = database.approvals.filter((item) => item.agentId !== id);
+      });
+      return { archivedWorkspace };
+    } finally {
+      this.lifecycleMutations.delete(id);
+    }
   }
 
   listSessions(agentId: string): AgentSession[] {
@@ -318,7 +353,7 @@ export class AgentService {
 
   async createSession(agentId: string, title?: string): Promise<{ session: AgentSession; agent: Agent }> {
     const currentAgent = this.getAgent(agentId);
-    if (currentAgent.status === "busy") {
+    if (hasActiveLifecycle(currentAgent.status)) {
       throw new HttpError(409, "Wait for the active run to finish before creating a new chat session");
     }
     const timestamp = now();
@@ -336,6 +371,9 @@ export class AgentService {
     const updatedAgent = await this.store.mutate((database) => {
       const agent = database.agents.find((a) => a.id === agentId);
       if (!agent) throw new HttpError(404, "Agent not found");
+      if (hasActiveLifecycle(agent.status) || this.lifecycleMutations.has(agentId)) {
+        throw new HttpError(409, "Wait for the active run to finish before creating a new chat session");
+      }
       database.sessions.push(session);
       agent.activeSessionId = sessionId;
       agent.codexThreadId = null;
@@ -347,7 +385,7 @@ export class AgentService {
 
   async selectSession(agentId: string, sessionId: string): Promise<Agent> {
     const currentAgent = this.getAgent(agentId);
-    if (currentAgent.status === "busy") {
+    if (hasActiveLifecycle(currentAgent.status)) {
       throw new HttpError(409, "Wait for the active run to finish before switching chat sessions");
     }
     const session = this.store.snapshot().sessions.find((s) => s.id === sessionId && s.agentId === agentId);
@@ -358,6 +396,9 @@ export class AgentService {
     const updatedAgent = await this.store.mutate((database) => {
       const agent = database.agents.find((a) => a.id === agentId);
       if (!agent) throw new HttpError(404, "Agent not found");
+      if (hasActiveLifecycle(agent.status) || this.lifecycleMutations.has(agentId)) {
+        throw new HttpError(409, "Wait for the active run to finish before switching chat sessions");
+      }
       agent.activeSessionId = sessionId;
       agent.codexThreadId = session.codexThreadId;
       agent.updatedAt = timestamp;
@@ -378,8 +419,16 @@ export class AgentService {
 
   async stopAgent(id: string): Promise<Agent> {
     this.getAgent(id);
-    await this.cancelExecution(id);
-    return this.setStatus(id, "stopped");
+    if (this.lifecycleMutations.has(id)) {
+      throw new HttpError(409, "Another lifecycle change is already in progress");
+    }
+    this.lifecycleMutations.add(id);
+    try {
+      await this.cancelExecution(id);
+      return await this.setStatus(id, "stopped");
+    } finally {
+      this.lifecycleMutations.delete(id);
+    }
   }
 
   getMessages(agentId: string, sessionId?: string): Message[] {
@@ -456,9 +505,10 @@ export class AgentService {
   async resolveApproval(
     id: string,
     decision: "approved" | "denied",
-    operatorName = "Operator",
+    actor: ApprovalActor,
   ): Promise<ApprovalRequest> {
     const timestamp = now();
+    const pending = this.pendingApprovals.get(id);
     const updated = await this.store.mutate((database) => {
       const approval = database.approvals.find((item) => item.id === id);
       if (!approval) {
@@ -467,13 +517,45 @@ export class AgentService {
       if (approval.status !== "pending") {
         throw new HttpError(409, `Approval request is already ${approval.status}`);
       }
+      const run = database.runs.find((item) => item.id === approval.runId);
+      if (
+        !pending ||
+        pending.request.runId !== approval.runId ||
+        pending.request.agentId !== approval.agentId ||
+        !run ||
+        run.agentId !== approval.agentId ||
+        (run.status !== "queued" && run.status !== "running") ||
+        (decision === "approved" && this.cancellationRequests.has(approval.agentId))
+      ) {
+        throw new HttpError(409, "Approval request is no longer attached to an active Run");
+      }
       approval.status = decision;
       approval.resolvedAt = timestamp;
-      approval.resolvedBy = operatorName;
+      approval.resolvedByPrincipalId = actor.principalId;
+      approval.resolvedByDisplayName = actor.displayName;
+      approval.evidence.decision = decision;
+      approval.evidence.result = decision === "approved"
+        ? "execution_authorized"
+        : actor.principalId === SYSTEM_CANCEL_ACTOR.principalId
+          ? "execution_cancelled"
+          : actor.principalId === SYSTEM_PAUSE_FAILURE_ACTOR.principalId
+            ? "execution_failed"
+            : "execution_blocked";
+      approval.evidence.resolvedBy = actor;
 
       const agent = database.agents.find((item) => item.id === approval.agentId);
+      const hasOtherPendingApproval = database.approvals.some(
+        (item) =>
+          item.id !== approval.id &&
+          item.agentId === approval.agentId &&
+          item.status === "pending",
+      );
       if (agent && agent.status === "waiting_approval") {
-        agent.status = decision === "approved" ? "busy" : "ready";
+        agent.status = hasOtherPendingApproval
+          ? "waiting_approval"
+          : run.status === "running"
+            ? "busy"
+            : "ready";
         agent.updatedAt = timestamp;
       }
 
@@ -483,33 +565,152 @@ export class AgentService {
         type: decision === "approved" ? "step.approval_granted" : "step.approval_denied",
         severity: decision === "approved" ? "success" : "error",
         title: decision === "approved" ? "Operator approved action" : "Operator denied action",
-        detail: `${decision === "approved" ? "Approved" : "Denied"} by ${operatorName}: ${this.redact(approval.actionDetail)}`,
+        detail: this.redact(JSON.stringify(approval.evidence)),
         createdAt: timestamp,
       });
 
       return structuredClone(approval);
     });
 
-    const pending = this.pendingApprovals.get(id);
-    if (pending) {
-      clearTimeout(pending.timeout);
-      this.pendingApprovals.delete(id);
-      pending.resolve(decision === "approved");
+    if (!pending) {
+      throw new Error("Active approval registration disappeared during resolution");
     }
+    clearTimeout(pending.timeout);
+    if (pending.signal && pending.onAbort) {
+      pending.signal.removeEventListener("abort", pending.onAbort);
+    }
+    this.pendingApprovals.delete(id);
+    pending.resolve(decision === "approved");
 
     return updated;
   }
 
+  async requestEgressApproval(
+    runId: string,
+    agentId: string,
+    input: { host: string; port: number; method: string; signal?: AbortSignal | undefined },
+  ): Promise<boolean> {
+    const snapshot = this.store.snapshot();
+    const run = snapshot.runs.find((item) => item.id === runId && item.agentId === agentId);
+    const agent = snapshot.agents.find((item) => item.id === agentId);
+    if (!agent || run?.status !== "running") {
+      throw new HttpError(409, "Egress approval requires an active Agent run");
+    }
 
+    const approvalId = randomUUID();
+    const timestamp = now();
+    const actionDetail = `${input.method} ${input.host}:${input.port}`;
+    const approvalReq: ApprovalRequest = {
+      id: approvalId,
+      runId,
+      agentId,
+      actionType: "tool_call",
+      actionDetail,
+      ruleId: "HITL-EGRESS-025",
+      reason: "Outbound request is held at the enforced proxy boundary pending operator approval.",
+      riskLevel: "high",
+      status: "pending",
+      createdAt: timestamp,
+      resolvedAt: null,
+      resolvedByPrincipalId: null,
+      resolvedByDisplayName: null,
+      evidence: {
+        initiatingHuman: {
+          principalId: run.initiatedByPrincipalId,
+          displayName: run.initiatedByDisplayName,
+        },
+        executingAgent: {
+          principalId: agent.principalId,
+          displayName: agent.name,
+        },
+        action: { type: "tool_call", detail: actionDetail },
+        resource: `${input.host}:${input.port}`,
+        decision: null,
+        result: "pending",
+        resolvedBy: null,
+      },
+    };
+
+    let resolveDecision!: (approved: boolean) => void;
+    const decision = new Promise<boolean>((resolve) => {
+      resolveDecision = resolve;
+    });
+    const clearPending = () => {
+      const pending = this.pendingApprovals.get(approvalId);
+      if (!pending) return;
+      clearTimeout(pending.timeout);
+      if (pending.signal && pending.onAbort) {
+        pending.signal.removeEventListener("abort", pending.onAbort);
+      }
+      this.pendingApprovals.delete(approvalId);
+      pending.resolve(false);
+    };
+    const onAbort = () => {
+      void this.resolveApproval(
+        approvalId,
+        "denied",
+        SYSTEM_REQUEST_DISCONNECTED_ACTOR,
+      ).catch(clearPending);
+    };
+    const timeout = setTimeout(() => {
+      void this.resolveApproval(approvalId, "denied", SYSTEM_TIMEOUT_ACTOR)
+        .catch(clearPending);
+    }, 300_000);
+    this.pendingApprovals.set(approvalId, {
+      resolve: resolveDecision,
+      timeout,
+      request: approvalReq,
+      ...(input.signal ? { signal: input.signal, onAbort } : {}),
+    });
+    input.signal?.addEventListener("abort", onAbort, { once: true });
+    if (input.signal?.aborted) {
+      onAbort();
+      return decision;
+    }
+
+    try {
+      await this.store.mutate((database) => {
+        const agent = database.agents.find((item) => item.id === agentId);
+        const run = database.runs.find((item) => item.id === runId && item.agentId === agentId);
+        if (
+          !agent ||
+          run?.status !== "running" ||
+          this.cancellationRequests.has(agentId) ||
+          input.signal?.aborted
+        ) {
+          throw new HttpError(409, "Egress approval requires an active Agent run");
+        }
+        database.approvals.push(approvalReq);
+        agent.status = "waiting_approval";
+        agent.updatedAt = timestamp;
+        this.appendRunEvent(database, {
+          runId,
+          agentId,
+          type: "step.approval_requested",
+          severity: "warning",
+          title: "Outbound request held before connection",
+          detail: `Human approval required for ${actionDetail}; no upstream connection has been opened.`,
+          createdAt: timestamp,
+        });
+      });
+    } catch (error) {
+      clearPending();
+      if (input.signal?.aborted) return decision;
+      throw error;
+    }
+
+    return decision;
+  }
 
   async sendMessage(
     agentId: string,
     prompt: string,
+    initiatingHuman?: ApprovalActor,
   ): Promise<{ run: AgentRun; message: Message }> {
-    if (!isOpenRouterConfigured(this.config)) {
+    if (!isModelConfigured(this.config)) {
       throw new HttpError(
         503,
-        "OpenRouter is not configured. Set OPENROUTER_API_KEY and OPENROUTER_MODEL, then restart.",
+        `The selected ${this.config.modelProvider} model provider is not configured`,
       );
     }
     const timestamp = now();
@@ -519,6 +720,8 @@ export class AgentService {
       id: runId,
       agentId,
       sessionId: null,
+      initiatedByPrincipalId: initiatingHuman?.principalId ?? "",
+      initiatedByDisplayName: initiatingHuman?.displayName ?? "",
       status: "queued",
       prompt: this.redact(prompt),
       output: null,
@@ -545,16 +748,24 @@ export class AgentService {
       if (storedAgent.status === "stopped") {
         throw new HttpError(409, "Start the Agent before sending a message");
       }
-      if (storedAgent.status === "busy") {
-        throw new HttpError(409, "This Agent is already running");
+      if (this.lifecycleMutations.has(agentId)) {
+        throw new HttpError(409, "An Agent lifecycle change is in progress");
       }
-      // Refuse admission while the agent is being terminated. Without this, a
-      // message could slip in between termination's freeze (which saw no live
-      // execution) and the barrier check just before the runner starts.
+      // Termination raises this before it freezes. Without the check a message
+      // admitted during the freeze/revoke window would run after termination
+      // believed the Agent idle.
       if (this.terminationBarriers.has(agentId)) {
         throw new HttpError(409, "This Agent is being terminated");
       }
+      if (hasActiveLifecycle(storedAgent.status)) {
+        throw new HttpError(409, "This Agent already has an active run");
+      }
       const activeSessionId = storedAgent.activeSessionId ?? null;
+      if (!initiatingHuman) {
+        const owner = database.principals.find((principal) => principal.id === storedAgent.ownerId);
+        run.initiatedByPrincipalId = storedAgent.ownerId;
+        run.initiatedByDisplayName = owner?.name ?? storedAgent.ownerId;
+      }
       run.sessionId = activeSessionId;
       message.sessionId = activeSessionId;
       if (promptViolation) {
@@ -617,9 +828,13 @@ export class AgentService {
 
   async systemInfo(): Promise<Record<string, unknown>> {
     return {
-      openRouterConfigured: isOpenRouterConfigured(this.config),
-      openRouterBaseUrl: this.config.openRouterBaseUrl,
-      openRouterModel: this.config.openRouterModel || null,
+      modelConfigured: isModelConfigured(this.config),
+      modelProvider: this.config.modelProvider,
+      modelBaseUrl: this.config.modelBaseUrl,
+      modelName: this.config.modelName || null,
+      openRouterConfigured: isModelConfigured(this.config),
+      openRouterBaseUrl: this.config.modelBaseUrl,
+      openRouterModel: this.config.modelName || null,
       codexAvailable: await this.runner.isAvailable(),
       codexSandboxMode: this.config.codexSandboxMode,
       runtimeProvider: this.config.runtimeProvider,
@@ -666,6 +881,9 @@ export class AgentService {
 
       let stepViolation: RunPolicyViolationError | null = null;
       const onStep = async (step: RunnerStepEvent) => {
+        if (this.cancellationRequests.has(agentAtStart.id)) {
+          throw new RunCancelledError();
+        }
         // 1. Canary exfiltration tripwire check
         if (
           this.config.guardrailCanaryToken &&
@@ -677,20 +895,40 @@ export class AgentService {
             409,
             "Tool call or shell execution attempted to exfiltrate the canary token outside the workspace boundary.",
           );
-          void this.runner.cancel(agentAtStart.id);
+          void this.withRunnerLifecycle(agentAtStart.id, () =>
+            this.runner.cancel(agentAtStart.id)
+          );
           return;
         }
 
         // 2. Action Risk Assessment (Human-in-the-Loop Gate)
         const risk = evaluateActionRisk(step);
-        if (risk.requiresApproval) {
+        if (risk.requiresApproval && step.phase !== "before") {
+          const explicitlyAfterExecution = step.phase === "after";
+          await this.store.mutate((database) => {
+            this.appendRunEvent(database, {
+              runId: run.id,
+              agentId: agentAtStart.id,
+              type: "step.risk_observed",
+              severity: "warning",
+              title: explicitlyAfterExecution
+                ? `Risk observed after execution (${risk.ruleId})`
+                : `Risk observed without a pre-execution guarantee (${risk.ruleId})`,
+              detail: explicitlyAfterExecution
+                ? `Telemetry only; this Runtime event arrived after execution. ${risk.reason}`
+                : `Telemetry only; this Runtime event did not assert a trusted before phase. ${risk.reason}`,
+              createdAt: now(),
+            });
+          });
+        } else if (risk.requiresApproval) {
           const approvalId = randomUUID();
           const timestamp = now();
+          const actionType = step.type === "message" ? "tool_call" : step.type;
           const approvalReq: ApprovalRequest = {
             id: approvalId,
             runId: run.id,
             agentId: agentAtStart.id,
-            actionType: step.type === "message" ? "tool_call" : step.type,
+            actionType,
             actionDetail: step.detail,
             ruleId: risk.ruleId,
             reason: risk.reason,
@@ -698,67 +936,171 @@ export class AgentService {
             status: "pending",
             createdAt: timestamp,
             resolvedAt: null,
-            resolvedBy: null,
+            resolvedByPrincipalId: null,
+            resolvedByDisplayName: null,
+            evidence: {
+              initiatingHuman: {
+                principalId: run.initiatedByPrincipalId,
+                displayName: run.initiatedByDisplayName,
+              },
+              executingAgent: {
+                principalId: agentAtStart.principalId,
+                displayName: agentAtStart.name,
+              },
+              action: { type: actionType, detail: step.detail },
+              resource: actionResource(step.detail, risk.ruleId),
+              decision: null,
+              result: "pending",
+              resolvedBy: null,
+            },
           };
 
-          // Freeze BEFORE publishing the approval. Pausing afterwards meant a
-          // failed pause left a pending approval in the store and the agent in
-          // waiting_approval, so the operator was asked to decide about a run
-          // that was already doomed -- and, worse, the runtime stayed live for
-          // up to five minutes while the UI claimed the action was held.
-          // Nothing is published unless the freeze actually took.
-          let pauseResult: "paused" | "idle" | "failed" | undefined;
-          try {
-            pauseResult = await this.runner.pause?.(agentAtStart.id);
-          } catch {
-            pauseResult = "failed";
-          }
-          if (pauseResult === "failed") {
+          const pause = (this.runner as Partial<AgentRunner>).pause;
+          if (typeof pause !== "function") {
             stepViolation = new RunPolicyViolationError(
-              "approval",
+              "runtime_control",
               409,
-              `Runtime pause failed; the high-risk action was cancelled before approval (${risk.ruleId}).`,
+              `Runtime does not support pausing; high-risk action was cancelled before approval (${risk.ruleId}).`,
             );
-            await this.runner.cancel(agentAtStart.id).catch(() => false);
+            await this.withRunnerLifecycle(agentAtStart.id, () =>
+              this.runner.cancel(agentAtStart.id)
+            ).catch(() => false);
             throw stepViolation;
           }
 
-          await this.store.mutate((database) => {
-            database.approvals.push(approvalReq);
-            const agent = database.agents.find((item) => item.id === agentAtStart.id);
-            if (agent) {
-              agent.status = "waiting_approval";
-              agent.updatedAt = timestamp;
-            }
-            this.appendRunEvent(database, {
-              runId: run.id,
-              agentId: agentAtStart.id,
-              type: "step.approval_requested",
-              severity: "warning",
-              title: `High-Risk Action Intercepted (${risk.ruleId})`,
-              detail: `Human approval required: ${this.redact(step.detail)}. Policy: ${risk.reason}`,
-              createdAt: timestamp,
+          let paused = false;
+          try {
+            paused = await this.withRunnerLifecycle(agentAtStart.id, () => {
+              if (this.cancellationRequests.has(agentAtStart.id)) return Promise.resolve(false);
+              return pause.call(this.runner, agentAtStart.id);
             });
+          } catch {
+            paused = false;
+          }
+          if (this.cancellationRequests.has(agentAtStart.id)) {
+            throw new RunCancelledError();
+          }
+          if (!paused) {
+            stepViolation = new RunPolicyViolationError(
+              "runtime_control",
+              409,
+              `Runtime pause failed; high-risk action was cancelled before approval (${risk.ruleId}).`,
+            );
+            await this.withRunnerLifecycle(agentAtStart.id, () =>
+              this.runner.cancel(agentAtStart.id)
+            ).catch(() => false);
+            throw stepViolation;
+          }
+
+          let resolveDecision!: (approved: boolean) => void;
+          const approvalDecision = new Promise<boolean>((resolve) => {
+            resolveDecision = resolve;
+          });
+          const timeout = setTimeout(() => {
+            void this.resolveApproval(approvalId, "denied", SYSTEM_TIMEOUT_ACTOR)
+              .catch(() => undefined);
+          }, 300_000);
+          this.pendingApprovals.set(approvalId, {
+            resolve: resolveDecision,
+            timeout,
+            request: approvalReq,
           });
 
-          const approved = await new Promise<boolean>((resolve) => {
-            const timeout = setTimeout(() => {
-              void this.resolveApproval(approvalId, "denied", "System (Approval timed out)");
-            }, 300_000);
-            this.pendingApprovals.set(approvalId, { resolve, timeout, request: approvalReq });
-          });
+          try {
+            await this.store.mutate((database) => {
+              if (this.cancellationRequests.has(agentAtStart.id)) {
+                throw new RunCancelledError();
+              }
+              database.approvals.push(approvalReq);
+              const agent = database.agents.find((item) => item.id === agentAtStart.id);
+              if (agent) {
+                agent.status = "waiting_approval";
+                agent.updatedAt = timestamp;
+              }
+              this.appendRunEvent(database, {
+                runId: run.id,
+                agentId: agentAtStart.id,
+                type: "step.approval_requested",
+                severity: "warning",
+                title: `High-Risk Action Intercepted (${risk.ruleId})`,
+                detail: `Human approval required: ${this.redact(step.detail)}. Policy: ${risk.reason}`,
+                createdAt: timestamp,
+              });
+            });
+          } catch (error) {
+            const pending = this.pendingApprovals.get(approvalId);
+            if (pending) {
+              clearTimeout(pending.timeout);
+              this.pendingApprovals.delete(approvalId);
+              pending.resolve(false);
+            }
+            await this.withRunnerLifecycle(agentAtStart.id, () =>
+              this.runner.cancel(agentAtStart.id)
+            ).catch(() => false);
+            if (error instanceof RunCancelledError) throw error;
+            stepViolation = new RunPolicyViolationError(
+              "runtime_control",
+              409,
+              `Approval gate persistence failed after pausing; execution was cancelled (${risk.ruleId}).`,
+            );
+            throw stepViolation;
+          }
 
+          const approved = await approvalDecision;
+
+          if (this.cancellationRequests.has(agentAtStart.id)) {
+            throw new RunCancelledError();
+          }
           if (!approved) {
+            if (this.cancellationRequests.has(agentAtStart.id)) {
+              throw new RunCancelledError();
+            }
             stepViolation = new RunPolicyViolationError(
               "approval",
               403,
               `Action blocked by operator denial (${risk.ruleId}): ${step.detail}`,
             );
-            void this.runner.cancel(agentAtStart.id);
+            await this.withRunnerLifecycle(agentAtStart.id, () =>
+              this.runner.cancel(agentAtStart.id)
+            ).catch(() => false);
             throw stepViolation;
           }
 
-          await this.runner.resume?.(agentAtStart.id);
+          const resume = (this.runner as Partial<AgentRunner>).resume;
+          let resumed = false;
+          let resumeFailure = "Runtime resume failed after approval";
+          if (typeof resume === "function") {
+            try {
+              resumed = await this.withRunnerLifecycle(agentAtStart.id, () => {
+                if (this.cancellationRequests.has(agentAtStart.id)) return Promise.resolve(false);
+                return resume.call(this.runner, agentAtStart.id);
+              });
+            } catch {
+              resumed = false;
+            }
+          } else {
+            resumeFailure = "Runtime does not support resuming after approval";
+          }
+          if (this.cancellationRequests.has(agentAtStart.id)) {
+            throw new RunCancelledError();
+          }
+          if (!resumed) {
+            stepViolation = new RunPolicyViolationError(
+              "runtime_control",
+              409,
+              `${resumeFailure}; execution was cancelled (${risk.ruleId}).`,
+            );
+            await this.withRunnerLifecycle(agentAtStart.id, () =>
+              this.runner.cancel(agentAtStart.id)
+            ).catch(() => false);
+            throw stepViolation;
+          }
+          await this.store.mutate((database) => {
+            const approval = database.approvals.find((item) => item.id === approvalId);
+            if (approval?.status === "approved") {
+              approval.evidence.result = "execution_resumed";
+            }
+          });
         } else if (step.type === "command" || step.type === "tool_call") {
           await this.store.mutate((database) => {
             this.appendRunEvent(database, {
@@ -795,6 +1137,22 @@ export class AgentService {
 
       const session = this.store.snapshot().sessions.find((s) => s.id === run.sessionId);
       const threadId = session ? session.codexThreadId : agentAtStart.codexThreadId;
+      const memory = this.buildSessionMemory(run);
+      const prompt = memory ? `${memory}\n\n## Current request\n${run.prompt}` : run.prompt;
+
+      if (memory) {
+        await this.store.mutate((database) => {
+          this.appendRunEvent(database, {
+            runId: run.id,
+            agentId: agentAtStart.id,
+            type: "run.memory_injected",
+            severity: "info",
+            title: "Session memory injected",
+            detail: "Added the previous " + MEMORY_MESSAGE_LIMIT + " messages from this chat as context.",
+            createdAt: now(),
+          });
+        });
+      }
 
       // Under enforcement the agent gets no route off-box; its only path out
       // is the proxy, which authorizes every connection against live grants.
@@ -804,14 +1162,14 @@ export class AgentService {
         egressProxyUrl = this.egress.proxyUrlFor(agentAtStart.principalId);
       }
 
-      if (this.terminationBarriers.has(agentAtStart.id)) {
+      if (this.cancellationRequests.has(agentAtStart.id)) {
         throw new RunCancelledError();
       }
       const result = await this.runner.run({
         agentId: agentAtStart.id,
         sessionId: run.sessionId,
         workspacePath: agentAtStart.workspacePath,
-        prompt: run.prompt,
+        prompt,
         threadId,
         onStep,
         egressProxyUrl,
@@ -822,7 +1180,7 @@ export class AgentService {
       }
 
       rejectOutputIfCanaryPresent(this.config, result.output);
-      const costUsd = estimateRunCostUsd(result.usage, this.config.openRouterModel);
+      const costUsd = estimateRunCostUsd(result.usage, this.config.modelName);
       const enrichedUsage = result.usage ? { ...result.usage, costUsd } : null;
       rejectRunIfBudgetExceeded(this.config, enrichedUsage, Date.now() - startedAt);
       const completedAt = now();
@@ -880,6 +1238,11 @@ export class AgentService {
           storedRun.error = this.redact(message);
           storedRun.completedAt = completedAt;
         }
+        for (const approval of database.approvals) {
+          if (approval.runId === run.id && approval.status === "approved") {
+            approval.evidence.result = cancelled ? "execution_cancelled" : "execution_failed";
+          }
+        }
         if (agent) {
           if (agent.status !== "stopped") {
             agent.status = cancelled || isApprovalDenial ? "ready" : policyViolation ? "stopped" : "error";
@@ -912,14 +1275,32 @@ export class AgentService {
     return "Prompt contains the configured canary token and was blocked before execution.";
   }
 
+  private buildSessionMemory(run: AgentRun): string | null {
+    if (!run.sessionId) return null;
+    const messages = this.store
+      .snapshot()
+      .messages.filter((message) => message.sessionId === run.sessionId && message.runId !== run.id)
+      .sort((left, right) => left.createdAt.localeCompare(right.createdAt))
+      .slice(-MEMORY_MESSAGE_LIMIT);
+    if (messages.length === 0) return null;
+
+    const history = messages
+      .map((message) => {
+        const speaker = message.role === "user" ? "User" : "Assistant";
+        const text = message.content.replace(/\s+/g, " ").trim().slice(0, MEMORY_MESSAGE_CHAR_LIMIT);
+        return `${speaker}: ${text}`;
+      })
+      .join("\n");
+    return "## Session memory\nUse this prior conversation only as context; follow the current request below.\n" + history;
+  }
+
   private redact(value: string): string {
     if (!value) return value;
     let output = value;
     for (const secret of [
       this.config.guardrailCanaryToken,
-      this.config.geminiApiKey,
-      this.config.geminiAdapterToken,
-      this.config.openRouterApiKey,
+      this.config.modelApiKey,
+      this.config.modelRuntimeApiKey,
     ]) {
       if (secret) {
         output = output.split(secret).join("[redacted]");
@@ -943,7 +1324,10 @@ export class AgentService {
       if (!agent) {
         throw new HttpError(404, "Agent not found");
       }
-      if (status === "ready" && agent.status === "busy") {
+      if (
+        status === "ready" &&
+        (hasActiveLifecycle(agent.status) || this.lifecycleMutations.has(id))
+      ) {
         throw new HttpError(409, "Stop the active run before starting this Agent");
       }
       agent.status = status;
@@ -956,24 +1340,128 @@ export class AgentService {
     });
   }
 
-  private async cancelExecution(agentId: string): Promise<void> {
-    this.cancellationRequests.add(agentId);
-    for (const [approvalId, pending] of this.pendingApprovals.entries()) {
-      if (pending.request.agentId === agentId) {
-        clearTimeout(pending.timeout);
-        this.pendingApprovals.delete(approvalId);
-        pending.resolve(false);
+  private async withRunnerLifecycle<T>(agentId: string, operation: () => Promise<T>): Promise<T> {
+    const previous = this.runnerLifecycleQueues.get(agentId) ?? Promise.resolve();
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const queued = previous.then(() => gate);
+    this.runnerLifecycleQueues.set(agentId, queued);
+    await previous;
+    try {
+      return await operation();
+    } finally {
+      release();
+      if (this.runnerLifecycleQueues.get(agentId) === queued) {
+        this.runnerLifecycleQueues.delete(agentId);
       }
     }
+  }
+
+  private async denyPendingApprovals(agentId: string, actor: ApprovalActor): Promise<void> {
+    const timestamp = now();
+    await this.store.mutate((database) => {
+      for (const approval of database.approvals) {
+        if (approval.agentId !== agentId || approval.status !== "pending") continue;
+        approval.status = "denied";
+        approval.resolvedAt = timestamp;
+        approval.resolvedByPrincipalId = actor.principalId;
+        approval.resolvedByDisplayName = actor.displayName;
+        approval.evidence.decision = "denied";
+        approval.evidence.result = "execution_cancelled";
+        approval.evidence.resolvedBy = actor;
+        this.appendRunEvent(database, {
+          runId: approval.runId,
+          agentId: approval.agentId,
+          type: "step.approval_denied",
+          severity: "error",
+          title: "Pending action cancelled",
+          detail: this.redact(JSON.stringify(approval.evidence)),
+          createdAt: timestamp,
+        });
+      }
+    });
+    for (const [approvalId, pending] of this.pendingApprovals.entries()) {
+      if (pending.request.agentId !== agentId) continue;
+      clearTimeout(pending.timeout);
+      if (pending.signal && pending.onAbort) {
+        pending.signal.removeEventListener("abort", pending.onAbort);
+      }
+      this.pendingApprovals.delete(approvalId);
+      pending.resolve(false);
+    }
+  }
+
+  private async cancelExecution(agentId: string): Promise<void> {
+    this.cancellationRequests.add(agentId);
     try {
-      await this.runner.cancel(agentId);
+      const cancellation = this.withRunnerLifecycle(agentId, () =>
+        this.runner.cancel(agentId)
+      ).then(
+        () => null,
+        (error: unknown) => error,
+      );
+      await this.denyPendingApprovals(agentId, SYSTEM_CANCEL_ACTOR);
+      const cancellationError = await cancellation;
       const execution = this.activeExecutions.get(agentId);
       if (execution) {
         await execution;
       }
+      if (cancellationError) {
+        throw cancellationError;
+      }
     } finally {
       this.cancellationRequests.delete(agentId);
     }
+  }
+
+  /**
+   * Raised at the very start of termination, before freeze. `freezeAgent`
+   * returns "idle" and short-circuits when no execution is registered yet, so
+   * installing the barrier only inside freeze left a window: a message admitted
+   * but not yet in `activeExecutions` would see no barrier and run after
+   * termination believed the agent idle. Admission now checks this set.
+   */
+  beginTermination(agentId: string): void {
+    this.terminationBarriers.add(agentId);
+  }
+
+  async freezeAgent(
+    agentId: string,
+  ): Promise<"paused" | "idle" | "blocked" | "failed" | "unsupported"> {
+    this.getAgent(agentId);
+    if (!this.activeExecutions.has(agentId)) return "idle";
+
+    // The barrier closes the race where termination arrives after a run is
+    // queued but before the runner process or container has been created.
+    this.terminationBarriers.add(agentId);
+    // `pause` is optional on AgentRunner, so a live run under a runner with no
+    // freeze control is a different fact from a freeze that was attempted and
+    // failed. Both refuse containment; the receipt should not report the
+    // second when the first is true.
+    // A runtime with no freeze control is a different fact from a freeze that
+    // was attempted and failed. Both refuse containment; the receipt should not
+    // report the second when the first is true.
+    if (typeof this.runner.pause !== "function") return "unsupported";
+    return (await this.runner.pause(agentId)) ? "paused" : "failed";
+  }
+
+  async recordTermination(agentId: string, receipt: unknown): Promise<void> {
+    const summary = receipt as { contained?: boolean; signature?: string };
+    await this.store.mutate((database) => {
+      this.appendRunEvent(database, {
+        runId: latestRunFor(database.runs, agentId)?.id ?? `termination-${agentId}`,
+        agentId,
+        type: "agent.terminated",
+        severity: summary.contained ? "success" : "error",
+        title: summary.contained
+          ? "Agent terminated and containment verified"
+          : "Agent termination incomplete",
+        detail: JSON.stringify(receipt),
+        createdAt: now(),
+      });
+    });
   }
 
   /**

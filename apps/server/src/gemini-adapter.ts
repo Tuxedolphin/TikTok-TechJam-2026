@@ -25,14 +25,14 @@ export async function handleGeminiResponsesAdapter(
 ): Promise<void> {
   const body = (request.body || {}) as Record<string, unknown>;
   const apiKey = config.geminiApiKey;
-  if (!apiKey) {
+  if (config.modelProvider !== "gemini" || !apiKey) {
     return reply.code(404).send({ error: "Gemini adapter is not configured" });
   }
 
   let targetModel =
     typeof body.model === "string" && body.model.length > 0
       ? body.model.replace(/^google\//, "").replace(/:free$/, "")
-      : config.openRouterModel || "gemini-3.5-flash-lite";
+      : config.modelName || "gemini-3.5-flash-lite";
   if (targetModel === "gemini-2.0-flash" || targetModel === "gemini-2.5-flash-lite" || !targetModel.includes("gemini")) {
     targetModel = "gemini-3.5-flash-lite";
   }

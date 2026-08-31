@@ -51,7 +51,7 @@ const workspaces = new WorkspaceManager(path.join(root, "ws"));
 const runner = {
   run: async () => ({ output: "", threadId: null, usage: null }),
   cancel: async () => false,
-  pause: async () => "paused",
+  pause: async () => true,
   resume: async () => true,
   isAvailable: async () => true,
 };

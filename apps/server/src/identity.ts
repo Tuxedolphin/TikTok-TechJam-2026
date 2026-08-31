@@ -59,6 +59,7 @@ export class IdentityService {
       target: input.target,
       expiresAt,
       revokedAt: null,
+      revokedBy: null,
       createdAt: now.toISOString(),
       parentGrantId: null,
     };
@@ -148,7 +149,7 @@ export class IdentityService {
     });
   }
 
-  async revokeGrant(id: string): Promise<Grant> {
+  async revokeGrant(id: string, revokedBy: string): Promise<Grant> {
     const { root, cascaded } = await this.store.mutate((database) => {
       const stored = database.grants.find((g) => g.id === id);
       if (!stored) throw new HttpError(404, `Unknown grant ${id}`);
@@ -178,6 +179,7 @@ export class IdentityService {
       for (const candidate of database.grants) {
         if (toRevoke.has(candidate.id) && candidate.revokedAt === null) {
           candidate.revokedAt = revokedAt;
+          candidate.revokedBy = revokedBy;
           revokedGrants.push(structuredClone(candidate));
         }
       }

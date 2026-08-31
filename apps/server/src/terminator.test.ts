@@ -122,7 +122,7 @@ describe("AgentTerminator", () => {
         finish({ output: "cancelled", threadId: null, usage: null });
         return true;
       },
-      pause: async () => "failed",
+      pause: async () => false,   // freeze attempted, and it failed
       isRunning: () => running,
       isAvailable: async () => true,
     });

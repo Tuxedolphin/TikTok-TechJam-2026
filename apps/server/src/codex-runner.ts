@@ -68,6 +68,7 @@ export async function parseCodexEventLine(
         type: "message",
         title: "Agent response",
         detail: item.text.slice(0, 160),
+        phase: "after",
         rawPayload: item,
       });
     } else if (item.type === "command_execution") {
@@ -77,6 +78,7 @@ export async function parseCodexEventLine(
         type: "command",
         title: "Executed shell command",
         detail: `${cmd}${exitCode}`,
+        phase: "after",
         rawPayload: item,
       });
     } else if (item.type === "file_change") {
@@ -85,6 +87,7 @@ export async function parseCodexEventLine(
         type: "file_change",
         title: "File modified",
         detail: filePath,
+        phase: "after",
         rawPayload: item,
       });
     } else if (item.type === "mcp_tool_call" || item.type === "tool_call") {
@@ -102,6 +105,7 @@ export async function parseCodexEventLine(
         type: "tool_call",
         title: `Invoked tool ${name}`,
         detail: inputStr.slice(0, 160),
+        phase: "after",
         rawPayload: item,
       });
     }
@@ -194,13 +198,13 @@ export class CodexRunner implements AgentRunner {
     return true;
   }
 
-  async pause(agentId: string): Promise<"paused" | "idle" | "failed"> {
+  async pause(agentId: string): Promise<boolean> {
     const active = this.active.get(agentId);
-    if (!active || active.cancelled) return "idle";
+    if (!active || active.cancelled) return false;
     try {
-      return signalGroup(active.child, "SIGSTOP") ? "paused" : "failed";
+      return signalGroup(active.child, "SIGSTOP");
     } catch {
-      return "failed";
+      return false;
     }
   }
 
@@ -428,10 +432,7 @@ export class CodexRunner implements AgentRunner {
     ] as const;
     const environment: NodeJS.ProcessEnv = {
       CODEX_HOME: this.config.codexHome,
-      OPENROUTER_API_KEY: this.config.openRouterApiKey,
-      OPENAI_API_KEY: this.config.openRouterApiKey,
-      OPENROUTER_BASE_URL: this.config.openRouterBaseUrl,
-      OPENAI_BASE_URL: this.config.openRouterBaseUrl,
+      MODEL_API_KEY: this.config.modelRuntimeApiKey,
       NO_COLOR: "1",
     };
     for (const name of inheritedNames) {

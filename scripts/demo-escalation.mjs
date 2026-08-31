@@ -50,6 +50,13 @@ const attested = {
   "x-agent-attested-proof": egressProxySecret(agent.principalId, config.internalAgentSecret),
 };
 const grant = (headers, payload) => app.inject({ method: "POST", url: "/api/grants", headers, payload });
+
+// Human identity is now a server-issued session, not a header the caller
+// asserts. The operator steps below hold a real one.
+const sessionToken = await app
+  .inject({ method: "POST", url: "/api/mock-principal-session", payload: { principalId: "user-a" } })
+  .then((response) => response.json().sessionToken);
+const operator = { "x-mock-principal-session": sessionToken };
 const code = (r) => {
   if (r.statusCode < 300) return `HTTP ${r.statusCode} allowed`;
   let reason = "";
@@ -65,13 +72,13 @@ let r = await grant(attested, {
 console.log(`1. Agent grants itself egress to attacker.example -> ${code(r)}`);
 const selfGrant = r.statusCode;
 
-r = await grant({ ...attested, "x-principal-id": "user-a" }, {
+r = await grant({ ...attested, ...operator }, {
   principalId: agent.principalId, scope: "network:egress", target: "attacker.example",
 });
 console.log(`2. Same, while claiming to be the human operator  -> ${code(r)}`);
 const impersonation = r.statusCode;
 
-r = await grant({ "x-principal-id": "user-a" }, {
+r = await grant(operator, {
   principalId: agent.principalId, scope: "network:egress", target: "registry.npmjs.org",
 });
 console.log(`3. The human operator grants npmjs               -> ${code(r)}`);
@@ -126,7 +133,7 @@ for (const decision of decisions) {
 // grant it issued to the first agent; the sub-agent's copy cannot outlive it.
 const parentGrant = identity.listGrants(agent.principalId)
   .find((g) => g.target === "registry.npmjs.org" && !g.revokedAt);
-await identity.revokeGrant(parentGrant.id);
+await identity.revokeGrant(parentGrant.id, "user-a");
 const childGrant = identity.listGrants(child.principalId)
   .find((g) => g.target === "registry.npmjs.org");
 console.log(`\n7. Operator revokes the parent grant`);

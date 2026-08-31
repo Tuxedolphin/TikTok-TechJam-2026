@@ -58,10 +58,7 @@ export function containerEngineEnvironment(
 ): NodeJS.ProcessEnv {
   const environment: NodeJS.ProcessEnv = { NO_COLOR: "1" };
   if (includeRuntimeConfig) {
-    environment.OPENROUTER_API_KEY = config.openRouterApiKey;
-    environment.OPENAI_API_KEY = config.openRouterApiKey;
-    environment.OPENROUTER_BASE_URL = config.openRouterBaseUrl;
-    environment.OPENAI_BASE_URL = config.openRouterBaseUrl;
+    environment.MODEL_API_KEY = config.modelRuntimeApiKey;
   }
   for (const name of ["PATH", "HOME", "TMPDIR", "LANG", "LC_ALL", "XDG_RUNTIME_DIR"] as const) {
     if (process.env[name] !== undefined) environment[name] = process.env[name];
@@ -132,13 +129,7 @@ export function buildContainerRunArgs(
     "--user",
     config.containerUser,
     "--env",
-    "OPENROUTER_API_KEY",
-    "--env",
-    "OPENAI_API_KEY",
-    "--env",
-    "OPENROUTER_BASE_URL",
-    "--env",
-    "OPENAI_BASE_URL",
+    "MODEL_API_KEY",
     "--env",
     "CODEX_HOME=/codex-home",
     "--env",
@@ -191,18 +182,18 @@ export class ContainerCodexRunner implements AgentRunner {
     return true;
   }
 
-  async pause(agentId: string): Promise<"paused" | "idle" | "failed"> {
+  async pause(agentId: string): Promise<boolean> {
     const active = this.active.get(agentId);
-    if (!active || active.cancelled) return "idle";
+    if (!active || active.cancelled) return false;
     try {
       await execFileAsync(
         this.config.containerEngine,
         ["pause", active.containerName],
         { timeout: 5_000, env: this.childEnvironment() },
       );
-      return "paused";
+      return await this.containerPaused(active.containerName);
     } catch {
-      return "failed";
+      return false;
     }
   }
 
@@ -241,15 +232,19 @@ export class ContainerCodexRunner implements AgentRunner {
         ["unpause", active.containerName],
         { timeout: 5_000, env: this.childEnvironment() },
       );
-      return true;
+      return !(await this.containerPaused(active.containerName));
     } catch {
-      try {
-        active.child.kill("SIGCONT");
-        return true;
-      } catch {
-        return false;
-      }
+      return false;
     }
+  }
+
+  private async containerPaused(name: string): Promise<boolean> {
+    const { stdout } = await execFileAsync(
+      this.config.containerEngine,
+      ["inspect", "--format", "{{.State.Paused}}", name],
+      { timeout: 5_000, env: this.childEnvironment() },
+    );
+    return stdout.trim() === "true";
   }
 
   private removeContainer(active: ActiveContainer): Promise<void> {

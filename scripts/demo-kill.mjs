@@ -48,7 +48,7 @@ await store.initialize();
 const service = new AgentService(config, store, new WorkspaceManager(path.join(root, "ws")), {
   run: async () => ({ output: "", threadId: null, usage: null }),
   cancel: async () => false,
-  pause: async () => "paused",
+  pause: async () => true,
   resume: async () => true,
   isAvailable: async () => true,
 });

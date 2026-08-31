@@ -10,7 +10,14 @@ import type {
   RunUsage,
 } from "./types.js";
 
-export type RunPolicyKind = "canary" | "budget" | "approval" | "authz" | "egress" | "anomaly";
+export type RunPolicyKind =
+  | "canary"
+  | "budget"
+  | "approval"
+  | "runtime_control"
+  | "authz"
+  | "egress"
+  | "anomaly";
 
 export interface ActionRiskAssessment {
   riskLevel: ActionRiskLevel;

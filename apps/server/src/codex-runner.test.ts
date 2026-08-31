@@ -96,6 +96,7 @@ describe("Codex runner protocol", () => {
         type: "command",
         title: "Executed shell command",
         detail: "npm test (exit 0)",
+        phase: "after",
         rawPayload: { type: "command_execution", command: "npm test", exit_code: 0 },
       },
     ]);

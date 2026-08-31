@@ -4,10 +4,13 @@ set -euo pipefail
 repo_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$repo_dir"
 
+cli_model_provider="${MODEL_PROVIDER:-}"
 cli_gemini_key="${GEMINI_API_KEY:-}"
 cli_gemini_model="${GEMINI_MODEL:-}"
 cli_openrouter_key="${OPENROUTER_API_KEY:-}"
 cli_openrouter_model="${OPENROUTER_MODEL:-}"
+cli_ark_key="${ARK_API_KEY:-}"
+cli_ark_model="${ARK_MODEL:-}"
 cli_host="${HOST:-}"
 cli_auth_token="${APP_AUTH_TOKEN:-}"
 
@@ -17,16 +20,54 @@ if [[ -f .env ]]; then
   set +a
 fi
 
+is_usable_model_key() {
+  [[ -n "$1" && "$1" != replace-* ]]
+}
+
+cli_provider_count=0
+for key in "$cli_gemini_key" "$cli_openrouter_key" "$cli_ark_key"; do
+  if is_usable_model_key "$key"; then
+    cli_provider_count=$((cli_provider_count + 1))
+  fi
+done
+if [[ -n "$cli_model_provider" ]]; then
+  export MODEL_PROVIDER="$cli_model_provider"
+elif (( cli_provider_count > 1 )); then
+  printf '[local-poc] Set MODEL_PROVIDER when passing multiple provider credentials.\n' >&2
+  exit 2
+elif is_usable_model_key "$cli_gemini_key"; then
+  export MODEL_PROVIDER=gemini
+elif is_usable_model_key "$cli_openrouter_key"; then
+  export MODEL_PROVIDER=openrouter
+elif is_usable_model_key "$cli_ark_key"; then
+  export MODEL_PROVIDER=ark
+fi
 if [[ -n "$cli_gemini_key" ]]; then export GEMINI_API_KEY="$cli_gemini_key"; fi
 if [[ -n "$cli_gemini_model" ]]; then export GEMINI_MODEL="$cli_gemini_model"; fi
 if [[ -n "$cli_openrouter_key" ]]; then export OPENROUTER_API_KEY="$cli_openrouter_key"; fi
 if [[ -n "$cli_openrouter_model" ]]; then export OPENROUTER_MODEL="$cli_openrouter_model"; fi
+if [[ -n "$cli_ark_key" ]]; then export ARK_API_KEY="$cli_ark_key"; fi
+if [[ -n "$cli_ark_model" ]]; then export ARK_MODEL="$cli_ark_model"; fi
 if [[ -n "$cli_host" ]]; then export HOST="$cli_host"; fi
 if [[ -n "$cli_auth_token" ]]; then export APP_AUTH_TOKEN="$cli_auth_token"; fi
 
-if [[ -n "${GEMINI_API_KEY:-}" ]]; then
-  export OPENROUTER_API_KEY="${OPENROUTER_API_KEY:-$GEMINI_API_KEY}"
-  export OPENROUTER_MODEL="${OPENROUTER_MODEL:-${GEMINI_MODEL:-gemini-2.5-flash}}"
+if [[ -z "${MODEL_PROVIDER:-}" ]]; then
+  configured_provider_count=0
+  for key in "${GEMINI_API_KEY:-}" "${OPENROUTER_API_KEY:-}" "${ARK_API_KEY:-}"; do
+    if is_usable_model_key "$key"; then
+      configured_provider_count=$((configured_provider_count + 1))
+    fi
+  done
+  if (( configured_provider_count > 1 )); then
+    printf '[local-poc] Set MODEL_PROVIDER when multiple provider credentials are configured.\n' >&2
+    exit 2
+  elif is_usable_model_key "${GEMINI_API_KEY:-}"; then
+    export MODEL_PROVIDER=gemini
+  elif is_usable_model_key "${OPENROUTER_API_KEY:-}"; then
+    export MODEL_PROVIDER=openrouter
+  elif is_usable_model_key "${ARK_API_KEY:-}"; then
+    export MODEL_PROVIDER=ark
+  fi
 fi
 
 
@@ -89,12 +130,30 @@ detect_engine() {
   return 1
 }
 
-if [[ -z "${OPENROUTER_API_KEY:-${ARK_API_KEY:-}}" || -z "${OPENROUTER_MODEL:-${ARK_MODEL:-}}" ]]; then
-  log "GEMINI_API_KEY or (OPENROUTER_API_KEY and OPENROUTER_MODEL) is required."
-  log "Example with Gemini:     HOST=127.0.0.1 GEMINI_API_KEY=your-gemini-key npm run poc"
-  log "Example with OpenRouter: HOST=127.0.0.1 OPENROUTER_API_KEY=your-key OPENROUTER_MODEL=openai/gpt-4o-mini npm run poc"
-  exit 2
-fi
+case "${MODEL_PROVIDER:-}" in
+  gemini)
+    is_usable_model_key "${GEMINI_API_KEY:-}" || {
+      log "MODEL_PROVIDER=gemini requires GEMINI_API_KEY."
+      exit 2
+    }
+    ;;
+  openrouter)
+    is_usable_model_key "${OPENROUTER_API_KEY:-}" && [[ -n "${OPENROUTER_MODEL:-}" ]] || {
+      log "MODEL_PROVIDER=openrouter requires OPENROUTER_API_KEY and OPENROUTER_MODEL."
+      exit 2
+    }
+    ;;
+  ark)
+    is_usable_model_key "${ARK_API_KEY:-}" && [[ -n "${ARK_MODEL:-}" ]] || {
+      log "MODEL_PROVIDER=ark requires ARK_API_KEY and ARK_MODEL."
+      exit 2
+    }
+    ;;
+  *)
+    log "Set MODEL_PROVIDER to gemini, openrouter, or ark with that provider's credentials."
+    exit 2
+    ;;
+esac
 
 
 command -v node >/dev/null 2>&1 || {
