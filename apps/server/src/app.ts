@@ -240,7 +240,7 @@ export async function createApp(
     // not be able to kill a peer, and the receipt must name a real operator.
     app.post("/api/agents/:id/terminate", async (request, reply) => {
       const { id } = agentIdParams.parse(request.params);
-      if (attestedAgentPrincipal(request, config.authToken)) {
+      if (attestedAgentPrincipal(request, config.internalAgentSecret)) {
         return reply.code(403).send({ error: "Agents may not terminate agents." });
       }
       const body = terminateBody.parse(request.body ?? {});
@@ -251,6 +251,8 @@ export async function createApp(
       );
       return { receipt };
     });
+
+    app.get("/api/receipt-key", async () => terminator.publicKeyInfo());
   }
 
   app.get("/api/agents/:id/events", async (request) => {
@@ -299,7 +301,7 @@ export async function createApp(
       const body = grantBody.parse(request.body);
       // An attested agent identity outranks any self-asserted header: the
       // proxy stamps it, and the agent cannot strip it.
-      const grantedBy = attestedAgentPrincipal(request, config.authToken)
+      const grantedBy = attestedAgentPrincipal(request, config.internalAgentSecret)
         ?? (request.headers["x-principal-id"] as string | undefined)
         ?? "user-a";
       const grant = await identity.createGrant({

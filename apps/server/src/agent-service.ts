@@ -41,6 +41,7 @@ const PREVIEW_LENGTH = 180;
 export class AgentService {
   private readonly activeExecutions = new Map<string, Promise<void>>();
   private readonly cancellationRequests = new Set<string>();
+  private readonly terminationBarriers = new Set<string>();
   private readonly pendingApprovals = new Map<
     string,
     {
@@ -125,6 +126,7 @@ export class AgentService {
       codexThreadId: null,
       activeSessionId: initialSessionId,
       lastError: null,
+      authorityBlocked: false,
       createdAt: timestamp,
       updatedAt: timestamp,
     };
@@ -202,17 +204,19 @@ export class AgentService {
     });
   }
 
-  /**
-   * Suspends the agent's execution at the OS level without tearing it down.
-   * Used before revoking authority so an in-flight action cannot complete in
-   * the window between the revoke landing and the container actually dying.
-   */
-  async freezeAgent(agentId: string): Promise<boolean> {
+  async freezeAgent(agentId: string): Promise<"paused" | "idle" | "blocked" | "failed"> {
     this.getAgent(agentId);
-    return (await this.runner.pause?.(agentId)) ?? false;
+    if (!this.activeExecutions.has(agentId)) return "idle";
+
+    // The barrier closes the race where termination arrives after a run is
+    // queued but before the runner process or container has been created.
+    this.terminationBarriers.add(agentId);
+    const result = await this.runner.pause?.(agentId);
+    if (result === "paused" || result === "failed") return result;
+    if (result === "idle") return "blocked";
+    return "failed";
   }
 
-  /** Records the outcome of a termination on the agent's timeline. */
   async recordTermination(agentId: string, receipt: unknown): Promise<void> {
     const summary = receipt as { contained?: boolean; signature?: string };
     await this.store.mutate((database) => {
@@ -348,8 +352,10 @@ export class AgentService {
     // Starting a quarantined agent is the operator clearing the incident, so
     // its blocked-attempt history goes with it; otherwise the stale count sits
     // at the threshold and the next single denial re-quarantines it at once.
+    const agent = await this.setStatus(id, "ready");
+    this.terminationBarriers.delete(id);
     this.onAgentStarted?.(id);
-    return this.setStatus(id, "ready");
+    return agent;
   }
 
   async stopAgent(id: string): Promise<Agent> {
@@ -754,6 +760,9 @@ export class AgentService {
         egressProxyUrl = this.egress.proxyUrlFor(agentAtStart.principalId);
       }
 
+      if (this.terminationBarriers.has(agentAtStart.id)) {
+        throw new RunCancelledError();
+      }
       const result = await this.runner.run({
         agentId: agentAtStart.id,
         sessionId: run.sessionId,
@@ -889,7 +898,10 @@ export class AgentService {
         throw new HttpError(409, "Stop the active run before starting this Agent");
       }
       agent.status = status;
-      if (status === "ready") agent.lastError = null;
+      if (status === "ready") {
+        agent.lastError = null;
+        agent.authorityBlocked = false;
+      }
       agent.updatedAt = now();
       return structuredClone(agent);
     });
@@ -913,5 +925,9 @@ export class AgentService {
     } finally {
       this.cancellationRequests.delete(agentId);
     }
+  }
+
+  hasLiveExecution(agentId: string): boolean {
+    return this.activeExecutions.has(agentId) || (this.runner.isRunning?.(agentId) ?? false);
   }
 }

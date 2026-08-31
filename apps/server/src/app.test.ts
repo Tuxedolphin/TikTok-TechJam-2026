@@ -4,9 +4,11 @@ import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { createApp } from "./app.js";
 import { loadConfig } from "./config.js";
+import { egressProxySecret } from "./egress-authorizer.js";
 import { IdentityService } from "./identity.js";
 import { JsonStore } from "./store.js";
 import type { AgentService } from "./agent-service.js";
+import type { AgentTerminator } from "./terminator.js";
 
 const service = {
   listAgents: () => [],
@@ -152,6 +154,75 @@ describe("HTTP boundary", () => {
     });
     expect(denied.statusCode).toBe(403);
     expect(denied.json().decision.ruleId).toBe("AUTHZ-OWNER-010");
+    await app.close();
+  });
+
+  it("uses proxy attestation instead of a self-asserted human identity for grants", async () => {
+    const config = loadConfig({ NODE_ENV: "test" });
+    let grantedBy = "";
+    const identity = {
+      createGrant: async (input: { grantedBy: string }) => {
+        grantedBy = input.grantedBy;
+        return { id: "grant-1", ...input };
+      },
+    } as unknown as IdentityService;
+    const app = await createApp(config, service, identity);
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/grants",
+      headers: {
+        "x-principal-id": "user-a",
+        "x-agent-attested-principal": "agent-1",
+        "x-agent-attested-proof": egressProxySecret("agent-1", config.internalAgentSecret),
+      },
+      payload: {
+        principalId: "agent-1",
+        scope: "network:egress",
+        target: "example.com",
+      },
+    });
+
+    expect(response.statusCode).toBe(201);
+    expect(grantedBy).toBe("agent-1");
+    await app.close();
+  });
+
+  it("exposes the receipt key and prevents an attested agent from terminating a peer", async () => {
+    const config = loadConfig({ NODE_ENV: "test" });
+    let terminateCalls = 0;
+    const terminator = {
+      publicKeyInfo: () => ({ keyId: "key-1", publicKey: "public-key" }),
+      terminate: async () => {
+        terminateCalls += 1;
+        return { contained: true };
+      },
+    } as unknown as AgentTerminator;
+    const app = await createApp(config, service, undefined, undefined, undefined, terminator);
+
+    const key = await app.inject({ method: "GET", url: "/api/receipt-key" });
+    expect(key.json()).toEqual({ keyId: "key-1", publicKey: "public-key" });
+
+    const denied = await app.inject({
+      method: "POST",
+      url: "/api/agents/22222222-2222-4222-8222-222222222222/terminate",
+      headers: {
+        "x-agent-attested-principal": "agent-1",
+        "x-agent-attested-proof": egressProxySecret("agent-1", config.internalAgentSecret),
+      },
+      payload: { reason: "kill peer" },
+    });
+    expect(denied.statusCode).toBe(403);
+    expect(terminateCalls).toBe(0);
+
+    const allowed = await app.inject({
+      method: "POST",
+      url: "/api/agents/22222222-2222-4222-8222-222222222222/terminate",
+      headers: { "x-principal-id": "user-a" },
+      payload: { reason: "operator decision" },
+    });
+    expect(allowed.statusCode).toBe(200);
+    expect(terminateCalls).toBe(1);
     await app.close();
   });
 });

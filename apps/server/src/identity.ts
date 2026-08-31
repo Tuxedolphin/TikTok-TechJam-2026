@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { HttpError } from "./errors.js";
-import { authorizeGrantRequest, type ActorKind, type AuthorityDecision } from "./authority.js";
+import { authorizeGrantRequest, type AuthorityDecision } from "./authority.js";
 import { evaluateResourceAccess, RunPolicyViolationError } from "./run-policies.js";
 import { latestRunFor, type JsonStore } from "./store.js";
 import type { Grant, GrantScope, MockResource, PolicyDecision, Principal } from "./types.js";
@@ -30,18 +30,6 @@ export class IdentityService {
     return principalId ? grants.filter((g) => g.principalId === principalId) : grants;
   }
 
-  /** Grants the principal currently holds, ignoring spent ones. */
-  private liveGrantsFor(principalId: string, nowIso: string): Grant[] {
-    return this.store
-      .snapshot()
-      .grants.filter(
-        (grant) =>
-          grant.principalId === principalId &&
-          grant.revokedAt === null &&
-          (grant.expiresAt === null || grant.expiresAt > nowIso),
-      );
-  }
-
   async createGrant(input: {
     principalId: string;
     grantedBy: string;
@@ -54,25 +42,6 @@ export class IdentityService {
       ? new Date(now.getTime() + input.ttlMinutes * 60_000).toISOString()
       : null;
 
-    // The control plane is reachable from inside an agent container, so a
-    // request arriving here may be the agent itself asking for more authority.
-    // Humans originate authority; agents may only ever pass along less than
-    // they hold.
-    const actorKind: ActorKind = input.grantedBy.startsWith("agent-") ? "agent" : "human";
-    const decision = authorizeGrantRequest({
-      actorKind,
-      actorPrincipalId: input.grantedBy,
-      requested: { scope: input.scope, target: input.target, expiresAt },
-      beneficiaryPrincipalId: input.principalId,
-      heldByRequester:
-        actorKind === "agent" ? this.liveGrantsFor(input.grantedBy, now.toISOString()) : [],
-    });
-
-    if (!decision.allowed) {
-      await this.recordAuthorityDenial(input.grantedBy, decision);
-      throw new RunPolicyViolationError("authz", 403, decision.reason);
-    }
-
     const grant: Grant = {
       id: randomUUID(),
       principalId: input.principalId,
@@ -83,24 +52,75 @@ export class IdentityService {
       revokedAt: null,
       createdAt: now.toISOString(),
     };
-    await this.store.mutate((database) => {
-      if (!database.principals.some((p) => p.id === input.principalId)) {
-        throw new HttpError(404, `Unknown principal ${input.principalId}`);
+    let decision: AuthorityDecision;
+    try {
+      decision = await this.store.mutate((database) => {
+        if (!database.principals.some((principal) => principal.id === input.principalId)) {
+          throw new HttpError(404, `Unknown principal ${input.principalId}`);
+        }
+        const actor = database.principals.find((principal) => principal.id === input.grantedBy);
+        if (!actor) throw new HttpError(404, `Unknown grantor ${input.grantedBy}`);
+
+        const beneficiary = database.agents.find(
+          (agent) => agent.principalId === input.principalId,
+        );
+        if (beneficiary?.authorityBlocked) {
+          throw new HttpError(409, "Terminated agents cannot receive authority until restarted");
+        }
+
+        const authorityDecision = authorizeGrantRequest({
+          actorKind: actor.kind,
+          actorPrincipalId: input.grantedBy,
+          requested: { scope: input.scope, target: input.target, expiresAt },
+          beneficiaryPrincipalId: input.principalId,
+          heldByRequester: actor.kind === "agent"
+            ? database.grants.filter(
+                (held) =>
+                  held.principalId === input.grantedBy &&
+                  held.revokedAt === null &&
+                  (held.expiresAt === null || held.expiresAt > now.toISOString()),
+              )
+            : [],
+        });
+        if (!authorityDecision.allowed) throw new AuthorityDeniedError(authorityDecision);
+        database.grants.push(structuredClone(grant));
+        return authorityDecision;
+      });
+    } catch (error) {
+      if (error instanceof AuthorityDeniedError) {
+        await this.recordAuthorityDecision(
+          input.grantedBy,
+          input.principalId,
+          error.decision,
+          null,
+        );
+        throw new RunPolicyViolationError("authz", 403, error.decision.reason);
       }
-      database.grants.push(structuredClone(grant));
-    });
+      throw error;
+    }
+
+    await this.recordAuthorityDecision(
+      input.grantedBy,
+      input.principalId,
+      decision,
+      grant.id,
+    );
     await this.recordGrantEvent("grant.created", grant);
     return grant;
   }
 
-  /** Puts a refused escalation on the timeline of the agent that attempted it. */
-  private async recordAuthorityDenial(
+  private async recordAuthorityDecision(
     actorPrincipalId: string,
+    beneficiaryPrincipalId: string,
     decision: AuthorityDecision,
+    grantId: string | null,
   ): Promise<void> {
     if (!this.recordDecision) return;
     const database = this.store.snapshot();
-    const agent = database.agents.find((a) => a.principalId === actorPrincipalId);
+    const agent = database.agents.find((candidate) =>
+      candidate.principalId === actorPrincipalId ||
+      candidate.principalId === beneficiaryPrincipalId
+    );
     if (!agent) return;
     const latestRun = latestRunFor(database.runs, agent.id);
     await this.recordDecision(latestRun?.id ?? `authority-${agent.id}`, agent.id, {
@@ -108,7 +128,7 @@ export class IdentityService {
       ruleId: decision.ruleId,
       reason: decision.reason,
       principalId: actorPrincipalId,
-      grantId: null,
+      grantId,
     });
   }
 
@@ -170,4 +190,10 @@ export class IdentityService {
     return { resource: decision.allowed ? resource : null, decision };
   }
 
+}
+
+class AuthorityDeniedError extends Error {
+  constructor(readonly decision: AuthorityDecision) {
+    super(decision.reason);
+  }
 }

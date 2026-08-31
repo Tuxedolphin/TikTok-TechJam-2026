@@ -46,7 +46,7 @@ const agent = await service.createAgent({ name: "Hijacked" }, "user-a");
 // What the egress proxy stamps on anything an agent sends to the control plane.
 const attested = {
   "x-agent-attested-principal": agent.principalId,
-  "x-agent-attested-proof": egressProxySecret(agent.principalId, config.authToken),
+  "x-agent-attested-proof": egressProxySecret(agent.principalId, config.internalAgentSecret),
 };
 const grant = (headers, payload) => app.inject({ method: "POST", url: "/api/grants", headers, payload });
 const code = (r) => `HTTP ${r.statusCode}`;

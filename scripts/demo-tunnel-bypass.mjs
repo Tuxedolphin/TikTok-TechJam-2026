@@ -42,7 +42,7 @@ await app.listen({ host: "127.0.0.1", port: 0 });
 const cpPort = app.server.address().port;
 
 const agent = await service.createAgent({ name: "Tunneller" }, "user-a");
-const secret = egressProxySecret(agent.principalId, config.authToken);
+const secret = egressProxySecret(agent.principalId, config.internalAgentSecret);
 
 // The real proxy, configured exactly as the sidecar is.
 const proxy = createEgressProxy({
@@ -51,7 +51,7 @@ const proxy = createEgressProxy({
   authorize: async () => ({ allowed: true, ruleId: "NET-EGRESS-PLATFORM-021", reason: "platform", allowPrivate: true }),
   attest: (principalId) => ({
     "x-agent-attested-principal": principalId,
-    "x-agent-attested-proof": egressProxySecret(principalId, config.authToken),
+    "x-agent-attested-proof": egressProxySecret(principalId, config.internalAgentSecret),
   }),
 });
 proxy.listen(0, "127.0.0.1");

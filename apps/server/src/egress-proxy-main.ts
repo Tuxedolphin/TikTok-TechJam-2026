@@ -14,6 +14,7 @@ import { egressProxySecret } from "./egress-authorizer.js";
 const port = Number(process.env["EGRESS_PROXY_PORT"] ?? 8888);
 const authorizeUrl = process.env["EGRESS_AUTHORIZE_URL"];
 const authorizeToken = process.env["EGRESS_AUTHORIZE_TOKEN"] ?? "";
+const agentSecret = process.env["EGRESS_AGENT_SECRET"];
 
 process.on("uncaughtException", (err) => {
   console.error("[egress] uncaught error in proxy:", err?.message || err);
@@ -25,6 +26,10 @@ process.on("unhandledRejection", (reason) => {
 
 if (!authorizeUrl) {
   console.error("EGRESS_AUTHORIZE_URL is required");
+  process.exit(1);
+}
+if (!agentSecret) {
+  console.error("EGRESS_AGENT_SECRET is required");
   process.exit(1);
 }
 
@@ -51,12 +56,9 @@ const server = createEgressProxy({
     }
     return (await response.json()) as EgressVerdict;
   },
-  // The agent cannot reach the control plane except through this process, so
-  // headers applied here are the control plane's only trustworthy signal that
-  // a request originated from an agent rather than a human operator.
   attest: (agentPrincipalId) => ({
     "x-agent-attested-principal": agentPrincipalId,
-    "x-agent-attested-proof": egressProxySecret(agentPrincipalId, authorizeToken),
+    "x-agent-attested-proof": egressProxySecret(agentPrincipalId, agentSecret),
   }),
   onVerdict: ({ agentPrincipalId, host, verdict }) => {
     console.log(

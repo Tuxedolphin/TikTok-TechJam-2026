@@ -168,24 +168,23 @@ export class ContainerCodexRunner implements AgentRunner {
     return true;
   }
 
-  async pause(agentId: string): Promise<boolean> {
+  async pause(agentId: string): Promise<"paused" | "idle" | "failed"> {
     const active = this.active.get(agentId);
-    if (!active || active.cancelled) return false;
+    if (!active || active.cancelled) return "idle";
     try {
       await execFileAsync(
         this.config.containerEngine,
         ["pause", active.containerName],
         { timeout: 5_000, env: this.childEnvironment() },
       );
-      return true;
+      return "paused";
     } catch {
-      try {
-        active.child.kill("SIGSTOP");
-        return true;
-      } catch {
-        return false;
-      }
+      return "failed";
     }
+  }
+
+  isRunning(agentId: string): boolean {
+    return this.active.has(agentId);
   }
 
   async resume(agentId: string): Promise<boolean> {

@@ -1,3 +1,4 @@
+import { randomBytes } from "node:crypto";
 import { existsSync } from "node:fs";
 import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
@@ -93,6 +94,7 @@ export function loadConfig(environment: Record<string, unknown> = process.env) {
 
   const env = envSchema.parse(environment);
   const authToken = env.APP_AUTH_TOKEN?.trim() ?? "";
+  const internalAgentSecret = randomBytes(32).toString("hex");
   const geminiApiKey = env.GEMINI_API_KEY?.trim() ?? "";
   const isGeminiMode = geminiApiKey.length > 0 && !geminiApiKey.startsWith("replace-");
 
@@ -149,6 +151,8 @@ export function loadConfig(environment: Record<string, unknown> = process.env) {
     egressProbeImage: env.EGRESS_PROBE_IMAGE,
     serverDistPath: resolveServerDistPath(),
     authToken,
+    // Random per process so source access does not reveal agent credentials.
+    internalAgentSecret,
     geminiApiKey,
     openRouterApiKey,
     openRouterModel,

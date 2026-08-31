@@ -28,6 +28,7 @@ export const PROXY_CONTAINER = "launchpad-egress-proxy";
  */
 export class EgressNetworkManager {
   private pending: Promise<void> | null = null;
+  private readyForCurrentProcess = false;
 
   constructor(private readonly config: AppConfig) {}
 
@@ -77,7 +78,7 @@ export class EgressNetworkManager {
   }
 
   private async provision(): Promise<void> {
-    if (await this.containerRunning(PROXY_CONTAINER)) return;
+    if (this.readyForCurrentProcess && (await this.containerRunning(PROXY_CONTAINER))) return;
 
     if (!(await this.networkExists(INTERNAL_NETWORK))) {
       await this.engine(["network", "create", "--internal", INTERNAL_NETWORK]);
@@ -105,6 +106,8 @@ export class EgressNetworkManager {
         `EGRESS_AUTHORIZE_URL=http://host.docker.internal:${this.config.port}/api/egress/authorize`,
         "--env",
         `EGRESS_AUTHORIZE_TOKEN=${this.config.authToken}`,
+        "--env",
+        `EGRESS_AGENT_SECRET=${this.config.internalAgentSecret}`,
         "--mount",
         `type=bind,src=${this.config.serverDistPath},dst=/app,readonly`,
         "--workdir",
@@ -116,6 +119,7 @@ export class EgressNetworkManager {
       // The uplink is attached second so the proxy's default route stays on the
       // internal network while it still has a path to the internet.
       await this.engine(["network", "connect", UPLINK_NETWORK, PROXY_CONTAINER]);
+      this.readyForCurrentProcess = true;
     }
   }
 
@@ -125,7 +129,7 @@ export class EgressNetworkManager {
     // password is a per-agent secret derived from the server key, so a
     // container cannot borrow another agent's grants by simply claiming its
     // principal -- it would have to forge a secret it never sees.
-    const secret = egressProxySecret(agentPrincipalId, this.config.authToken);
+    const secret = egressProxySecret(agentPrincipalId, this.config.internalAgentSecret);
     return `http://${encodeURIComponent(agentPrincipalId)}:${secret}@${PROXY_CONTAINER}:${this.config.egressProxyPort}`;
   }
 
@@ -141,7 +145,17 @@ export class EgressNetworkManager {
   async probeAsAgent(
     agentPrincipalId: string,
     host: string,
-  ): Promise<{ httpStatus: number | null; blocked: boolean; detail: string }> {
+  ): Promise<{
+    httpStatus: number | null;
+    blocked: boolean;
+    /**
+     * False when the probe itself could not be carried out. A probe that never
+     * ran is not evidence of containment, and callers that sign attestations
+     * must not treat it as such.
+     */
+    conclusive: boolean;
+    detail: string;
+  }> {
     await this.ensure();
     const proxy = this.proxyUrlFor(agentPrincipalId);
     const url = `http://${host}/`;
@@ -171,25 +185,34 @@ export class EgressNetworkManager {
       ]);
       const httpStatus = Number(stdout.trim());
       if (!Number.isInteger(httpStatus) || httpStatus === 0) {
-        return { httpStatus: null, blocked: true, detail: "No response: the connection never left." };
+        return {
+          httpStatus: null,
+          blocked: true,
+          conclusive: true,
+          detail: "No response: the connection never left.",
+        };
       }
       // 403 is the proxy refusing; 407 means no usable identity was presented.
       const blocked = httpStatus === 403 || httpStatus === 407;
       return {
         httpStatus,
         blocked,
+        conclusive: true,
         detail: blocked
           ? `The proxy refused the connection to ${host}.`
           : `The connection to ${host} was authorized and completed.`,
       };
     } catch (error) {
-      // curl exits non-zero when it cannot connect at all, which under this
-      // topology means the network itself refused — still a block.
+      // The probe container failed to run at all. Under this topology that is
+      // usually the network refusing, but it is equally consistent with the
+      // engine being busy or the image missing -- so it is reported as
+      // inconclusive rather than counted as proof of containment.
       return {
         httpStatus: null,
         blocked: true,
+        conclusive: false,
         detail:
-          "No route to " +
+          "Probe could not be completed for " +
           host +
           ": " +
           (error instanceof Error ? error.message.split("\n")[0] : String(error)),
@@ -207,5 +230,6 @@ export class EgressNetworkManager {
 
   async shutdown(): Promise<void> {
     await this.removeProxy();
+    this.readyForCurrentProcess = false;
   }
 }

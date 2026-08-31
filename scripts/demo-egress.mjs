@@ -62,7 +62,7 @@ const identity = new IdentityService(
 );
 const authorizer = new EgressAuthorizer(store, {
   standingAllowHosts: ["host.docker.internal"],
-  serverKey: config.authToken,
+  serverKey: config.internalAgentSecret,
   quarantineThreshold: 3,
   recordDecision: (runId, agentId, decision) =>
     service.recordPolicyDecision(runId, agentId, decision),

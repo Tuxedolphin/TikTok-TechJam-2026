@@ -22,6 +22,7 @@ export interface Agent {
   codexThreadId: string | null;
   activeSessionId: string | null;
   lastError: string | null;
+  authorityBlocked?: boolean;
   createdAt: string;
   updatedAt: string;
 }

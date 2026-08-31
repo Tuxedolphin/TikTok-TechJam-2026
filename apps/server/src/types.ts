@@ -23,6 +23,7 @@ export interface Agent {
   codexThreadId: string | null;
   activeSessionId: string | null;
   lastError: string | null;
+  authorityBlocked?: boolean;
   createdAt: string;
   updatedAt: string;
 }
@@ -206,8 +207,8 @@ export interface RunnerRequest {
 export interface AgentRunner {
   run(request: RunnerRequest): Promise<RunnerResult>;
   cancel(agentId: string): Promise<boolean>;
-  pause?(agentId: string): Promise<boolean>;
+  pause?(agentId: string): Promise<"paused" | "idle" | "failed">;
   resume?(agentId: string): Promise<boolean>;
+  isRunning?(agentId: string): boolean;
   isAvailable(): Promise<boolean>;
 }
-

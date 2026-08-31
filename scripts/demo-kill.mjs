@@ -25,6 +25,7 @@ const { IdentityService } = await import(`${D}/identity.js`);
 const { EgressAuthorizer } = await import(`${D}/egress-authorizer.js`);
 const { EgressNetworkManager, INTERNAL_NETWORK } = await import(`${D}/egress-network.js`);
 const { AgentTerminator } = await import(`${D}/terminator.js`);
+const { loadOrCreateReceiptKeyPair } = await import(`${D}/termination.js`);
 const { createApp } = await import(`${D}/app.js`);
 
 const execFileAsync = promisify(execFile);
@@ -57,12 +58,13 @@ const identity = new IdentityService(
 const network = new EgressNetworkManager(config);
 const authorizer = new EgressAuthorizer(store, {
   standingAllowHosts: ["host.docker.internal"],
-  serverKey: config.authToken,
+  serverKey: config.internalAgentSecret,
   quarantineThreshold: 99,
   recordDecision: (r, a, d) => service.recordPolicyDecision(r, a, d),
   recordBlocked: (r, a, i, d, s) => service.recordEgressBlocked(r, a, i.host, d, s),
 });
-const terminator = new AgentTerminator(store, service, identity, config.authToken, network);
+const receiptKeys = await loadOrCreateReceiptKeyPair(root);
+const terminator = new AgentTerminator(store, service, identity, receiptKeys, network);
 const app = await createApp(config, service, identity, authorizer, network, terminator);
 await app.listen({ host: "0.0.0.0", port: PORT });
 
@@ -97,6 +99,10 @@ try {
   log(`   agent reaches ${TARGET} -> HTTP ${await reach(TARGET)}   (working normally)\n`);
 
   log("2. Operator terminates the agent");
+  const trustedKey = await app
+    .inject({ method: "GET", url: "/api/receipt-key" })
+    .then((response) => response.json());
+  log(`   trusted receipt key before termination: ${trustedKey.keyId}`);
   const { receipt } = await app
     .inject({
       method: "POST", url: `/api/agents/${agent.id}/terminate`,
@@ -116,7 +122,12 @@ try {
   log("4. Receipt written. Verify it independently -- this program does not get a vote:\n");
   const { stdout } = await execFileAsync(
     "node",
-    [new URL("./verify-receipt.mjs", import.meta.url).pathname, file, "--key", config.authToken],
+    [
+      new URL("./verify-receipt.mjs", import.meta.url).pathname,
+      file,
+      "--public-key",
+      path.join(root, "receipt-signing-public.pem"),
+    ],
     { timeout: 30_000 },
   );
   log(stdout.split("\n").map((line) => `   ${line}`).join("\n"));
@@ -127,7 +138,12 @@ try {
   await writeFile(forgedFile, JSON.stringify(forged, null, 2));
   const tampered = await execFileAsync(
     "node",
-    [new URL("./verify-receipt.mjs", import.meta.url).pathname, forgedFile, "--key", config.authToken],
+    [
+      new URL("./verify-receipt.mjs", import.meta.url).pathname,
+      forgedFile,
+      "--public-key",
+      path.join(root, "receipt-signing-public.pem"),
+    ],
     { timeout: 30_000 },
   ).catch((error) => ({ stdout: error.stdout ?? "" }));
   log(tampered.stdout.split("\n").slice(-3).map((line) => `   ${line}`).join("\n"));

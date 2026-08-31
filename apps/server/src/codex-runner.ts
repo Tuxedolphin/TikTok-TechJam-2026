@@ -171,15 +171,18 @@ export class CodexRunner implements AgentRunner {
     return true;
   }
 
-  async pause(agentId: string): Promise<boolean> {
+  async pause(agentId: string): Promise<"paused" | "idle" | "failed"> {
     const active = this.active.get(agentId);
-    if (!active || active.cancelled) return false;
+    if (!active || active.cancelled) return "idle";
     try {
-      active.child.kill("SIGSTOP");
-      return true;
+      return active.child.kill("SIGSTOP") ? "paused" : "failed";
     } catch {
-      return false;
+      return "failed";
     }
+  }
+
+  isRunning(agentId: string): boolean {
+    return this.active.has(agentId);
   }
 
   async resume(agentId: string): Promise<boolean> {

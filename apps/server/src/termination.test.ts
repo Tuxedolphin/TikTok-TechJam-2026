@@ -1,17 +1,23 @@
+import { generateKeyPairSync } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import {
   canonicalize,
+  receiptKeyId,
   signReceipt,
   verifyReceipt,
   type TerminationReceipt,
   type UnsignedReceipt,
 } from "./termination.js";
 
-const KEY = "server-key";
+const { privateKey, publicKey } = generateKeyPairSync("ed25519");
+const PRIVATE_KEY = privateKey.export({ type: "pkcs8", format: "pem" }).toString();
+const PUBLIC_KEY = publicKey.export({ type: "spki", format: "pem" }).toString();
+const KEY_ID = receiptKeyId(PUBLIC_KEY);
 
 function receipt(over: Partial<UnsignedReceipt> = {}): TerminationReceipt {
   const body: UnsignedReceipt = {
     version: 1,
+    keyId: KEY_ID,
     agentId: "agent-1",
     agentPrincipalId: "agent-agent-1",
     reason: "Operator terminated the agent",
@@ -26,7 +32,7 @@ function receipt(over: Partial<UnsignedReceipt> = {}): TerminationReceipt {
     contained: true,
     ...over,
   };
-  return { ...body, signature: signReceipt(body, KEY) };
+  return { ...body, signature: signReceipt(body, PRIVATE_KEY) };
 }
 
 describe("canonicalize", () => {
@@ -40,39 +46,41 @@ describe("canonicalize", () => {
 
 describe("verifyReceipt", () => {
   it("accepts a receipt signed with the same key", () => {
-    expect(verifyReceipt(receipt(), KEY)).toMatchObject({ valid: true });
+    expect(verifyReceipt(receipt(), PUBLIC_KEY)).toMatchObject({ valid: true });
   });
 
   it("rejects a receipt signed with a different key", () => {
-    expect(verifyReceipt(receipt(), "other-key").valid).toBe(false);
+    const other = generateKeyPairSync("ed25519").publicKey
+      .export({ type: "spki", format: "pem" })
+      .toString();
+    expect(verifyReceipt(receipt(), other).valid).toBe(false);
   });
 
   it("rejects a receipt whose body was edited after signing", () => {
     const tampered = receipt();
     tampered.reason = "Something else entirely";
-    expect(verifyReceipt(tampered, KEY)).toMatchObject({
+    expect(verifyReceipt(tampered, PUBLIC_KEY)).toMatchObject({
       valid: false,
       reason: expect.stringContaining("Signature"),
     });
   });
 
   it("rejects a forged containment claim", () => {
-    // Flipping `contained` re-signs nothing, so this is caught by the
-    // signature -- but the same check must also hold for a legitimately
-    // re-signed receipt whose steps contradict its claim.
     const { signature: _ignored, ...base } = receipt();
     const body: UnsignedReceipt = {
       ...base,
       contained: true,
       steps: [
         { step: "freeze", ok: true, detail: "paused", at: "2026-08-31T00:00:00.000Z" },
+        { step: "revoke", ok: true, detail: "revoked", at: "2026-08-31T00:00:01.000Z" },
+        { step: "kill", ok: true, detail: "killed", at: "2026-08-31T00:00:02.000Z" },
         { step: "verify", ok: false, detail: "route still open", at: "2026-08-31T00:00:03.000Z" },
       ],
     };
-    const selfConsistent = { ...body, signature: signReceipt(body, KEY) };
-    expect(verifyReceipt(selfConsistent, KEY)).toMatchObject({
+    const selfConsistent = { ...body, signature: signReceipt(body, PRIVATE_KEY) };
+    expect(verifyReceipt(selfConsistent, PUBLIC_KEY)).toMatchObject({
       valid: false,
-      reason: expect.stringContaining("claims containment"),
+      reason: expect.stringContaining("structure"),
     });
   });
 
@@ -83,17 +91,30 @@ describe("verifyReceipt", () => {
       contained: false,
       steps: [
         { step: "freeze", ok: true, detail: "paused", at: "2026-08-31T00:00:00.000Z" },
+        { step: "revoke", ok: true, detail: "revoked", at: "2026-08-31T00:00:01.000Z" },
         { step: "kill", ok: false, detail: "engine unreachable", at: "2026-08-31T00:00:02.000Z" },
+        { step: "verify", ok: false, detail: "runtime remains", at: "2026-08-31T00:00:03.000Z" },
       ],
     };
-    const honest = { ...body, signature: signReceipt(body, KEY) };
-    const result = verifyReceipt(honest, KEY);
+    const honest = { ...body, signature: signReceipt(body, PRIVATE_KEY) };
+    const result = verifyReceipt(honest, PUBLIC_KEY);
     expect(result.valid).toBe(true);
-    expect(result.reason).toContain("NOT achieved");
+    expect(result.reason).toContain("not achieved");
   });
 
   it("rejects a receipt with no signature at all", () => {
     const unsigned = { ...receipt(), signature: "" };
-    expect(verifyReceipt(unsigned, KEY).valid).toBe(false);
+    expect(verifyReceipt(unsigned, PUBLIC_KEY).valid).toBe(false);
+  });
+
+  it("rejects a signed receipt that omits required steps", () => {
+    const { signature: _signature, ...base } = receipt();
+    const body = { ...base, steps: [], contained: true } as UnsignedReceipt;
+    expect(
+      verifyReceipt(
+        { ...body, signature: signReceipt(body, PRIVATE_KEY) },
+        PUBLIC_KEY,
+      ),
+    ).toMatchObject({ valid: false, reason: expect.stringContaining("structure") });
   });
 });
