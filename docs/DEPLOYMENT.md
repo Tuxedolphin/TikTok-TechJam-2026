@@ -95,8 +95,10 @@ Set these values in `.env.production`:
 
 ```dotenv
 PUBLIC_PORT=80
+MODEL_PROVIDER=ark
 ARK_API_KEY=your-ark-api-key
 ARK_MODEL=ep-your-endpoint-id
+ARK_BASE_URL=https://ark.cn-beijing.volces.com/api/v3
 APP_AUTH_TOKEN=the-random-token-generated-above
 ```
 
@@ -107,15 +109,55 @@ chmod 600 .env.production
 ./scripts/deploy-existing-ecs.sh .env.production
 ```
 
-Verify:
+Verify the control plane and selected provider:
 
 ```bash
 curl http://127.0.0.1/api/health
 export APP_AUTH_TOKEN=your-shared-demo-token
 curl -H "Authorization: Bearer $APP_AUTH_TOKEN" \
   http://127.0.0.1/api/system
+# Expect: "modelProvider":"ark", the configured endpoint model, and
+# "modelBaseUrl":"https://ark.cn-beijing.volces.com/api/v3".
 docker compose --env-file .env.production ps
 ```
+
+Run a real Ark smoke turn after deployment:
+
+```bash
+agent_json=$(curl -fsS -X POST \
+  -H "Authorization: Bearer $APP_AUTH_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"name":"Ark smoke test"}' \
+  http://127.0.0.1/api/agents)
+agent_id=$(printf '%s' "$agent_json" | node -pe \
+  'JSON.parse(require("fs").readFileSync(0, "utf8")).agent.id')
+run_json=$(curl -fsS -X POST \
+  -H "Authorization: Bearer $APP_AUTH_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"content":"Reply exactly ARK_SMOKE_OK"}' \
+  "http://127.0.0.1/api/agents/$agent_id/messages")
+run_id=$(printf '%s' "$run_json" | node -pe \
+  'JSON.parse(require("fs").readFileSync(0, "utf8")).run.id')
+for _ in $(seq 1 60); do
+  run_json=$(curl -fsS -H "Authorization: Bearer $APP_AUTH_TOKEN" \
+    "http://127.0.0.1/api/runs/$run_id")
+  status=$(printf '%s' "$run_json" | node -pe \
+    'JSON.parse(require("fs").readFileSync(0, "utf8")).run.status')
+  case "$status" in completed|failed|cancelled) break ;; esac
+  sleep 2
+done
+printf '%s' "$run_json" | node -e '
+  const run = JSON.parse(require("fs").readFileSync(0, "utf8")).run;
+  if (run.status !== "completed" || !run.output?.includes("ARK_SMOKE_OK")) {
+    console.error(run); process.exit(1);
+  }
+'
+curl -fsS -X DELETE -H "Authorization: Bearer $APP_AUTH_TOKEN" \
+  "http://127.0.0.1/api/agents/$agent_id" >/dev/null
+```
+
+This asserts a completed Run and expected model output, exercising the
+configured Ark endpoint rather than the Gemini adapter or OpenRouter.
 
 Deploy updates with `git pull --ff-only`, then rerun the deployment script.
 

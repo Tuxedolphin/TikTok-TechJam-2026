@@ -226,11 +226,15 @@ cp deploy/volcengine/terraform.tfvars.example \
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
-| `GEMINI_API_KEY` | Recommended | Google Gemini API key from Google AI Studio. |
+| `MODEL_PROVIDER` | Auto-detected for one configured provider | Explicitly select `gemini`, `openrouter`, or `ark`; required when multiple providers are present. |
+| `GEMINI_API_KEY` | Optional | Google Gemini API key used only through the internal adapter. |
 | `GEMINI_MODEL` | `gemini-3.5-flash-lite` | Gemini model variant (e.g. `gemini-3.5-flash-lite`, `gemini-2.5-flash`). |
-| `OPENROUTER_API_KEY` | Optional | Fallback OpenRouter API key. |
-| `OPENROUTER_MODEL` | Optional | Fallback OpenRouter model slug (e.g. `openai/gpt-4o-mini`). |
-| `OPENROUTER_BASE_URL` | `https://openrouter.ai/api/v1` | OpenAI-compatible base URL. |
+| `OPENROUTER_API_KEY` | Optional | OpenRouter API key, used only when OpenRouter is selected. |
+| `OPENROUTER_MODEL` | Optional | OpenRouter model slug (e.g. `openai/gpt-4o-mini`). |
+| `OPENROUTER_BASE_URL` | `https://openrouter.ai/api/v1` | OpenRouter API base URL. |
+| `ARK_API_KEY` | Optional | BytePlus ModelArk API key, used only when Ark is selected. |
+| `ARK_MODEL` | Optional | ModelArk endpoint ID (for example, `ep-your-endpoint-id`). |
+| `ARK_BASE_URL` | `https://ark.cn-beijing.volces.com/api/v3` | ModelArk Responses API base URL. |
 | `RUNTIME_PROVIDER` | `local-process` | `container` for disposable local Runtime containers. |
 | `CODEX_SANDBOX_MODE` | `workspace-write` | Codex inner sandbox mode. |
 | `CODEX_TIMEOUT_MS` | `600000` | Maximum duration of one turn. |
@@ -287,10 +291,10 @@ Judges can independently playtest each governance and security layer directly fr
 
 ### 1. Zero-Friction Safe Operations (`ALLOW-STANDARD-000`)
 - **Objective**: Verify that low-risk development tasks execute seamlessly without unnecessary human interruption while maintaining an immutable audit log.
-- **Action**: In the chat playground, click the starter prompt **`Safe turn: Run npm test to verify current tests (Auto-Approved)`** or ask the agent to inspect files / check git status.
+- **Action**: Create a new Agent, then click **`Safe turn: Run pwd, then list workspace files with ls -la (Auto-Approved)`**. The command works in a fresh workspace without requiring a `package.json` or Git repository.
 - **Verification**:
-  - The agent completes the task without pausing.
-  - Open the **Trace** drawer (bottom-right bar): observe the blue **`Action Auto-Approved (ALLOW-STANDARD-000)`** event recorded in the audit trail.
+  - The output shows the Agent workspace path and its platform-managed files without pausing.
+  - Open the **Trace** drawer (bottom-right bar). The starter action records `run.created`, `run.started`, `step.auto_approved` with **`ALLOW-STANDARD-000`**, `step.command`, and `run.completed`, in that order.
 
 ### 2. High-Risk Action Interception & Operator Denial (`SEC-EGRESS-003`)
 - **Objective**: Test how the middleware arrests unauthorized outbound network traffic and safely recovers the agent upon human rejection.

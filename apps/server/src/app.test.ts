@@ -33,6 +33,49 @@ describe("HTTP boundary", () => {
       headers: { authorization: "Bearer a-strong-test-token" },
     });
     expect(allowed.statusCode).toBe(200);
+
+    const nonCanonicalCases: Array<[string, number]> = [
+      ["/api//agents", 401],
+      ["/api/./agents", 401],
+      ["/api/%2e/agents", 401],
+      ["/api/%2e%2e/api/agents", 401],
+      ["//api/agents", 401],
+      ["/api\\agents", 401],
+      ["/api%5cagents", 401],
+      ["/api/%5cagents", 401],
+      ["/api%2fagents", 401],
+      ["/api/%2fagents", 401],
+      ["/api/%252e/agents", 401],
+      ["/api/%ZZ/agents", 400],
+    ];
+    for (const [url, statusCode] of nonCanonicalCases) {
+      const response = await app.inject({ method: "GET", url });
+      expect(response.statusCode, url).toBe(statusCode);
+      expect(response.body, url).not.toContain("secret");
+      if (statusCode === 401) {
+        expect(response.json(), url).toEqual({ error: "Authentication required" });
+      }
+    }
+    await app.close();
+  });
+
+  it("serves production static assets without exposing protected API routes", async () => {
+    const app = await createApp(
+      loadConfig({
+        NODE_ENV: "production",
+        HOST: "127.0.0.1",
+        APP_AUTH_TOKEN: "a-strong-test-token",
+      }),
+      service,
+    );
+
+    const page = await app.inject({ method: "GET", url: "/" });
+    expect(page.statusCode).toBe(200);
+    expect(page.headers["content-type"]).toContain("text/html");
+    expect(page.body).toContain("Agent Launchpad");
+
+    const protectedApi = await app.inject({ method: "GET", url: "/api//agents" });
+    expect(protectedApi.statusCode).toBe(401);
     await app.close();
   });
 

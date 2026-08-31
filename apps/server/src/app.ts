@@ -94,12 +94,26 @@ export async function createApp(
   });
 
   app.addHook("onRequest", async (request, reply) => {
+    const routePath = request.routeOptions.url;
+    const rawPath = request.url
+      .split(/[?#]/, 1)[0]
+      ?.replace(/\\/g, "/")
+      .replace(/\/{2,}/g, "/") ?? "/";
+    let decodedPath = rawPath;
+    try {
+      decodedPath = decodeURIComponent(rawPath)
+        .replace(/\\/g, "/")
+        .replace(/\/{2,}/g, "/");
+    } catch {
+      // Malformed encodings remain protected when their raw path targets /api.
+    }
+    const targetsApi = routePath?.startsWith("/api/") || decodedPath.startsWith("/api/");
     if (
       !config.authToken ||
-      !request.url.startsWith("/api/") ||
-      request.url === "/api/health" ||
-      request.url === "/api/auth" ||
-      request.url.startsWith("/api/adapter/")
+      !targetsApi ||
+      routePath === "/api/health" ||
+      routePath === "/api/auth" ||
+      routePath?.startsWith("/api/adapter/")
     ) {
       return;
     }

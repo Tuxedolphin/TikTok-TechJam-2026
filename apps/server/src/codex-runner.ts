@@ -353,10 +353,7 @@ export class CodexRunner implements AgentRunner {
     ] as const;
     const environment: NodeJS.ProcessEnv = {
       CODEX_HOME: this.config.codexHome,
-      OPENROUTER_API_KEY: this.config.openRouterApiKey,
-      OPENAI_API_KEY: this.config.openRouterApiKey,
-      OPENROUTER_BASE_URL: this.config.openRouterBaseUrl,
-      OPENAI_BASE_URL: this.config.openRouterBaseUrl,
+      MODEL_API_KEY: this.config.modelRuntimeApiKey,
       NO_COLOR: "1",
     };
     for (const name of inheritedNames) {

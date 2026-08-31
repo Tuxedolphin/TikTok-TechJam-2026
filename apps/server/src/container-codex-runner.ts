@@ -40,10 +40,7 @@ interface ParsedEvents {
  */
 export function containerEngineEnvironment(config: AppConfig): NodeJS.ProcessEnv {
   const environment: NodeJS.ProcessEnv = {
-    OPENROUTER_API_KEY: config.openRouterApiKey,
-    OPENAI_API_KEY: config.openRouterApiKey,
-    OPENROUTER_BASE_URL: config.openRouterBaseUrl,
-    OPENAI_BASE_URL: config.openRouterBaseUrl,
+    MODEL_API_KEY: config.modelRuntimeApiKey,
     NO_COLOR: "1",
   };
   for (const name of ["PATH", "HOME", "TMPDIR", "LANG", "LC_ALL", "XDG_RUNTIME_DIR"] as const) {
@@ -109,13 +106,7 @@ export function buildContainerRunArgs(
     "--user",
     config.containerUser,
     "--env",
-    "OPENROUTER_API_KEY=" + config.openRouterApiKey,
-    "--env",
-    "OPENAI_API_KEY=" + config.openRouterApiKey,
-    "--env",
-    "OPENROUTER_BASE_URL=" + config.openRouterBaseUrl,
-    "--env",
-    "OPENAI_BASE_URL=" + config.openRouterBaseUrl,
+    "MODEL_API_KEY=" + config.modelRuntimeApiKey,
     "--env",
     "CODEX_HOME=/codex-home",
     "--env",

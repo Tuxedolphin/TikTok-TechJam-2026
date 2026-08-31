@@ -107,9 +107,10 @@ export interface ApprovalRequest {
 }
 
 export interface SystemInfo {
-  openRouterConfigured: boolean;
-  openRouterBaseUrl: string;
-  openRouterModel: string | null;
+  modelConfigured: boolean;
+  modelProvider: "ark" | "openrouter" | "gemini";
+  modelBaseUrl: string;
+  modelName: string | null;
   codexAvailable: boolean;
   codexSandboxMode: string;
   runtimeProvider: "local-process" | "container";
