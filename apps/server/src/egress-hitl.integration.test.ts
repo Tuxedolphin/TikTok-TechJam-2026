@@ -16,6 +16,7 @@ import { loadConfig } from "./config.js";
 import { EgressAuthorizer } from "./egress-authorizer.js";
 import { createEgressProxy, type EgressVerdict } from "./egress-proxy.js";
 import { RunCancelledError } from "./errors.js";
+import { IdentityService } from "./identity.js";
 import { JsonStore } from "./store.js";
 import type {
   AgentRunner,
@@ -131,6 +132,7 @@ interface Fixture {
   agentId: string;
   principalId: string;
   appPort: number;
+  principalSessionToken: string;
   proxyPort: number;
   servers: Server[];
   close: () => Promise<void>;
@@ -193,9 +195,15 @@ async function startFixture(options: {
   }
 
   const authorizer = new EgressAuthorizer(store, authorizerOptions);
-  const app = await createApp(config, service, undefined, authorizer);
+  const identity = new IdentityService(store);
+  const app = await createApp(config, service, identity, authorizer);
   const appPort = await app.listen({ host: "127.0.0.1", port: 0 });
   const parsedAppPort = Number(new URL(appPort).port);
+  const { sessionToken: principalSessionToken } = await postJson<{ sessionToken: string }>(
+    parsedAppPort,
+    "/api/mock-principal-session",
+    { principalId: "user-a" },
+  );
   const proxy = createEgressProxy({
     allowPrivateAddresses: true,
     authorize: ({ signal, ...input }) =>
@@ -208,6 +216,7 @@ async function startFixture(options: {
     agentId: agent.id,
     principalId: agent.principalId,
     appPort: parsedAppPort,
+    principalSessionToken,
     proxyPort,
     servers: [proxy],
     close: async () => {
@@ -230,6 +239,7 @@ function postJson<T>(
   requestPath: string,
   body: unknown,
   signal?: AbortSignal,
+  headers: Record<string, string> = {},
 ): Promise<T> {
   return new Promise((resolve, reject) => {
     const payload = JSON.stringify(body);
@@ -239,7 +249,11 @@ function postJson<T>(
         port,
         method: "POST",
         path: requestPath,
-        headers: { "content-type": "application/json", "content-length": Buffer.byteLength(payload) },
+        headers: {
+          "content-type": "application/json",
+          "content-length": Buffer.byteLength(payload),
+          ...headers,
+        },
         ...(signal ? { signal } : {}),
       },
       (response) => {
@@ -339,9 +353,13 @@ async function resolveApproval(
   approvalId: string,
   decision: "approve" | "deny",
 ): Promise<void> {
-  await postJson(fixture.appPort, `/api/approvals/${approvalId}/${decision}`, {
-    operatorName: "IntegrationOperator",
-  });
+  await postJson(
+    fixture.appPort,
+    `/api/approvals/${approvalId}/${decision}`,
+    {},
+    undefined,
+    { "x-mock-principal-session": fixture.principalSessionToken },
+  );
 }
 
 describe("egress approval production path", () => {
@@ -367,13 +385,38 @@ describe("egress approval production path", () => {
     await expect.poll(() => fixture.service.listApprovals(fixture.agentId, "pending")).toHaveLength(1);
     const secondApproval = fixture.service.listApprovals(fixture.agentId, "pending")[0]!;
     expect(secondApproval.id).not.toBe(firstApproval.id);
+    expect(secondApproval).toMatchObject({
+      resolvedByPrincipalId: null,
+      resolvedByDisplayName: null,
+      evidence: {
+        initiatingHuman: { principalId: "user-a", displayName: "User A" },
+        executingAgent: {
+          principalId: fixture.principalId,
+          displayName: "Egress integration",
+        },
+        action: { type: "tool_call", detail: expect.stringMatching(/^POST 127\.0\.0\.1:/) },
+        resource: expect.stringMatching(/^127\.0\.0\.1:/),
+        decision: null,
+        result: "pending",
+        resolvedBy: null,
+      },
+    });
     expect(destination.requests).toHaveLength(0);
 
     await resolveApproval(fixture, secondApproval.id, "approve");
     expect(await approvedRequest).toMatchObject({ status: 200, body: "destination-response" });
     expect(destination.requests).toHaveLength(1);
     expect(destination.requests[0]).toEqual({ method: "POST", url: "/held/path?q=1", body: "held-body" });
-    expect(fixture.service.getApproval(secondApproval.id).status).toBe("approved");
+    expect(fixture.service.getApproval(secondApproval.id)).toMatchObject({
+      status: "approved",
+      resolvedByPrincipalId: "user-a",
+      resolvedByDisplayName: "User A",
+      evidence: {
+        decision: "approved",
+        result: "execution_authorized",
+        resolvedBy: { principalId: "user-a", displayName: "User A" },
+      },
+    });
     expect(fixture.service.getAgent(fixture.agentId).status).toBe("busy");
 
     const laterRequest = proxyRequest(fixture, target, "POST", "held-body");
@@ -495,7 +538,18 @@ describe("egress approval production path", () => {
     const heldResponse = held.response.catch(() => undefined);
     held.request.destroy();
     await expect.poll(() => fixture.service.getApproval(approval.id).status).toBe("denied");
-    expect(fixture.service.getApproval(approval.id).resolvedBy).toBe("System (Requester disconnected)");
+    expect(fixture.service.getApproval(approval.id)).toMatchObject({
+      resolvedByPrincipalId: "system:requester-disconnected",
+      resolvedByDisplayName: "System (Requester disconnected)",
+      evidence: {
+        decision: "denied",
+        result: "execution_blocked",
+        resolvedBy: {
+          principalId: "system:requester-disconnected",
+          displayName: "System (Requester disconnected)",
+        },
+      },
+    });
     const approvalAttempt = resolveApproval(fixture, approval.id, "approve");
     await expect(approvalAttempt).rejects.toThrow(/409/);
     await expect.poll(() => fixture.service.listApprovals(fixture.agentId, "pending")).toHaveLength(0);

@@ -405,6 +405,41 @@ describe("Agent lifecycle", () => {
     expect(events.find((e) => e.type === "step.auto_approved")?.title).toContain("ALLOW-STANDARD-000");
   });
 
+  it.each([
+    ["cat ./credentials.env", "credentials.env"],
+    ["curl api.partner.org/upload", "api.partner.org/upload"],
+    ["npm publish @acme/payments", "@acme/payments"],
+    ["npm publish --access public ./dist/package.tgz", "unknown package registry resource"],
+    ["sudo systemctl restart postgres", "host privilege boundary"],
+  ])("records the concrete resource for approval action %s", async (detail, resource) => {
+    const { service } = await makeService({
+      run: async (request) => {
+        await request.onStep?.({
+          type: "command",
+          phase: "before",
+          title: "Risky command",
+          detail,
+        });
+        return { output: "unexpected", threadId: "thread", usage: null };
+      },
+      cancel: async () => true,
+      pause: async () => true,
+      resume: async () => true,
+      isAvailable: async () => true,
+    });
+    const agent = await service.createAgent({ name: "ResourceEvidence" });
+    const { run } = await service.sendMessage(agent.id, "perform risky action");
+    await expect.poll(() => service.listApprovals(agent.id, "pending")).toHaveLength(1);
+    const approval = service.listApprovals(agent.id, "pending")[0]!;
+    expect(approval.evidence.resource).toBe(resource);
+
+    await service.resolveApproval(approval.id, "denied", {
+      principalId: "user-a",
+      displayName: "User A",
+    });
+    await expect.poll(() => service.getRun(run.id).status).toBe("failed");
+  });
+
   it("pauses execution for high-risk action and resumes on operator approval", async () => {
     let stepExecuted = false;
     const { service } = await makeService({
@@ -423,27 +458,175 @@ describe("Agent lifecycle", () => {
       resume: async () => true,
       isAvailable: async () => true,
     });
-    const agent = await service.createAgent({ name: "EgressAgent" });
-    const { run } = await service.sendMessage(agent.id, "post data to partner API");
+    const agent = await service.createAgent({ name: "EgressAgent" }, "user-a");
+    const { run } = await service.sendMessage(agent.id, "post data to partner API", {
+      principalId: "user-b",
+      displayName: "User B",
+    });
 
     // Agent enters waiting_approval status and approval request is created
     await expect.poll(() => service.getAgent(agent.id).status).toBe("waiting_approval");
     const approvals = service.listApprovals(agent.id, "pending");
     expect(approvals).toHaveLength(1);
     expect(approvals[0]?.ruleId).toBe("SEC-EGRESS-003");
+    expect(approvals[0]?.evidence).toMatchObject({
+      initiatingHuman: { principalId: "user-b", displayName: "User B" },
+      executingAgent: { principalId: agent.principalId, displayName: "EgressAgent" },
+      action: { type: "command", detail: "curl -X POST https://api.partner.org/data" },
+      resource: "https://api.partner.org/data",
+      decision: null,
+      result: "pending",
+      resolvedBy: null,
+    });
     expect(stepExecuted).toBe(false);
 
-    // Operator approves the action
-    await service.resolveApproval(approvals[0]!.id, "approved", "SecurityOfficer");
+    // The server-resolved mock principal approves the action.
+    await service.resolveApproval(approvals[0]!.id, "approved", {
+      principalId: "user-b",
+      displayName: "User B",
+    });
 
     // Execution resumes and completes
     await expect.poll(() => service.getRun(run.id).status).toBe("completed");
     expect(stepExecuted).toBe(true);
 
+    const resolved = service.getApproval(approvals[0]!.id);
+    expect(resolved).toMatchObject({
+      resolvedByPrincipalId: "user-b",
+      resolvedByDisplayName: "User B",
+      evidence: {
+        decision: "approved",
+        result: "execution_resumed",
+        resolvedBy: { principalId: "user-b", displayName: "User B" },
+      },
+    });
     const events = service.getRunEvents(run.id);
     expect(events.some((e) => e.type === "step.approval_requested")).toBe(true);
-    expect(events.some((e) => e.type === "step.approval_granted")).toBe(true);
-    expect(events.find((e) => e.type === "step.approval_granted")?.detail).toContain("SecurityOfficer");
+    const granted = events.find((e) => e.type === "step.approval_granted");
+    expect(granted).toBeDefined();
+    expect(JSON.parse(granted!.detail)).toMatchObject({
+      ...resolved.evidence,
+      result: "execution_authorized",
+    });
+  });
+
+  it("does not publish an approval until the runner has verifiably paused", async () => {
+    let releasePause!: () => void;
+    let stepExecuted = false;
+    const { service } = await makeService({
+      run: async (request) => {
+        await request.onStep?.({
+          type: "command",
+          phase: "before",
+          title: "Run curl",
+          detail: "curl https://api.partner.org/data",
+        });
+        stepExecuted = true;
+        return { output: "done", threadId: "thread", usage: null };
+      },
+      pause: async () => new Promise<boolean>((resolve) => {
+        releasePause = () => resolve(true);
+      }),
+      resume: async () => true,
+      cancel: async () => true,
+      isAvailable: async () => true,
+    });
+    const agent = await service.createAgent({ name: "PauseRace" });
+    const { run } = await service.sendMessage(agent.id, "contact the partner API");
+    await expect.poll(() => typeof releasePause).toBe("function");
+    expect(service.listApprovals(agent.id)).toHaveLength(0);
+    releasePause();
+    await expect.poll(() => service.listApprovals(agent.id, "pending")).toHaveLength(1);
+    const approvalId = service.listApprovals(agent.id, "pending")[0]!.id;
+
+    await service.resolveApproval(approvalId, "approved", {
+      principalId: "user-a",
+      displayName: "User A",
+    });
+
+    await expect.poll(() => service.getRun(run.id).status).toBe("completed");
+    expect(stepExecuted).toBe(true);
+    expect(service.getApproval(approvalId).status).toBe("approved");
+  });
+
+  it("fails closed without publishing an approval when the runner cannot pause", async () => {
+    const { service } = await makeService({
+      run: async (request) => {
+        await request.onStep?.({
+          type: "command",
+          phase: "before",
+          title: "Run curl",
+          detail: "curl https://api.partner.org/data",
+        });
+        return { output: "unexpected", threadId: "thread", usage: null };
+      },
+      pause: async () => false,
+      cancel: async () => true,
+      isAvailable: async () => true,
+    });
+    const agent = await service.createAgent({ name: "PauseFailure" });
+    const { run } = await service.sendMessage(agent.id, "contact the partner API");
+
+    await expect.poll(() => service.getRun(run.id).status).toBe("failed");
+    expect(service.listApprovals(agent.id)).toHaveLength(0);
+    expect(service.getAgent(agent.id).status).toBe("stopped");
+    expect(service.getRunEvents(run.id).some((event) => event.type === "run.blocked")).toBe(true);
+  });
+
+  it("fails closed without publishing an approval when pausing throws", async () => {
+    const { service } = await makeService({
+      run: async (request) => {
+        await request.onStep?.({
+          type: "command",
+          phase: "before",
+          title: "Run curl",
+          detail: "curl https://api.partner.org/data",
+        });
+        return { output: "unexpected", threadId: "thread", usage: null };
+      },
+      pause: async () => {
+        throw new Error("pause transport failed");
+      },
+      cancel: async () => true,
+      isAvailable: async () => true,
+    });
+    const agent = await service.createAgent({ name: "PauseException" });
+    const { run } = await service.sendMessage(agent.id, "contact the partner API");
+
+    await expect.poll(() => service.getRun(run.id).status).toBe("failed");
+    expect(service.listApprovals(agent.id)).toHaveLength(0);
+    expect(service.getAgent(agent.id).status).toBe("stopped");
+  });
+
+  it("records a failed result when the runner cannot resume an approved action", async () => {
+    const { service } = await makeService({
+      run: async (request) => {
+        await request.onStep?.({
+          type: "command",
+          phase: "before",
+          title: "Run curl",
+          detail: "curl https://api.partner.org/data",
+        });
+        return { output: "unexpected", threadId: "thread", usage: null };
+      },
+      pause: async () => true,
+      resume: async () => false,
+      cancel: async () => true,
+      isAvailable: async () => true,
+    });
+    const agent = await service.createAgent({ name: "ResumeFailure" });
+    const { run } = await service.sendMessage(agent.id, "contact the partner API");
+    await expect.poll(() => service.listApprovals(agent.id, "pending")).toHaveLength(1);
+    const approvalId = service.listApprovals(agent.id, "pending")[0]!.id;
+
+    await service.resolveApproval(approvalId, "approved", {
+      principalId: "user-a",
+      displayName: "User A",
+    });
+
+    await expect.poll(() => service.getRun(run.id).status).toBe("failed");
+    expect(service.getApproval(approvalId).evidence.result).toBe("execution_failed");
+    expect(service.getRun(run.id).error).toContain("Runtime resume failed");
   });
 
   it("blocks execution and records policy denial when operator rejects high-risk action", async () => {
@@ -476,8 +659,11 @@ describe("Agent lifecycle", () => {
     expect(approvals).toHaveLength(1);
     expect(approvals[0]?.ruleId).toBe("SEC-DESTRUCTIVE-001");
 
-    // Operator denies the action
-    await service.resolveApproval(approvals[0]!.id, "denied", "LeadAdmin");
+    // The server-resolved mock principal denies the action.
+    await service.resolveApproval(approvals[0]!.id, "denied", {
+      principalId: "user-a",
+      displayName: "User A",
+    });
 
     // Execution fails cleanly with operator denial policy violation and agent recovers to ready
     await expect.poll(() => service.getRun(run.id).status).toBe("failed");
@@ -487,8 +673,17 @@ describe("Agent lifecycle", () => {
 
     const events = service.getRunEvents(run.id);
     expect(events.some((e) => e.type === "step.approval_requested")).toBe(true);
-    expect(events.some((e) => e.type === "step.approval_denied")).toBe(true);
-    expect(events.find((e) => e.type === "step.approval_denied")?.detail).toContain("LeadAdmin");
+    const denied = events.find((e) => e.type === "step.approval_denied");
+    expect(denied).toBeDefined();
+    expect(JSON.parse(denied!.detail)).toMatchObject({
+      initiatingHuman: { principalId: "user-a", displayName: "User A" },
+      executingAgent: { principalId: agent.principalId, displayName: "DestructiveAgent" },
+      action: { type: "command", detail: "rm -rf /workspace/sensitive-data" },
+      resource: "/workspace/sensitive-data",
+      decision: "denied",
+      result: "execution_blocked",
+      resolvedBy: { principalId: "user-a", displayName: "User A" },
+    });
     expect(service.getRun(run.id).error).toContain("Action blocked by operator denial");
   });
 
@@ -686,7 +881,10 @@ describe("Agent lifecycle", () => {
     });
 
     const approval = service.listApprovals(agent.id, "pending")[0]!;
-    await service.resolveApproval(approval.id, "denied", "Test cleanup");
+    await service.resolveApproval(approval.id, "denied", {
+      principalId: "test:cleanup",
+      displayName: "Test cleanup",
+    });
     await expect.poll(() => service.getRun(run.id).status).toBe("failed");
   });
 
@@ -715,7 +913,16 @@ describe("Agent lifecycle", () => {
     expect(service.getRun(run.id).status).toBe("cancelled");
     expect(service.getApproval(approval.id)).toMatchObject({
       status: "denied",
-      resolvedBy: "System (Execution cancelled)",
+      resolvedByPrincipalId: "system:run-cancelled",
+      resolvedByDisplayName: "System (Run cancelled)",
+      evidence: {
+        decision: "denied",
+        result: "execution_cancelled",
+        resolvedBy: {
+          principalId: "system:run-cancelled",
+          displayName: "System (Run cancelled)",
+        },
+      },
     });
     await expect(service.resolveApproval(approval.id, "approved")).rejects.toMatchObject({
       statusCode: 409,
@@ -873,7 +1080,10 @@ describe("Agent lifecycle", () => {
     await expect.poll(() => service.getAgent(agent.id).status).toBe("waiting_approval");
     const approval = service.listApprovals(agent.id, "pending")[0]!;
 
-    await service.resolveApproval(approval.id, "approved", "Operator");
+    await service.resolveApproval(approval.id, "approved", {
+      principalId: "user-a",
+      displayName: "Operator",
+    });
     await expect.poll(() => service.getRun(run.id).status).toBe("failed");
     expect(service.getApproval(approval.id).status).toBe("approved");
     expect(service.getAgent(agent.id).status).toBe("stopped");

@@ -54,7 +54,7 @@ describe("JsonStore", () => {
     ]);
   });
 
-  it("migrates v3 databases to v4 with seeded principals and resources", async () => {
+  it("migrates v3 databases to v5 with seeded principals and resources", async () => {
     const root = await mkdtemp(path.join(tmpdir(), "launchpad-store-test-"));
     temporaryDirectories.push(root);
     const filePath = path.join(root, "db.json");
@@ -72,7 +72,7 @@ describe("JsonStore", () => {
     const store = new JsonStore(filePath);
     await store.initialize();
     const database = store.snapshot();
-    expect(database.version).toBe(4);
+    expect(database.version).toBe(5);
     expect(database.principals.map((p) => p.id)).toEqual(
       expect.arrayContaining(["user-a", "user-b", "agent-agent-1"]),
     );
@@ -80,5 +80,131 @@ describe("JsonStore", () => {
     expect(database.agents[0]?.ownerId).toBe("user-a");
     expect(database.agents[0]?.principalId).toBe("agent-agent-1");
     expect(database.grants).toEqual([]);
+  });
+
+  it("migrates legacy approval display names into separate actor evidence", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "launchpad-store-test-"));
+    temporaryDirectories.push(root);
+    const filePath = path.join(root, "db.json");
+    const v4 = {
+      version: 4,
+      agents: [{
+        id: "agent-1", name: "Executor", description: "", instructions: "",
+        ownerId: "user-a", principalId: "agent-agent-1", status: "ready",
+        workspacePath: "/tmp/ws", codexThreadId: null, activeSessionId: null,
+        lastError: null, createdAt: "2026-08-29T00:00:00.000Z",
+        updatedAt: "2026-08-29T00:00:00.000Z",
+      }],
+      sessions: [], messages: [], runs: [{
+        id: "run-1", agentId: "agent-1", sessionId: null, status: "completed",
+        prompt: "contact partner", output: "done", error: null, usage: null,
+        startedAt: "2026-08-29T00:00:00.000Z",
+        completedAt: "2026-08-29T00:01:00.000Z",
+        createdAt: "2026-08-29T00:00:00.000Z",
+      }], runEvents: [],
+      approvals: [{
+        id: "approval-1", runId: "run-1", agentId: "agent-1",
+        actionType: "command", actionDetail: "curl https://api.partner.org/data",
+        ruleId: "SEC-EGRESS-003", reason: "Outbound network connection",
+        riskLevel: "high", status: "approved",
+        createdAt: "2026-08-29T00:00:00.000Z",
+        resolvedAt: "2026-08-29T00:01:00.000Z", resolvedBy: "System (Server restarted)",
+      }, {
+        id: "approval-2", runId: "run-1", agentId: "agent-1",
+        actionType: "command", actionDetail: "npm publish @acme/payments",
+        ruleId: "SEC-SUPPLY-004", reason: "Package publishing",
+        riskLevel: "medium", status: "pending",
+        createdAt: "2026-08-29T00:00:00.000Z", resolvedAt: null, resolvedBy: null,
+      }],
+      principals: [
+        { id: "user-a", kind: "human", name: "User A", createdAt: "2026-08-29T00:00:00.000Z" },
+        { id: "agent-agent-1", kind: "agent", name: "Executor", createdAt: "2026-08-29T00:00:00.000Z" },
+      ],
+      grants: [], resources: [],
+    };
+    await writeFile(filePath, JSON.stringify(v4), "utf8");
+
+    const store = new JsonStore(filePath);
+    await store.initialize();
+    const database = store.snapshot();
+    const approval = database.approvals[0];
+    expect(database.version).toBe(5);
+    expect(database.runs[0]).toMatchObject({
+      initiatedByPrincipalId: "legacy:unverified-initiator",
+      initiatedByDisplayName: "Unknown legacy initiator",
+    });
+    expect(approval).toMatchObject({
+      resolvedByPrincipalId: "legacy:unverified-operator",
+      resolvedByDisplayName: "System (Server restarted)",
+      evidence: {
+        initiatingHuman: {
+          principalId: "legacy:unverified-initiator",
+          displayName: "Unknown legacy initiator",
+        },
+        executingAgent: { principalId: "agent-agent-1", displayName: "Executor" },
+        action: { type: "command", detail: "curl https://api.partner.org/data" },
+        resource: "https://api.partner.org/data",
+        decision: "approved",
+        result: "unknown",
+        resolvedBy: {
+          principalId: "legacy:unverified-operator",
+          displayName: "System (Server restarted)",
+        },
+      },
+    });
+    expect(approval).not.toHaveProperty("resolvedBy");
+    expect(database.approvals[1]?.evidence).toMatchObject({
+      resource: "@acme/payments",
+      result: "pending",
+    });
+  });
+
+  it("lifts a v5 file that predates the attribution fields", async () => {
+    // A sibling change also stamps `version: 5` (it adds `memories`). Trusting
+    // the version number alone would accept its approvals with `resolvedBy`
+    // still a string while the type claims an actor -- a silent lie on the
+    // records this migration exists to make trustworthy. Detect the shape.
+    const root = await mkdtemp(path.join(tmpdir(), "launchpad-store-test-"));
+    temporaryDirectories.push(root);
+    const filePath = path.join(root, "db.json");
+    const otherV5 = {
+      version: 5,
+      agents: [{
+        id: "agent-1", name: "A", description: "", instructions: "",
+        ownerId: "user-a", principalId: "agent-agent-1",
+        status: "ready", workspacePath: "/tmp/ws", codexThreadId: null,
+        activeSessionId: null, lastError: null,
+        createdAt: "2026-08-29T00:00:00.000Z", updatedAt: "2026-08-29T00:00:00.000Z",
+      }],
+      sessions: [], messages: [], runEvents: [],
+      runs: [{
+        id: "run-1", agentId: "agent-1", status: "completed", prompt: "p",
+        output: null, error: null, usage: null,
+        startedAt: null, completedAt: null, createdAt: "2026-08-29T00:00:00.000Z",
+      }],
+      approvals: [{
+        id: "ap-1", runId: "run-1", agentId: "agent-1", actionType: "command",
+        actionDetail: "curl https://example.com", ruleId: "SEC-EGRESS-003",
+        reason: "r", riskLevel: "high", status: "approved",
+        createdAt: "2026-08-29T00:00:00.000Z",
+        resolvedAt: "2026-08-29T00:01:00.000Z",
+        resolvedBy: "SecurityOfficer",
+      }],
+      principals: [], grants: [], resources: [],
+      memories: [],
+    };
+    await writeFile(filePath, JSON.stringify(otherV5), "utf8");
+    const store = new JsonStore(filePath);
+    await store.initialize();
+    const database = store.snapshot();
+
+    const approval = database.approvals[0];
+    // The legacy string is preserved as a display name but marked unverified,
+    // never presented as a real server-issued principal.
+    expect(approval?.resolvedByPrincipalId).toBe("legacy:unverified-operator");
+    expect(approval?.resolvedByDisplayName).toBe("SecurityOfficer");
+    expect(approval?.evidence).toBeDefined();
+    expect((approval as unknown as { resolvedBy?: unknown }).resolvedBy).toBeUndefined();
+    expect(database.runs[0]?.initiatedByPrincipalId).toBe("legacy:unverified-initiator");
   });
 });

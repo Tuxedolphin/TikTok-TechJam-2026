@@ -47,6 +47,7 @@ export class IdentityService {
         ? new Date(now.getTime() + input.ttlMinutes * 60_000).toISOString()
         : null,
       revokedAt: null,
+      revokedBy: null,
       createdAt: now.toISOString(),
     };
     await this.store.mutate((database) => {
@@ -59,11 +60,12 @@ export class IdentityService {
     return grant;
   }
 
-  async revokeGrant(id: string): Promise<Grant> {
+  async revokeGrant(id: string, revokedBy: string): Promise<Grant> {
     const grant = await this.store.mutate((database) => {
       const stored = database.grants.find((g) => g.id === id);
       if (!stored) throw new HttpError(404, `Unknown grant ${id}`);
       stored.revokedAt = new Date().toISOString();
+      stored.revokedBy = revokedBy;
       return structuredClone(stored);
     });
     await this.recordGrantEvent("grant.revoked", grant);
