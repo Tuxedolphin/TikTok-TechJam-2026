@@ -204,14 +204,21 @@ export class AgentService {
     });
   }
 
-  async freezeAgent(agentId: string): Promise<"paused" | "idle" | "blocked" | "failed"> {
+  async freezeAgent(
+    agentId: string,
+  ): Promise<"paused" | "idle" | "blocked" | "failed" | "unsupported"> {
     this.getAgent(agentId);
     if (!this.activeExecutions.has(agentId)) return "idle";
 
     // The barrier closes the race where termination arrives after a run is
     // queued but before the runner process or container has been created.
     this.terminationBarriers.add(agentId);
-    const result = await this.runner.pause?.(agentId);
+    // `pause` is optional on AgentRunner, so a live run under a runner with no
+    // freeze control is a different fact from a freeze that was attempted and
+    // failed. Both refuse containment; the receipt should not report the
+    // second when the first is true.
+    if (!this.runner.pause) return "unsupported";
+    const result = await this.runner.pause(agentId);
     if (result === "paused" || result === "failed") return result;
     if (result === "idle") return "blocked";
     return "failed";

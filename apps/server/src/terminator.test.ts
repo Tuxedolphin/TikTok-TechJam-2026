@@ -144,6 +144,42 @@ describe("AgentTerminator", () => {
     expect(service.getAgent(agent.id).status).toBe("stopped");
   });
 
+  it("says a runtime cannot freeze rather than reporting a failed freeze attempt", async () => {
+    let running = false;
+    let finish!: (result: RunnerResult) => void;
+    const pending = new Promise<RunnerResult>((resolve) => {
+      finish = resolve;
+    });
+    // `pause` is optional on AgentRunner, so this runner shape is legal.
+    const { service, terminator, keys } = await harness({
+      run: () => {
+        running = true;
+        return pending;
+      },
+      cancel: async () => {
+        running = false;
+        finish({ output: "cancelled", threadId: null, usage: null });
+        return true;
+      },
+      isRunning: () => running,
+      isAvailable: async () => true,
+    });
+    const agent = await service.createAgent({ name: "Unfreezable" });
+    await service.sendMessage(agent.id, "keep running");
+    await expect.poll(() => running).toBe(true);
+
+    const receipt = await terminator.terminate(agent.id, "No freeze control");
+
+    // Still fail-closed: a live run that cannot be frozen is not containment.
+    expect(receipt.steps[0]).toMatchObject({
+      step: "freeze",
+      ok: false,
+      detail: "A live execution exists under a runtime with no freeze control.",
+    });
+    expect(receipt.contained).toBe(false);
+    expect(verifyReceipt(receipt, keys.publicKeyPem).valid).toBe(true);
+  });
+
   it("does not treat an inconclusive network probe as containment evidence", async () => {
     const { service, store, identity, keys } = await harness({
       run: async () => ({ output: "done", threadId: null, usage: null }),

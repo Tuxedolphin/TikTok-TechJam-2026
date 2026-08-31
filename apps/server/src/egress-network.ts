@@ -32,10 +32,10 @@ export class EgressNetworkManager {
 
   constructor(private readonly config: AppConfig) {}
 
-  private async engine(args: string[]): Promise<string> {
+  private async engine(args: string[], secrets?: NodeJS.ProcessEnv): Promise<string> {
     const { stdout } = await execFileAsync(this.config.containerEngine, args, {
       timeout: 30_000,
-      env: containerEngineEnvironment(this.config),
+      env: { ...containerEngineEnvironment(this.config), ...secrets },
     });
     return stdout.trim();
   }
@@ -104,10 +104,14 @@ export class EgressNetworkManager {
         `EGRESS_PROXY_PORT=${this.config.egressProxyPort}`,
         "--env",
         `EGRESS_AUTHORIZE_URL=http://host.docker.internal:${this.config.port}/api/egress/authorize`,
+        // Passed by name, not value: `--env NAME=value` would put the agent
+        // secret in the engine's argv, and /proc/<pid>/cmdline is world
+        // readable. That secret derives every agent's proxy password, so a
+        // local reader could impersonate any agent and spend its grants.
         "--env",
-        `EGRESS_AUTHORIZE_TOKEN=${this.config.authToken}`,
+        "EGRESS_AUTHORIZE_TOKEN",
         "--env",
-        `EGRESS_AGENT_SECRET=${this.config.internalAgentSecret}`,
+        "EGRESS_AGENT_SECRET",
         "--mount",
         `type=bind,src=${this.config.serverDistPath},dst=/app,readonly`,
         "--workdir",
@@ -115,7 +119,10 @@ export class EgressNetworkManager {
         this.config.egressProxyImage,
         "node",
         "/app/egress-proxy-main.js",
-      ]);
+      ], {
+        EGRESS_AUTHORIZE_TOKEN: this.config.authToken,
+        EGRESS_AGENT_SECRET: this.config.internalAgentSecret,
+      });
       // The uplink is attached second so the proxy's default route stays on the
       // internal network while it still has a path to the internet.
       await this.engine(["network", "connect", UPLINK_NETWORK, PROXY_CONTAINER]);

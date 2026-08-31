@@ -70,8 +70,10 @@ export class AgentTerminator {
         blocked: "Queued execution blocked before its runtime could start.",
         idle: "No live or queued execution existed.",
         failed: "A live execution could not be suspended.",
+        unsupported: "A live execution exists under a runtime with no freeze control.",
       } as const;
-      return { step: "freeze", ok: result !== "failed", detail: details[result], at: now() };
+      const ok = result !== "failed" && result !== "unsupported";
+      return { step: "freeze", ok, detail: details[result], at: now() };
     } catch (error) {
       return { step: "freeze", ok: false, detail: describe(error), at: now() };
     }
