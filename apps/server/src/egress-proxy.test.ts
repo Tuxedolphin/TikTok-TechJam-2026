@@ -145,6 +145,93 @@ describe("egress proxy", () => {
     expect(JSON.parse(result.body).ruleId).toBe("NET-EGRESS-PRIVATE-024");
   });
 
+  it("refuses to tunnel to the control plane", async () => {
+    // A CONNECT tunnel is opaque: the proxy pipes bytes without parsing them,
+    // so nothing can be attested. Allowing one to the control plane would let
+    // an agent's request arrive looking like a human operator's.
+    const proxyPort = await listen(
+      createEgressProxy({
+        allowPrivateAddresses: true,
+        controlPlane: { host: "control.internal", port: 3000 },
+        authorize: async () => allow,
+      }),
+    );
+    const status = await new Promise<number>((resolve, reject) => {
+      const request = httpRequest({
+        host: "127.0.0.1", port: proxyPort, method: "CONNECT", path: "control.internal:3000",
+        headers: {
+          "proxy-authorization": "Basic " + Buffer.from("agent-1:token").toString("base64"),
+        },
+      });
+      request.on("connect", (response) => resolve(response.statusCode ?? 0));
+      request.on("response", (response) => resolve(response.statusCode ?? 0));
+      request.on("error", reject);
+      request.end();
+    });
+    expect(status).toBe(403);
+  });
+
+  it("still tunnels to ordinary hosts", async () => {
+    const proxyPort = await listen(
+      createEgressProxy({
+        allowPrivateAddresses: true,
+        controlPlane: { host: "control.internal", port: 3000 },
+        authorize: async () => allow,
+      }),
+    );
+    // A different port on the same host is not the control plane.
+    const status = await new Promise<number>((resolve, reject) => {
+      const request = httpRequest({
+        host: "127.0.0.1", port: proxyPort, method: "CONNECT", path: "control.internal:9999",
+        headers: {
+          "proxy-authorization": "Basic " + Buffer.from("agent-1:token").toString("base64"),
+        },
+      });
+      request.on("connect", (response) => resolve(response.statusCode ?? 0));
+      request.on("response", (response) => resolve(response.statusCode ?? 0));
+      request.on("error", () => resolve(-1)); // upstream unreachable, but not refused by policy
+      request.end();
+    });
+    expect(status).not.toBe(403);
+  });
+
+  it("stamps attestation and strips any the caller supplied", async () => {
+    const seen: Record<string, string | string[] | undefined> = {};
+    const upstream = createServer((request, response) => {
+      Object.assign(seen, request.headers);
+      response.writeHead(200);
+      response.end("ok");
+    });
+    const upstreamPort = await listen(upstream);
+    const proxyPort = await listen(
+      createEgressProxy({
+        allowPrivateAddresses: true,
+        authorize: async () => allow,
+        attest: () => ({ "x-agent-attested-principal": "agent-real" }),
+      }),
+    );
+    await new Promise<void>((resolve, reject) => {
+      const request = httpRequest(
+        {
+          host: "127.0.0.1", port: proxyPort, method: "GET",
+          path: `http://127.0.0.1:${upstreamPort}/`,
+          headers: {
+            host: `127.0.0.1:${upstreamPort}`,
+            "x-agent-attested-principal": "agent-forged",
+            "proxy-authorization": "Basic " + Buffer.from("agent-1:token").toString("base64"),
+          },
+        },
+        (response) => {
+          response.resume();
+          response.on("end", () => resolve());
+        },
+      );
+      request.on("error", reject);
+      request.end();
+    });
+    expect(seen["x-agent-attested-principal"]).toBe("agent-real");
+  });
+
   it("preserves the request path for origin-form requests", async () => {
     const paths: string[] = [];
     const upstream = createServer((request, response) => {

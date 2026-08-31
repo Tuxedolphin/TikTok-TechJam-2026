@@ -42,6 +42,13 @@ export interface EgressProxyOptions {
    * what makes the attestation trustworthy.
    */
   attest?: (agentPrincipalId: string) => Record<string, string>;
+  /**
+   * The control plane, which must never be reachable through a CONNECT tunnel.
+   * A tunnel is opaque -- this proxy pipes bytes without parsing them -- so a
+   * request sent through one carries no attestation and would reach the
+   * control plane looking like it came from a human operator.
+   */
+  controlPlane?: { host: string; port: number };
   /** Called for every verdict so the caller can log; must never throw. */
   onVerdict?: (input: { agentPrincipalId: string; host: string; verdict: EgressVerdict }) => void;
   /** Idle/connect timeout for upstream connections. */
@@ -293,6 +300,28 @@ export function createEgressProxy(options: EgressProxyOptions): Server {
     clientSocket.on("error", () => {});
     void (async () => {
       const { host, port } = parseAuthority(request.url ?? "", 443);
+
+      // Refuse to tunnel to the control plane: attestation cannot be applied
+      // to bytes this proxy never parses, and an unattested request there
+      // would be indistinguishable from a human operator's.
+      if (
+        options.controlPlane &&
+        host === options.controlPlane.host &&
+        port === options.controlPlane.port
+      ) {
+        denyConnect(
+          clientSocket,
+          {
+            allowed: false,
+            ruleId: "NET-EGRESS-TUNNEL-025",
+            reason:
+              "The control plane cannot be reached through a tunnel; use a proxied request so it can be attributed to this agent.",
+          },
+          host,
+        );
+        return;
+      }
+
       const principal = principalFromProxyAuth(request.headers["proxy-authorization"]);
       const verdict = await decide(principal, host, port, "CONNECT");
 

@@ -28,7 +28,15 @@ if (!authorizeUrl) {
   process.exit(1);
 }
 
+// The control plane is wherever we send authorization requests.
+const controlPlaneUrl = new URL(authorizeUrl);
+const controlPlane = {
+  host: controlPlaneUrl.hostname,
+  port: Number(controlPlaneUrl.port || (controlPlaneUrl.protocol === "https:" ? 443 : 80)),
+};
+
 const server = createEgressProxy({
+  controlPlane,
   authorize: async ({ agentPrincipalId, host, port: targetPort, method, secret }): Promise<EgressVerdict> => {
     const response = await fetch(authorizeUrl, {
       method: "POST",
