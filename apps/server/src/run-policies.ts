@@ -136,9 +136,10 @@ export function estimateRunCostUsd(
 ): number | null {
   if (!usage) return null;
   const input = usage.inputTokens ?? 0;
-  const cached = usage.cachedInputTokens ?? 0;
+  const cached = Math.min(usage.cachedInputTokens ?? 0, input);
+  const uncachedInput = input - cached;
   const output = usage.outputTokens ?? 0;
-  if (input === 0 && output === 0 && cached === 0) return null;
+  if (input === 0 && output === 0) return null;
 
   // Blended estimates per 1M tokens based on standard tiers
   const isHighTier =
@@ -150,16 +151,13 @@ export function estimateRunCostUsd(
   const cachedRate = isHighTier ? 0.75 / 1_000_000 : 0.0375 / 1_000_000;
   const outputRate = isHighTier ? 15.0 / 1_000_000 : 0.60 / 1_000_000;
 
-  const cost = input * inputRate + cached * cachedRate + output * outputRate;
+  const cost = uncachedInput * inputRate + cached * cachedRate + output * outputRate;
   return Number(cost.toFixed(6));
 }
 
 function totalTokens(usage: RunUsage | null): number | null {
   if (!usage) return null;
-  return [usage.inputTokens, usage.cachedInputTokens, usage.outputTokens].reduce<number>(
-    (sum, value) => sum + (typeof value === "number" ? value : 0),
-    0,
-  );
+  return (usage.inputTokens ?? 0) + (usage.outputTokens ?? 0);
 }
 
 export function rejectRunIfBudgetExceeded(
@@ -216,6 +214,17 @@ export function summarizeRunPolicies(config: AppConfig): Record<string, unknown>
     runBudgetMaxOutputTokens: config.runBudgetMaxOutputTokens,
     runBudgetMaxTotalTokens: config.runBudgetMaxTotalTokens,
     runBudgetMaxDurationMs: config.runBudgetMaxDurationMs,
+    runBudgetEnforcement: {
+      inputTokens: "observational",
+      cachedInputTokens: "observational",
+      outputTokens: "preventive",
+      totalTokens: "observational",
+      durationMs: "preventive",
+    },
+    runBudgetTokenSemantics: {
+      cachedInputTokensIncludedInInput: true,
+      totalTokens: ["inputTokens", "outputTokens"],
+    },
   };
 }
 

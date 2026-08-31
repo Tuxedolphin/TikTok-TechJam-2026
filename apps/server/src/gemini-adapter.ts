@@ -128,10 +128,29 @@ export async function handleGeminiResponsesAdapter(
     })
     .filter(Boolean);
 
+  const requestedMaxOutputTokens =
+    typeof body.max_output_tokens === "number" &&
+    Number.isInteger(body.max_output_tokens) &&
+    body.max_output_tokens > 0
+      ? body.max_output_tokens
+      : null;
+  const maxCompletionTokens = [
+    requestedMaxOutputTokens,
+    config.runBudgetMaxOutputTokens,
+  ].reduce<number | null>(
+    (lowest, value) =>
+      value === null ? lowest : lowest === null ? value : Math.min(lowest, value),
+    null,
+  );
   const geminiPayload = {
     model: targetModel,
     messages,
     ...(tools.length > 0 ? { tools, tool_choice: "auto" } : {}),
+    // Google's OpenAI-compatibility layer documents `max_tokens` and silently
+    // ignores parameters it does not recognize, so an unrecognized name would
+    // make this cap decorative. It counts reasoning plus output tokens, which
+    // is stricter than the budget name suggests -- never looser.
+    ...(maxCompletionTokens !== null ? { max_tokens: maxCompletionTokens } : {}),
     stream: false,
   };
 
