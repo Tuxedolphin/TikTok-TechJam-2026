@@ -296,6 +296,7 @@ flowchart LR
 | Rule ID | Target | Enforcement boundary |
 | --- | --- | --- |
 | **`HITL-EGRESS-025`** | One ungranted outbound request | Proxy holds the exact request before connect; approval releases it once. |
+| **`HITL-EGRESS-FLOOD-027`** | A 4th concurrent held request from one Agent | Refused immediately without creating an approval, so a hijacked Agent cannot flood the operator queue. The refusal counts a strike, so sustained flooding quarantines instead. |
 | **`NET-EGRESS-020`** | Host covered by a live `network:egress` grant | Proxy checks the grant before every request or tunnel. |
 | **`SEC-EGRESS-003`** | Egress command text reported by Codex | Post-execution telemetry; network safety comes from the proxy, not this event. |
 | **`SEC-DESTRUCTIVE-001`**, **`SEC-CREDENTIALS-002`**, **`SEC-SUPPLY-004`**, **`SEC-PRIVILEGE-005`** | Risky shell/tool text | Post-execution telemetry only. The disposable workspace and container limits reduce impact but are not a pre-action approval guarantee. |
@@ -414,11 +415,18 @@ terraform fmt -check -recursive deploy/volcengine
 docker compose config
 ```
 
-Run the current automated unit and integration tests via:
+`check` is typecheck, then build, then test — in that order, because one test
+asserts the built UI is served and would fail on a clean checkout otherwise.
 
-```bash
-npm test
-```
+Every push and pull request runs the same checks in CI
+([`.github/workflows/ci.yml`](.github/workflows/ci.yml)): typecheck/build/test,
+a config job (Compose parses `.env.example`, `bash -n` on the shell scripts,
+whitespace and conflict-marker scan, `npm audit` at high), and the demo scripts
+against real containers on the runner.
+
+One caveat worth stating plainly: the demo scripts print observations rather
+than asserting them, so a green demos job means the path executed end to end —
+not that containment was proven. Read the output when changing the egress path.
 
 ## Documentation
 
