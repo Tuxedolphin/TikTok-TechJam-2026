@@ -158,4 +158,53 @@ describe("JsonStore", () => {
       result: "pending",
     });
   });
+
+  it("lifts a v5 file that predates the attribution fields", async () => {
+    // A sibling change also stamps `version: 5` (it adds `memories`). Trusting
+    // the version number alone would accept its approvals with `resolvedBy`
+    // still a string while the type claims an actor -- a silent lie on the
+    // records this migration exists to make trustworthy. Detect the shape.
+    const root = await mkdtemp(path.join(tmpdir(), "launchpad-store-test-"));
+    temporaryDirectories.push(root);
+    const filePath = path.join(root, "db.json");
+    const otherV5 = {
+      version: 5,
+      agents: [{
+        id: "agent-1", name: "A", description: "", instructions: "",
+        ownerId: "user-a", principalId: "agent-agent-1",
+        status: "ready", workspacePath: "/tmp/ws", codexThreadId: null,
+        activeSessionId: null, lastError: null,
+        createdAt: "2026-08-29T00:00:00.000Z", updatedAt: "2026-08-29T00:00:00.000Z",
+      }],
+      sessions: [], messages: [], runEvents: [],
+      runs: [{
+        id: "run-1", agentId: "agent-1", status: "completed", prompt: "p",
+        output: null, error: null, usage: null,
+        startedAt: null, completedAt: null, createdAt: "2026-08-29T00:00:00.000Z",
+      }],
+      approvals: [{
+        id: "ap-1", runId: "run-1", agentId: "agent-1", actionType: "command",
+        actionDetail: "curl https://example.com", ruleId: "SEC-EGRESS-003",
+        reason: "r", riskLevel: "high", status: "approved",
+        createdAt: "2026-08-29T00:00:00.000Z",
+        resolvedAt: "2026-08-29T00:01:00.000Z",
+        resolvedBy: "SecurityOfficer",
+      }],
+      principals: [], grants: [], resources: [],
+      memories: [],
+    };
+    await writeFile(filePath, JSON.stringify(otherV5), "utf8");
+    const store = new JsonStore(filePath);
+    await store.initialize();
+    const database = store.snapshot();
+
+    const approval = database.approvals[0];
+    // The legacy string is preserved as a display name but marked unverified,
+    // never presented as a real server-issued principal.
+    expect(approval?.resolvedByPrincipalId).toBe("legacy:unverified-operator");
+    expect(approval?.resolvedByDisplayName).toBe("SecurityOfficer");
+    expect(approval?.evidence).toBeDefined();
+    expect((approval as unknown as { resolvedBy?: unknown }).resolvedBy).toBeUndefined();
+    expect(database.runs[0]?.initiatedByPrincipalId).toBe("legacy:unverified-initiator");
+  });
 });

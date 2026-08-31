@@ -105,45 +105,70 @@ function legacyActionResource(detail: string, ruleId: string): string {
   return "unknown legacy resource";
 }
 
+/**
+ * Per-record lifts to the v5 attribution shape, written to be idempotent.
+ *
+ * They are applied by the v4 migration AND by the v5 branch, because a store
+ * can legitimately be stamped `version: 5` without carrying these fields: a
+ * sibling change also introduced a v5 (adding `memories`). Trusting the version
+ * number alone would let a v5 file written by that branch through with
+ * `resolvedBy` still a legacy string while the type claimed `ApprovalActor` --
+ * a silent lie on exactly the records this attribution work exists to make
+ * trustworthy. Detect the shape, not the number.
+ */
+function liftRun(run: LegacyAgentRun | AgentRun): AgentRun {
+  if ("initiatedByPrincipalId" in run && run.initiatedByPrincipalId) return run as AgentRun;
+  return {
+    ...(run as LegacyAgentRun),
+    initiatedByPrincipalId: "legacy:unverified-initiator",
+    initiatedByDisplayName: "Unknown legacy initiator",
+  } as AgentRun;
+}
+
+function liftGrant(grant: LegacyGrant | Grant): Grant {
+  return "revokedBy" in grant ? (grant as Grant) : { ...grant, revokedBy: null };
+}
+
+function liftApproval(
+  approval: LegacyApprovalRequest | ApprovalRequest,
+  agents: Agent[],
+): ApprovalRequest {
+  if ("evidence" in approval && approval.evidence) return approval as ApprovalRequest;
+  const legacy = approval as LegacyApprovalRequest & { resolvedBy?: string | null };
+  const { resolvedBy, ...rest } = legacy;
+  const actor = resolvedBy
+    ? { principalId: "legacy:unverified-operator", displayName: resolvedBy }
+    : null;
+  const agent = agents.find((candidate) => candidate.id === approval.agentId);
+  return {
+    ...rest,
+    resolvedByPrincipalId: actor?.principalId ?? null,
+    resolvedByDisplayName: actor?.displayName ?? null,
+    evidence: {
+      initiatingHuman: {
+        principalId: "legacy:unverified-initiator",
+        displayName: "Unknown legacy initiator",
+      },
+      executingAgent: {
+        principalId: agent?.principalId ?? `agent-${approval.agentId}`,
+        displayName: agent?.name ?? approval.agentId,
+      },
+      action: { type: approval.actionType, detail: approval.actionDetail },
+      resource: legacyActionResource(approval.actionDetail, approval.ruleId),
+      decision: approval.status === "pending" ? null : approval.status,
+      result: approval.status === "pending" ? "pending" : "unknown",
+      resolvedBy: actor,
+    },
+  } as ApprovalRequest;
+}
+
 function migrateV4ToV5(v4: Database4Shape): Database {
   return {
     ...v4,
     version: 5,
-    runs: v4.runs.map((run) => {
-      return {
-        ...run,
-        initiatedByPrincipalId: "legacy:unverified-initiator",
-        initiatedByDisplayName: "Unknown legacy initiator",
-      };
-    }),
-    grants: v4.grants.map((grant) => ({ ...grant, revokedBy: null })),
-    approvals: v4.approvals.map((approval) => {
-      const { resolvedBy, ...rest } = approval;
-      const actor = resolvedBy
-        ? { principalId: "legacy:unverified-operator", displayName: resolvedBy }
-        : null;
-      const agent = v4.agents.find((candidate) => candidate.id === approval.agentId);
-      return {
-        ...rest,
-        resolvedByPrincipalId: actor?.principalId ?? null,
-        resolvedByDisplayName: actor?.displayName ?? null,
-        evidence: {
-          initiatingHuman: {
-            principalId: "legacy:unverified-initiator",
-            displayName: "Unknown legacy initiator",
-          },
-          executingAgent: {
-            principalId: agent?.principalId ?? `agent-${approval.agentId}`,
-            displayName: agent?.name ?? approval.agentId,
-          },
-          action: { type: approval.actionType, detail: approval.actionDetail },
-          resource: legacyActionResource(approval.actionDetail, approval.ruleId),
-          decision: approval.status === "pending" ? null : approval.status,
-          result: approval.status === "pending" ? "pending" : "unknown",
-          resolvedBy: actor,
-        },
-      };
-    }),
+    runs: v4.runs.map(liftRun),
+    grants: v4.grants.map(liftGrant),
+    approvals: v4.approvals.map((approval) => liftApproval(approval, v4.agents)),
   };
 }
 
@@ -159,11 +184,17 @@ function migrateDatabase(parsed: PersistedDatabase): Database {
       agents: Array.isArray(parsed.agents) ? parsed.agents : [],
       sessions: Array.isArray(parsed.sessions) ? parsed.sessions : [],
       messages: Array.isArray(parsed.messages) ? parsed.messages : [],
-      runs: Array.isArray(parsed.runs) ? parsed.runs : [],
+      // Lifted by shape: a v5 file may predate the attribution fields if it was
+      // written by the sibling v5 (see liftApproval).
+      runs: Array.isArray(parsed.runs) ? parsed.runs.map(liftRun) : [],
       runEvents: Array.isArray(parsed.runEvents) ? parsed.runEvents : [],
-      approvals: Array.isArray(parsed.approvals) ? parsed.approvals as ApprovalRequest[] : [],
+      approvals: Array.isArray(parsed.approvals)
+        ? (parsed.approvals as ApprovalRequest[]).map((approval) =>
+            liftApproval(approval, Array.isArray(parsed.agents) ? parsed.agents : []),
+          )
+        : [],
       principals: Array.isArray(parsed.principals) ? parsed.principals : [],
-      grants: Array.isArray(parsed.grants) ? parsed.grants : [],
+      grants: Array.isArray(parsed.grants) ? parsed.grants.map(liftGrant) : [],
       resources: Array.isArray(parsed.resources) ? parsed.resources : [],
     };
   }
