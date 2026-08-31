@@ -134,9 +134,11 @@ export async function handleGeminiResponsesAdapter(
     model: targetModel,
     messages,
     ...(tools.length > 0 ? { tools, tool_choice: "auto" } : {}),
-    ...(maxCompletionTokens !== null
-      ? { max_completion_tokens: maxCompletionTokens }
-      : {}),
+    // Google's OpenAI-compatibility layer documents `max_tokens` and silently
+    // ignores parameters it does not recognize, so an unrecognized name would
+    // make this cap decorative. It counts reasoning plus output tokens, which
+    // is stricter than the budget name suggests -- never looser.
+    ...(maxCompletionTokens !== null ? { max_tokens: maxCompletionTokens } : {}),
     stream: false,
   };
 

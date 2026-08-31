@@ -7,7 +7,7 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
-describe("Gemini Responses adapter budgets", () => {
+describe("Gemini Responses adapter output budget", () => {
   it("never requests more output tokens than the preventive cap", async () => {
     const requests: RequestInit[] = [];
     vi.stubGlobal("fetch", vi.fn(async (_input: unknown, init?: RequestInit) => {
@@ -50,7 +50,7 @@ describe("Gemini Responses adapter budgets", () => {
 
     expect(requests).toHaveLength(1);
     expect(JSON.parse(String(requests[0]?.body))).toMatchObject({
-      max_completion_tokens: 37,
+      max_tokens: 37,
     });
   });
 });
