@@ -20,6 +20,8 @@ export interface AuthorityDecision {
   allowed: boolean;
   ruleId: string;
   reason: string;
+  /** When an agent's delegation is allowed, the grant it was carved from. */
+  parentGrantId?: string | null;
 }
 
 /** A grant request stripped to the parts that determine how much power it confers. */
@@ -103,9 +105,18 @@ export function authorizeGrantRequest(input: {
     };
   }
 
-  // An agent asking to widen its own authority is the confused-deputy attack
-  // this rule exists to stop.
-  const selfDirected = input.beneficiaryPrincipalId === input.actorPrincipalId;
+  // A self-directed agent grant is refused outright, even when it would only
+  // clone authority the agent already holds. It gains the agent nothing it does
+  // not already have -- its only effect is a second grant that survives
+  // revocation of the first, which silently defeats revocation. Delegation only
+  // ever flows to a *different* principal.
+  if (input.beneficiaryPrincipalId === input.actorPrincipalId) {
+    return {
+      allowed: false,
+      ruleId: "AUTHORITY-SELF-ESCALATION-031",
+      reason: `An agent cannot grant itself ${input.requested.scope} on ${input.requested.target}; authority only flows downhill from a human.`,
+    };
+  }
 
   const covering = input.heldByRequester.find((grant) =>
     isNarrowerThan(input.requested, {
@@ -118,10 +129,8 @@ export function authorizeGrantRequest(input: {
   if (!covering) {
     return {
       allowed: false,
-      ruleId: selfDirected ? "AUTHORITY-SELF-ESCALATION-031" : "AUTHORITY-NARROWING-032",
-      reason: selfDirected
-        ? `An agent cannot grant itself ${input.requested.scope} on ${input.requested.target}; authority only flows downhill from a human.`
-        : `No grant held by ${input.actorPrincipalId} covers ${input.requested.scope} on ${input.requested.target}.`,
+      ruleId: "AUTHORITY-NARROWING-032",
+      reason: `No grant held by ${input.actorPrincipalId} covers ${input.requested.scope} on ${input.requested.target}.`,
     };
   }
 
@@ -129,5 +138,7 @@ export function authorizeGrantRequest(input: {
     allowed: true,
     ruleId: "AUTHORITY-NARROWING-032",
     reason: `Narrower than grant ${covering.id}, which the requester already holds.`,
+    // Revocation of `covering` will cascade to this delegated grant.
+    parentGrantId: covering.id,
   };
 }

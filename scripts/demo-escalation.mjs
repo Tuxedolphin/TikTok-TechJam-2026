@@ -77,15 +77,24 @@ r = await grant({ "x-principal-id": "user-a" }, {
 console.log(`3. The human operator grants npmjs               -> ${code(r)}`);
 const humanGrant = r.statusCode;
 
-// The rule is "only narrower", not "never". An agent re-issuing authority it
-// already holds, bounded to a shorter life, is the case that must be ALLOWED --
-// otherwise the narrowing rule is indistinguishable from refusing everything.
+// The rule is "only narrower", not "never" -- but delegation flows to a
+// *different* principal. A sub-agent receiving a time-boxed copy of authority
+// its parent holds is the case that must be ALLOWED; re-cloning to yourself is
+// not (it only produces a grant that survives the original's revocation).
+const child = await service.createAgent({ name: "Sub-agent" }, "user-a");
 r = await grant(attested, {
-  principalId: agent.principalId, scope: "network:egress", target: "registry.npmjs.org",
+  principalId: child.principalId, scope: "network:egress", target: "registry.npmjs.org",
   ttlMinutes: 5,
 });
-console.log(`4. Agent re-issues the same host, but time-boxed -> ${code(r)}`);
+console.log(`4. Agent delegates a time-boxed copy to a sub-agent -> ${code(r)}`);
 const attenuated = r.statusCode;
+
+// The revocation-bypass, refused: re-granting yourself a copy you already hold.
+r = await grant(attested, {
+  principalId: agent.principalId, scope: "network:egress", target: "registry.npmjs.org",
+});
+console.log(`   Agent clones that grant back to itself         -> ${code(r)}`);
+const selfClone = r.statusCode;
 
 // Scopes are only comparable within a family. Holding network authority must
 // never be spendable as resource authority, however "narrow" it looks.
@@ -113,24 +122,33 @@ for (const decision of decisions) {
   console.log(`   ${decision.allowed ? "allow" : "deny "}  ${decision.ruleId}`);
 }
 
-const live = identity.listGrants(agent.principalId).filter((g) => !g.revokedAt);
-console.log(`\nAgent ends holding: ${live.map((g) => `${g.scope}:${g.target}`).join(", ") || "nothing"}`);
-const leaked = live.some((g) => g.target === "attacker.example" || g.scope.startsWith("resource:"));
-const delegated = live.some((g) => g.target === "registry.npmjs.org" && g.expiresAt !== null);
+// Revocation must reach the delegated copy. The operator revokes the parent
+// grant it issued to the first agent; the sub-agent's copy cannot outlive it.
+const parentGrant = identity.listGrants(agent.principalId)
+  .find((g) => g.target === "registry.npmjs.org" && !g.revokedAt);
+await identity.revokeGrant(parentGrant.id);
+const childGrant = identity.listGrants(child.principalId)
+  .find((g) => g.target === "registry.npmjs.org");
+console.log(`\n7. Operator revokes the parent grant`);
+console.log(`   sub-agent's delegated copy is now: ${childGrant?.revokedAt ? "revoked (cascaded)" : "STILL LIVE"}`);
+const cascaded = childGrant?.revokedAt != null;
+
+const agentLive = identity.listGrants(agent.principalId).filter((g) => !g.revokedAt);
+const leaked = agentLive.some((g) => g.target === "attacker.example" || g.scope.startsWith("resource:"));
 console.log(
-  leaked
+  leaked || !cascaded
     ? ">>> STILL VULNERABLE"
-    : delegated
-      ? ">>> Attenuation holds: narrower delegation survived, every widening was refused."
-      : ">>> Narrowing delegation was refused too -- the rule is too strict.",
+    : ">>> Attenuation holds: narrower delegation flowed only downhill, and revocation cascaded to it.",
 );
 check("an agent cannot grant itself new authority", selfGrant === 403, `HTTP ${selfGrant}`);
 check("claiming to be the operator does not outrank attestation", impersonation === 403, `HTTP ${impersonation}`);
 check("a human can originate authority", humanGrant === 201, `HTTP ${humanGrant}`);
-check("an agent MAY delegate strictly narrower authority", attenuated === 201, `HTTP ${attenuated}`);
+check("an agent MAY delegate strictly narrower authority to a sub-agent", attenuated === 201, `HTTP ${attenuated}`);
+check("an agent cannot clone its own grant back to itself", selfClone === 403, `HTTP ${selfClone}`);
 check("network authority is not spendable as resource authority", crossFamily === 403, `HTTP ${crossFamily}`);
 check("holding one grant does not enable widening", widenAgain === 403, `HTTP ${widenAgain}`);
 check("the agent never ends up holding attacker.example", !leaked);
+check("revoking a parent grant cascades to the delegated copy", cascaded);
 check("both AUTHORITY rules appear in the trace",
   decisions.some((d) => d.ruleId === "AUTHORITY-NARROWING-032" && d.allowed) &&
   decisions.some((d) => d.ruleId === "AUTHORITY-SELF-ESCALATION-031" && !d.allowed));

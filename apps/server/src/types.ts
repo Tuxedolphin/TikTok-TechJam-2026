@@ -125,12 +125,17 @@ export type GrantScope = "resource:read" | "resource:write" | "network:egress";
 export interface Grant {
   id: string;
   principalId: string;     // agent principal receiving the grant
-  grantedBy: string;       // human principal id
+  grantedBy: string;       // human principal id, or an agent principal for delegation
   scope: GrantScope;
   target: string;          // resourceId for resource:*, hostname for network:egress
   expiresAt: string | null; // ISO; null = no expiry
   revokedAt: string | null;
   createdAt: string;
+  // When one agent delegates a narrower grant to another, the delegated grant
+  // points back at the grant it was carved from. Revoking a parent cascades to
+  // its descendants, so a delegated copy cannot outlive the authority it came
+  // from. Absent on human-issued (root) grants.
+  parentGrantId?: string | null;
 }
 
 export interface MockResource {

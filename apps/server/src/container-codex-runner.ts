@@ -38,6 +38,20 @@ interface ParsedEvents {
  * server's own process environment holds credentials that have no business
  * reaching a `docker`/`podman` invocation.
  */
+/**
+ * The proxy URL values, keyed by the names `buildContainerRunArgs` forwards.
+ * Empty when enforcement is off, so the agent container gets no proxy env.
+ */
+export function proxyChildEnv(egressProxyUrl: string | undefined): NodeJS.ProcessEnv {
+  if (!egressProxyUrl) return {};
+  return {
+    HTTP_PROXY: egressProxyUrl,
+    HTTPS_PROXY: egressProxyUrl,
+    http_proxy: egressProxyUrl,
+    https_proxy: egressProxyUrl,
+  };
+}
+
 export function containerEngineEnvironment(config: AppConfig): NodeJS.ProcessEnv {
   const environment: NodeJS.ProcessEnv = {
     OPENROUTER_API_KEY: config.openRouterApiKey,
@@ -84,14 +98,20 @@ export function buildContainerRunArgs(
       ? [
           "--network",
           INTERNAL_NETWORK,
+          // Passed by name, not value. The proxy URL embeds this agent's
+          // per-process proxy secret; `--env NAME=value` would put that secret
+          // in the engine's argv, and /proc/<pid>/cmdline is world-readable, so
+          // any local process could recover it and impersonate the agent at the
+          // proxy. The value travels in the engine child's own environment
+          // instead (see proxyChildEnv).
           "--env",
-          "HTTP_PROXY=" + request.egressProxyUrl,
+          "HTTP_PROXY",
           "--env",
-          "HTTPS_PROXY=" + request.egressProxyUrl,
+          "HTTPS_PROXY",
           "--env",
-          "http_proxy=" + request.egressProxyUrl,
+          "http_proxy",
           "--env",
-          "https_proxy=" + request.egressProxyUrl,
+          "https_proxy",
           "--env",
           "NO_PROXY=localhost,127.0.0.1",
         ]
@@ -234,7 +254,7 @@ export class ContainerCodexRunner implements AgentRunner {
       buildContainerRunArgs(request, this.config),
       {
         cwd: request.workspacePath,
-        env: this.childEnvironment(),
+        env: { ...this.childEnvironment(), ...proxyChildEnv(request.egressProxyUrl) },
         stdio: ["ignore", "pipe", "pipe"],
       },
     );

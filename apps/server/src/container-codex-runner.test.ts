@@ -3,9 +3,35 @@ import { loadConfig } from "./config.js";
 import {
   buildContainerRunArgs,
   containerName,
+  proxyChildEnv,
 } from "./container-codex-runner.js";
 
 describe("Container Codex runner", () => {
+  it("forwards the proxy URL by env name, never as a value in argv", () => {
+    const config = loadConfig({
+      NODE_ENV: "test",
+      OPENROUTER_API_KEY: "k",
+      OPENROUTER_MODEL: "openrouter/test-model",
+      CODEX_HOME: "/tmp/codex-home",
+      RUNTIME_PROVIDER: "container",
+      CONTAINER_RUNTIME_IMAGE: "runtime:test",
+    });
+    // The URL carries the agent's per-process proxy secret in its userinfo.
+    const proxyUrl = "http://agent-1:deadbeefsecret@launchpad-egress-proxy:8888";
+    const args = buildContainerRunArgs(
+      { agentId: "a", workspacePath: "/tmp/ws", prompt: "go", threadId: null, egressProxyUrl: proxyUrl },
+      config,
+    );
+
+    // /proc/<pid>/cmdline is world-readable; the secret must not be in argv.
+    expect(args.join("\0")).not.toContain("deadbeefsecret");
+    expect(args).toContain("HTTP_PROXY");
+    expect(args.some((arg) => arg.startsWith("HTTP_PROXY="))).toBe(false);
+    // It reaches the container through the engine child's environment instead.
+    expect(proxyChildEnv(proxyUrl).HTTP_PROXY).toBe(proxyUrl);
+    expect(proxyChildEnv(undefined)).toEqual({});
+  });
+
   it("builds an isolated Docker/Podman-compatible invocation", () => {
     const config = loadConfig({
       NODE_ENV: "test",

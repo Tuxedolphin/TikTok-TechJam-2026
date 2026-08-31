@@ -139,6 +139,60 @@ describe("IdentityService", () => {
     expect(service.listGrants("agent-1")[0]?.revokedAt).toBeNull();
   });
 
+  it("cascades revocation from a parent grant to a delegated descendant", async () => {
+    const { service, store } = await makeHarness();
+    // A second agent principal to delegate to.
+    await store.mutate((database) => {
+      database.principals.push({
+        id: "agent-2", kind: "agent", name: "A2", createdAt: new Date().toISOString(),
+      });
+      database.agents.push({
+        id: "00000000-0000-4000-8000-000000000002", name: "A2", description: "", instructions: "",
+        ownerId: "user-a", principalId: "agent-2", status: "ready", workspacePath: "/tmp",
+        codexThreadId: null, activeSessionId: null, lastError: null, authorityBlocked: false,
+        createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
+      });
+    });
+
+    // Human grants agent-1 egress; agent-1 delegates a time-boxed copy to agent-2.
+    const parent = await service.createGrant({
+      principalId: "agent-1", grantedBy: "user-a", scope: "network:egress", target: "registry.npmjs.org",
+    });
+    const delegated = await service.createGrant({
+      principalId: "agent-2", grantedBy: "agent-1",
+      scope: "network:egress", target: "registry.npmjs.org", ttlMinutes: 5,
+    });
+    expect(delegated.parentGrantId).toBe(parent.id);
+    expect((await service.readResourceAsAgent("res-a", "agent-2")) === undefined).toBe(false);
+
+    // Revoke the human-issued parent. The delegated copy must not outlive it.
+    await service.revokeGrant(parent.id);
+    const stored = store.snapshot().grants.find((g) => g.id === delegated.id);
+    expect(stored?.revokedAt).not.toBeNull();
+  });
+
+  it("refuses a self-directed clone that would survive its parent's revocation", async () => {
+    const service = await makeService();
+    await service.createGrant({
+      principalId: "agent-1", grantedBy: "user-a", scope: "network:egress", target: "example.com",
+    });
+    // The agent tries to clone its own grant back to itself.
+    await expect(service.createGrant({
+      principalId: "agent-1", grantedBy: "agent-1", scope: "network:egress", target: "example.com",
+    })).rejects.toMatchObject({ statusCode: 403 });
+    expect(service.listGrants("agent-1")).toHaveLength(1);
+  });
+
+  it("refuses a wildcard target so policy and enforcement cannot disagree", async () => {
+    const service = await makeService();
+    await expect(service.createGrant({
+      principalId: "agent-1", grantedBy: "user-a", scope: "network:egress", target: "*",
+    })).rejects.toMatchObject({ statusCode: 400 });
+    await expect(service.createGrant({
+      principalId: "agent-1", grantedBy: "user-a", scope: "network:egress", target: "*.example.com",
+    })).rejects.toMatchObject({ statusCode: 400 });
+  });
+
   it("atomically refuses new authority after termination blocks a principal", async () => {
     const { service, store } = await makeHarness();
     await store.mutate((database) => {

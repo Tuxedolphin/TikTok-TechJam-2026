@@ -101,15 +101,19 @@ export function principalFromProxyAuth(
 export function isPrivateAddress(address: string): boolean {
   if (isIP(address) === 6) {
     const normalized = address.toLowerCase();
+    // An IPv4-mapped address (::ffff:a.b.c.d, and its hex ::ffff:aabb:ccdd
+    // form) reaches the same host as the bare IPv4. Anything less than
+    // normalizing it back to v4 lets a partial prefix list leak: the previous
+    // check listed ::ffff:10/192.168 but not ::ffff:172.16/12 or, worse,
+    // ::ffff:169.254.169.254 -- cloud metadata behind a mapped address.
+    const mapped = mappedIpv4(normalized);
+    if (mapped) return isPrivateAddress(mapped);
     return (
       normalized === "::1" ||
       normalized === "::" ||
       normalized.startsWith("fe80:") ||
       normalized.startsWith("fc") ||
-      normalized.startsWith("fd") ||
-      normalized.startsWith("::ffff:127.") ||
-      normalized.startsWith("::ffff:10.") ||
-      normalized.startsWith("::ffff:192.168.")
+      normalized.startsWith("fd")
     );
   }
   const parts = address.split(".").map(Number);
@@ -120,6 +124,19 @@ export function isPrivateAddress(address: string): boolean {
   if (a === 172 && b >= 16 && b <= 31) return true;
   if (a === 192 && b === 168) return true;
   return false;
+}
+
+/** The dotted-quad inside an IPv4-mapped IPv6 address, in either notation. */
+function mappedIpv4(normalized: string): string | null {
+  const dotted = /^::ffff:(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})$/.exec(normalized);
+  if (dotted?.[1]) return dotted[1];
+  const hex = /^::ffff:([0-9a-f]{1,4}):([0-9a-f]{1,4})$/.exec(normalized);
+  if (hex?.[1] && hex[2]) {
+    const high = parseInt(hex[1], 16);
+    const low = parseInt(hex[2], 16);
+    return `${high >> 8}.${high & 0xff}.${low >> 8}.${low & 0xff}`;
+  }
+  return null;
 }
 
 const privateAddressVerdict = (host: string): EgressVerdict => ({

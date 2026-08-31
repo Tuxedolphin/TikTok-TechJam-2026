@@ -105,6 +105,20 @@ describe("isPrivateAddress", () => {
       expect(isPrivateAddress(address), address).toBe(false);
     }
   });
+  it("sees through IPv4-mapped IPv6 to the private range behind it", () => {
+    // A mapped address reaches the same host as the bare IPv4. Missing one of
+    // these was a metadata-server SSRF: ::ffff:169.254.169.254 read as public.
+    for (const address of [
+      "::ffff:172.16.0.1",
+      "::ffff:169.254.169.254",
+      "::ffff:10.0.0.1",
+      "::ffff:192.168.1.1",
+      "::ffff:a9fe:a9fe", // hex form of 169.254.169.254
+    ]) {
+      expect(isPrivateAddress(address), address).toBe(true);
+    }
+    expect(isPrivateAddress("::ffff:8.8.8.8")).toBe(false);
+  });
 });
 
 describe("egress proxy", () => {

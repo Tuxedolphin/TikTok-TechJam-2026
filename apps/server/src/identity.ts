@@ -38,6 +38,15 @@ export class IdentityService {
     ttlMinutes?: number | null;
   }): Promise<Grant> {
     const now = new Date();
+    // A wildcard target ("*", "*.example.com") is accepted by the delegation
+    // check but never honoured by enforcement, which matches on exact target.
+    // The two disagreeing is a hole: a "*" grant looks like it authorizes
+    // everything yet activates nothing, and default-deny should not offer a
+    // catch-all in the first place. Refuse wildcards so policy and enforcement
+    // speak the same language.
+    if (input.target.includes("*")) {
+      throw new HttpError(400, "Grant targets must be concrete; wildcard targets are not allowed.");
+    }
     const expiresAt = input.ttlMinutes
       ? new Date(now.getTime() + input.ttlMinutes * 60_000).toISOString()
       : null;
@@ -51,6 +60,7 @@ export class IdentityService {
       expiresAt,
       revokedAt: null,
       createdAt: now.toISOString(),
+      parentGrantId: null,
     };
     let decision: AuthorityDecision;
     try {
@@ -83,6 +93,9 @@ export class IdentityService {
             : [],
         });
         if (!authorityDecision.allowed) throw new AuthorityDeniedError(authorityDecision);
+        // A delegated grant records the grant it was carved from, so revoking
+        // the parent cascades here rather than leaving an orphan copy alive.
+        grant.parentGrantId = authorityDecision.parentGrantId ?? null;
         database.grants.push(structuredClone(grant));
         return authorityDecision;
       });
@@ -136,14 +149,47 @@ export class IdentityService {
   }
 
   async revokeGrant(id: string): Promise<Grant> {
-    const grant = await this.store.mutate((database) => {
+    const { root, cascaded } = await this.store.mutate((database) => {
       const stored = database.grants.find((g) => g.id === id);
       if (!stored) throw new HttpError(404, `Unknown grant ${id}`);
-      stored.revokedAt = new Date().toISOString();
-      return structuredClone(stored);
+      const revokedAt = new Date().toISOString();
+
+      // Revoke the grant and every live descendant delegated from it. Without
+      // this, an agent that carved a narrower copy for a sub-agent could keep
+      // that copy alive after the operator revoked the grant it came from.
+      const toRevoke = new Set<string>([id]);
+      let grew = true;
+      while (grew) {
+        grew = false;
+        for (const candidate of database.grants) {
+          if (
+            candidate.revokedAt === null &&
+            candidate.parentGrantId != null &&
+            toRevoke.has(candidate.parentGrantId) &&
+            !toRevoke.has(candidate.id)
+          ) {
+            toRevoke.add(candidate.id);
+            grew = true;
+          }
+        }
+      }
+
+      const revokedGrants: Grant[] = [];
+      for (const candidate of database.grants) {
+        if (toRevoke.has(candidate.id) && candidate.revokedAt === null) {
+          candidate.revokedAt = revokedAt;
+          revokedGrants.push(structuredClone(candidate));
+        }
+      }
+      const rootGrant = revokedGrants.find((g) => g.id === id) ?? structuredClone(stored);
+      return { root: rootGrant, cascaded: revokedGrants.filter((g) => g.id !== id) };
     });
-    await this.recordGrantEvent("grant.revoked", grant);
-    return grant;
+
+    await this.recordGrantEvent("grant.revoked", root);
+    for (const descendant of cascaded) {
+      await this.recordGrantEvent("grant.revoked", descendant);
+    }
+    return root;
   }
 
   /**
