@@ -1,5 +1,7 @@
 # Agent Passport
 
+[![CI](https://github.com/Tuxedolphin/TikTok-TechJam-2026/actions/workflows/ci.yml/badge.svg?branch=feature/standout)](https://github.com/Tuxedolphin/TikTok-TechJam-2026/actions/workflows/ci.yml)
+
 **Your coding agent just tried to send your credentials to an unknown server. Watch it fail.**
 
 AI coding agents read untrusted content and then run commands. Prompt injection is unsolved, so the honest assumption is that any agent can be turned against you. Agent Passport does not try to make the model trustworthy — it makes the platform safe *while the model is hostile*.

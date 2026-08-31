@@ -37,13 +37,27 @@ This topology was chosen after testing, not assumed: a host-side proxy does **no
 ## Reproducing the evidence
 
 ```bash
+npm run proofs             # all five, needs a container engine
+npm run proofs:no-engine   # identity and attenuation only
+```
+
+Or one at a time:
+
+```bash
 npm run build --workspace apps/server
 node scripts/demo-passport.mjs   # identity: ownership denial, grants, revocation
 node scripts/demo-egress.mjs     # containment: real containers, real blocked exfiltration
-node scripts/demo-escalation.mjs # confused-deputy and identity-spoofing refusal
+node scripts/demo-escalation.mjs # confused-deputy refusal, and attenuated delegation allowed
 node scripts/demo-tunnel-bypass.mjs # opaque control-plane tunnel refusal
 node scripts/demo-kill.mjs       # freeze/revoke/kill/verify receipt
 ```
+
+Each script **asserts** its invariants and exits non-zero when one breaks, so a
+regression fails rather than scrolling past in the output. They are not
+illustrations of a claim; they are the check on it. Every push runs all five —
+the container ones against real Docker containers on the CI runner — so the
+badge above tracks whether containment actually holds, not just whether the
+code compiles.
 
 `demo-egress.mjs` needs a running container engine. It walks the full kill chain and prints the trace receipts:
 
