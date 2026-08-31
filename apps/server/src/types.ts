@@ -215,5 +215,7 @@ export interface AgentRunner {
   pause?(agentId: string): Promise<"paused" | "idle" | "failed">;
   resume?(agentId: string): Promise<boolean>;
   isRunning?(agentId: string): boolean;
+  /** Independent engine check: is this agent's runtime confirmed gone? null = cannot confirm. */
+  confirmStopped?(agentId: string): Promise<boolean | null>;
   isAvailable(): Promise<boolean>;
 }

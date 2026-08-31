@@ -207,6 +207,28 @@ export class ContainerCodexRunner implements AgentRunner {
     return this.active.has(agentId);
   }
 
+  /**
+   * Asks the engine directly whether this agent's container still exists,
+   * rather than trusting the in-memory active map. `docker rm --force` can time
+   * out or fail while the daemon-side container keeps running; the map is
+   * cleared regardless, so a receipt could claim a kill that did not happen.
+   * Returns false only on a confirmed sighting of the container; a query error
+   * is reported as "unconfirmed" (null) rather than a false all-clear.
+   */
+  async confirmStopped(agentId: string): Promise<boolean | null> {
+    const name = containerName(agentId, this.config.runtimeInstanceId);
+    try {
+      const { stdout } = await execFileAsync(
+        this.config.containerEngine,
+        ["ps", "-a", "--filter", `name=^${name}$`, "--format", "{{.Names}}"],
+        { timeout: 5_000, env: this.childEnvironment() },
+      );
+      return stdout.trim() === "";
+    } catch {
+      return null;
+    }
+  }
+
   async resume(agentId: string): Promise<boolean> {
     const active = this.active.get(agentId);
     if (!active || active.cancelled) return false;

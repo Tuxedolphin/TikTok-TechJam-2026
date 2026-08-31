@@ -204,6 +204,17 @@ export class AgentService {
     });
   }
 
+  /**
+   * Raised at the very start of termination, before freeze. `freezeAgent`
+   * returns "idle" and short-circuits when no execution is registered yet, so
+   * installing the barrier only inside freeze left a window: a message admitted
+   * but not yet in `activeExecutions` would see no barrier and run after
+   * termination believed the agent idle. Admission now checks this set.
+   */
+  beginTermination(agentId: string): void {
+    this.terminationBarriers.add(agentId);
+  }
+
   async freezeAgent(
     agentId: string,
   ): Promise<"paused" | "idle" | "blocked" | "failed" | "unsupported"> {
@@ -537,6 +548,12 @@ export class AgentService {
       if (storedAgent.status === "busy") {
         throw new HttpError(409, "This Agent is already running");
       }
+      // Refuse admission while the agent is being terminated. Without this, a
+      // message could slip in between termination's freeze (which saw no live
+      // execution) and the barrier check just before the runner starts.
+      if (this.terminationBarriers.has(agentId)) {
+        throw new HttpError(409, "This Agent is being terminated");
+      }
       const activeSessionId = storedAgent.activeSessionId ?? null;
       run.sessionId = activeSessionId;
       message.sessionId = activeSessionId;
@@ -702,7 +719,26 @@ export class AgentService {
             });
           });
 
-          await this.runner.pause?.(agentAtStart.id);
+          // Fail closed if the runtime cannot actually be frozen. Discarding
+          // the pause result left the agent live for up to five minutes while
+          // the UI said "awaiting approval" -- the risky action could complete
+          // during the wait. A pause that reports "failed" aborts the run
+          // rather than pretending the action is held.
+          let pauseResult: "paused" | "idle" | "failed" | undefined;
+          try {
+            pauseResult = await this.runner.pause?.(agentAtStart.id);
+          } catch {
+            pauseResult = "failed";
+          }
+          if (pauseResult === "failed") {
+            stepViolation = new RunPolicyViolationError(
+              "approval",
+              409,
+              `Runtime pause failed; the high-risk action was cancelled before approval (${risk.ruleId}).`,
+            );
+            await this.runner.cancel(agentAtStart.id).catch(() => false);
+            throw stepViolation;
+          }
 
           const approved = await new Promise<boolean>((resolve) => {
             const timeout = setTimeout(() => {
@@ -932,6 +968,15 @@ export class AgentService {
     } finally {
       this.cancellationRequests.delete(agentId);
     }
+  }
+
+  /**
+   * Whether the runtime is independently confirmed stopped by the engine, not
+   * just absent from the in-memory map. null when the runner cannot confirm
+   * (e.g. the host-process runtime), which the caller must not read as "gone".
+   */
+  async runtimeConfirmedStopped(agentId: string): Promise<boolean | null> {
+    return (await this.runner.confirmStopped?.(agentId)) ?? null;
   }
 
   hasLiveExecution(agentId: string): boolean {

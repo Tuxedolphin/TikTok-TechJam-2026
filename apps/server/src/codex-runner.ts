@@ -133,6 +133,26 @@ export async function parseCodexEventLine(
   }
 }
 
+/**
+ * Signals the child's whole process group (negative pid) so descendants get it
+ * too, falling back to the direct child. Returns whether a signal was delivered.
+ */
+function signalGroup(child: ChildProcess, signal: NodeJS.Signals): boolean {
+  if (typeof child.pid === "number") {
+    try {
+      process.kill(-child.pid, signal);
+      return true;
+    } catch {
+      // No process group (or already gone); fall through to the direct child.
+    }
+  }
+  try {
+    return child.kill(signal);
+  } catch {
+    return false;
+  }
+}
+
 export class CodexRunner implements AgentRunner {
   private readonly active = new Map<
     string,
@@ -175,7 +195,7 @@ export class CodexRunner implements AgentRunner {
     const active = this.active.get(agentId);
     if (!active || active.cancelled) return "idle";
     try {
-      return active.child.kill("SIGSTOP") ? "paused" : "failed";
+      return signalGroup(active.child, "SIGSTOP") ? "paused" : "failed";
     } catch {
       return "failed";
     }
@@ -189,7 +209,7 @@ export class CodexRunner implements AgentRunner {
     const active = this.active.get(agentId);
     if (!active || active.cancelled) return false;
     try {
-      active.child.kill("SIGCONT");
+      signalGroup(active.child, "SIGCONT");
       return true;
     } catch {
       return false;
@@ -206,6 +226,11 @@ export class CodexRunner implements AgentRunner {
       cwd: request.workspacePath,
       env: this.childEnvironment(),
       stdio: ["ignore", "pipe", "pipe"],
+      // Its own process group, so a stop/kill reaches shell and tool
+      // descendants, not just the direct Codex process. Without this, a spawned
+      // command could keep running after the parent was signalled and the
+      // active map cleared, and a receipt could claim a kill that missed it.
+      detached: true,
     });
     const effectiveTimeoutMs =
       this.config.runBudgetMaxDurationMs !== null &&
@@ -332,9 +357,9 @@ export class CodexRunner implements AgentRunner {
     forceKillTimer: NodeJS.Timeout | null;
   }): void {
     if (active.child.exitCode !== null || active.child.signalCode !== null) return;
-    active.child.kill("SIGTERM");
+    signalGroup(active.child, "SIGTERM");
     if (!active.forceKillTimer) {
-      active.forceKillTimer = setTimeout(() => active.child.kill("SIGKILL"), 3_000);
+      active.forceKillTimer = setTimeout(() => signalGroup(active.child, "SIGKILL"), 3_000);
       active.forceKillTimer.unref();
     }
   }
