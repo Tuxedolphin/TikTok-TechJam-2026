@@ -3,7 +3,21 @@ import { randomUUID } from "node:crypto";
 import type { AppConfig } from "./config.js";
 
 const thoughtSignatureStore = new Map<string, unknown>();
-let lastRequestTime = 0;
+
+/**
+ * A signature is replayed on the turn immediately after the call it belongs to,
+ * so the oldest entries are the ones no longer in play. Bounding the map keeps
+ * a long-lived process from retaining every tool call it has ever seen.
+ */
+const MAX_THOUGHT_SIGNATURES = 512;
+
+function rememberThoughtSignature(callId: string, extra: unknown): void {
+  if (thoughtSignatureStore.size >= MAX_THOUGHT_SIGNATURES) {
+    const oldest = thoughtSignatureStore.keys().next().value;
+    if (oldest !== undefined) thoughtSignatureStore.delete(oldest);
+  }
+  thoughtSignatureStore.set(callId, extra);
+}
 
 function redactSecrets(value: string, config: AppConfig): string {
   let output = value;
@@ -17,6 +31,62 @@ function redactSecrets(value: string, config: AppConfig): string {
   return output;
 }
 const MIN_REQUEST_INTERVAL_MS = 4200; // Cap pacing strictly at 14.3 RPM (under Google 15 RPM limit)
+const RATE_LIMIT_BACKOFF_MS = 6000;
+/**
+ * A stalled connection otherwise holds the run open until the far longer Codex
+ * timeout fires, and reports nothing about where it stopped.
+ */
+const UPSTREAM_TIMEOUT_MS = 120_000;
+const GEMINI_CHAT_COMPLETIONS_URL =
+  "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions";
+
+/** Earliest instant the next upstream call may leave. */
+let nextRequestSlot = 0;
+
+/**
+ * Claims the next free send slot. The claim is synchronous -- nothing is
+ * awaited between reading and writing `nextRequestSlot` -- so concurrent turns
+ * queue behind one another. Reading a shared "time of last request" instead
+ * makes every waiting turn compute the same delay and wake together, which
+ * paces a single caller correctly and lets a fleet burst straight through the
+ * per-minute ceiling.
+ */
+async function reserveRequestSlot(): Promise<void> {
+  const now = Date.now();
+  const slot = Math.max(now, nextRequestSlot);
+  nextRequestSlot = slot + MIN_REQUEST_INTERVAL_MS;
+  if (slot > now) {
+    await new Promise((resolve) => setTimeout(resolve, slot - now));
+  }
+}
+
+async function callGemini(apiKey: string, payload: unknown): Promise<Response> {
+  await reserveRequestSlot();
+  return fetch(GEMINI_CHAT_COMPLETIONS_URL, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: "Bearer " + apiKey,
+    },
+    body: JSON.stringify(payload),
+    signal: AbortSignal.timeout(UPSTREAM_TIMEOUT_MS),
+  });
+}
+
+/**
+ * `AbortSignal.timeout` rejects with a TimeoutError, an explicit abort with an
+ * AbortError, and fetch may surface either wrapped as the `cause` of a
+ * TypeError.
+ */
+function isTimeout(error: unknown): boolean {
+  const named = (candidate: unknown): string | undefined =>
+    (candidate as { name?: string } | null | undefined)?.name;
+  const name = named(error) ?? "";
+  const causeName = named((error as { cause?: unknown } | null)?.cause) ?? "";
+  return [name, causeName].some(
+    (value) => value === "TimeoutError" || value === "AbortError",
+  );
+}
 
 /**
  * Google reports a bad credential as 400 INVALID_ARGUMENT, so the status alone
@@ -166,41 +236,24 @@ export async function handleGeminiResponsesAdapter(
     stream: false,
   };
 
-  // Google AI Studio free tier rate limit is 15 RPM.
-  // Pacing ensures autonomous agent loops stay strictly under the 15 RPM cap.
-  const elapsed = Date.now() - lastRequestTime;
-  if (elapsed < MIN_REQUEST_INTERVAL_MS) {
-    await new Promise((resolve) => setTimeout(resolve, MIN_REQUEST_INTERVAL_MS - elapsed));
-  }
-  lastRequestTime = Date.now();
-
-  let response = await fetch(
-    "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions",
-    {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: "Bearer " + apiKey,
-      },
-      body: JSON.stringify(geminiPayload),
-    },
-  );
-
-  if (response.status === 429) {
-    // If rate limited, wait 6 seconds and retry once
-    await new Promise((resolve) => setTimeout(resolve, 6000));
-    lastRequestTime = Date.now();
-    response = await fetch(
-      "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions",
-      {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: "Bearer " + apiKey,
-        },
-        body: JSON.stringify(geminiPayload),
-      },
-    );
+  // Google AI Studio's free tier caps at 15 RPM; every call claims a paced slot.
+  let response: Response;
+  try {
+    response = await callGemini(apiKey, geminiPayload);
+    if (response.status === 429) {
+      // Back off beyond the standing pace before spending the one retry.
+      await new Promise((resolve) => setTimeout(resolve, RATE_LIMIT_BACKOFF_MS));
+      response = await callGemini(apiKey, geminiPayload);
+    }
+  } catch (error) {
+    if (isTimeout(error)) {
+      return reply.code(504).send({
+        error:
+          `Gemini did not respond within ${UPSTREAM_TIMEOUT_MS / 1000}s, so the request ` +
+          "timed out. The model endpoint may be unreachable from this host.",
+      });
+    }
+    throw error;
   }
 
   if (!response.ok) {
@@ -370,7 +423,7 @@ export async function handleGeminiResponsesAdapter(
     const fnArgs = tc.function.arguments || "{}";
     const extra = (tc as unknown as { extra_content?: unknown }).extra_content;
     if (extra) {
-      thoughtSignatureStore.set(callId, extra);
+      rememberThoughtSignature(callId, extra);
     }
 
     sendEvent({

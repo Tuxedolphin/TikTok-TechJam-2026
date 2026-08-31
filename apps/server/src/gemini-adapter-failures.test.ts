@@ -134,6 +134,117 @@ describe("Gemini adapter upstream failure reporting", () => {
     }
   });
 
+  it("arms a deadline on the upstream call", async () => {
+    skipPacing();
+    const upstream = vi.fn().mockResolvedValue(
+      new Response(
+        JSON.stringify({ choices: [{ message: { content: "ok" }, finish_reason: "stop" }] }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      ),
+    );
+    vi.stubGlobal("fetch", upstream);
+    const { app, token } = await harness();
+    try {
+      await app.inject({
+        method: "POST",
+        url: "/api/adapter/responses",
+        headers: { authorization: "Bearer " + token },
+        payload,
+      });
+      // Without a signal a stalled Google connection pins the run open until
+      // the far longer Codex timeout fires, with nothing said about why.
+      const init = upstream.mock.calls[0]?.[1] as RequestInit;
+      expect(init.signal).toBeInstanceOf(AbortSignal);
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("reports an upstream that never answered as a gateway timeout", async () => {
+    skipPacing();
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockRejectedValue(
+        Object.assign(new Error("This operation was aborted"), { name: "AbortError" }),
+      ),
+    );
+    const { app, token } = await harness();
+    try {
+      const response = await app.inject({
+        method: "POST",
+        url: "/api/adapter/responses",
+        headers: { authorization: "Bearer " + token },
+        payload,
+      });
+      expect(response.statusCode).toBe(504);
+      expect(response.body).toMatch(/timed out|timeout/i);
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("evicts the oldest thought signatures rather than growing without bound", async () => {
+    skipPacing();
+    const total = 600;
+    const toolCalls = Array.from({ length: total }, (_value, index) => ({
+      id: `call_${index}`,
+      type: "function" as const,
+      function: { name: "probe", arguments: "{}" },
+      extra_content: { google: { thought_signature: `sig_${index}` } },
+    }));
+    const upstream = vi
+      .fn()
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({ choices: [{ message: { content: "", tool_calls: toolCalls } }] }),
+          { status: 200, headers: { "content-type": "application/json" } },
+        ),
+      )
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({ choices: [{ message: { content: "done" }, finish_reason: "stop" }] }),
+          { status: 200, headers: { "content-type": "application/json" } },
+        ),
+      );
+    vi.stubGlobal("fetch", upstream);
+    const { app, token } = await harness();
+    try {
+      await app.inject({
+        method: "POST",
+        url: "/api/adapter/responses",
+        headers: { authorization: "Bearer " + token },
+        payload,
+      });
+      // Replay the oldest and the newest call back as prior turns.
+      await app.inject({
+        method: "POST",
+        url: "/api/adapter/responses",
+        headers: { authorization: "Bearer " + token },
+        payload: {
+          input: [
+            { type: "function_call", call_id: "call_0", name: "probe", arguments: "{}" },
+            { type: "function_call", call_id: `call_${total - 1}`, name: "probe", arguments: "{}" },
+          ],
+        },
+      });
+
+      const replayed = JSON.parse(
+        String((upstream.mock.calls[1]?.[1] as RequestInit).body),
+      ) as { messages: Array<{ tool_calls?: Array<{ id: string; extra_content?: unknown }> }> };
+      const byId = new Map(
+        replayed.messages
+          .flatMap((message) => message.tool_calls ?? [])
+          .map((call) => [call.id, call.extra_content]),
+      );
+      // The newest signature is still worth replaying; the oldest must have
+      // been dropped, or the map grows for the life of the process.
+      expect(byId.get(`call_${total - 1}`)).toBeDefined();
+      expect(byId.get("call_0")).toBeUndefined();
+    } finally {
+      await app.close();
+    }
+  });
+
   it("still streams a normal answer through unchanged", async () => {
     skipPacing();
     vi.stubGlobal(
