@@ -26,7 +26,8 @@
     "demo:escalation": "npm run build -w @launchpad/server && node scripts/demo-escalation.mjs",
     "demo:identity": "npm run build -w @launchpad/server && node scripts/demo-passport.mjs",
     "poc": "./scripts/start-local-poc.sh",
-    "start": "npm run start -w @launchpad/server"
+    "start": "npm run start -w @launchpad/server",
+    "demo:all": "npm run build -w @launchpad/server && node scripts/demo-all.mjs"
   },
   "devDependencies": {
     "concurrently": "^9.2.1",

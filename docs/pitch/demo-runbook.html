@@ -266,8 +266,8 @@ npm run poc                             <span class="c"># leave running → loca
     <div class="ros-c">
       <h4>★ The gauntlet — every attack class, one command</h4>
       <p class="say">&ldquo;Now assume the agent is hijacked. Here is every way we could think of for it to get out, run against real containers and a real proxy. Watch the clock &mdash; this is the whole thing.&rdquo;</p>
-      <p class="do">Paste the gauntlet from Section 03 and hit enter. <b>Do not narrate while it runs</b> — 11 seconds of silence with output flying past is more impressive than talking over it.</p>
-      <p class="do">When it lands, read the tally aloud: <b>&ldquo;thirty-two invariants, five attack classes, eleven seconds. Every one held, and a broken boundary exits non-zero.&rdquo;</b></p>
+      <p class="do">Type <code>npm run demo:all</code> and hit enter. <b>Do not narrate while it runs</b> — 11 seconds of silence with output flying past is more impressive than talking over it.</p>
+      <p class="do">When the combined tally prints, read it aloud: <b>&ldquo;thirty-two invariants, five attack classes, eleven seconds. Every one held &mdash; and a broken boundary exits non-zero.&rdquo;</b></p>
     </div>
   </div>
 
@@ -323,14 +323,25 @@ npm run poc                             <span class="c"># leave running → loca
 </div>
 
 <h2><span class="n">SECTION 03</span>The gauntlet, and what it prints</h2>
-<p class="dek">One command, five demos, every invariant asserted. Paste this exactly &mdash; the <span class="mono">grep</span> strips request logs that would otherwise scroll your results off the screen, and <span class="mono">pipefail</span> makes a failure inside the pipe still register.</p>
+<p class="dek">One command runs all five, suppresses the request logs that would otherwise scroll your results off a projector, and prints a single combined tally. It exits non-zero if any invariant fails, so a live demo and CI break the same way.</p>
 
-<pre>set -o pipefail
-for d in escalation egress tunnel-bypass kill passport; do
-  printf '\n════ %s ════\n' "$d"
-  node scripts/demo-$d.mjs 2>&amp;1 | grep -v '"level":[0-9]*,"time"' \
-    || echo '!! INVARIANT FAILED — stop and look'
-done</pre>
+<pre>npm run demo:all</pre>
+
+<p>Measured on this tree: <b>11 seconds</b>. The build is included in that command &mdash; pre-build beforehand and the run itself is all you wait for.</p>
+
+<pre>════════════════════════════════════════════════════════
+   ok    escalation       <span class="ok">10/10</span>
+   ok    passport         <span class="ok">6/6</span>
+   ok    tunnel-bypass    <span class="ok">2/2</span>
+   ok    egress           <span class="ok">7/7</span>
+   ok    kill             <span class="ok">7/7</span>
+
+   <span class="ok">32/32 invariants held across 5 attack classes</span></pre>
+
+<div class="note">
+  <span class="lbl">Running one at a time</span>
+  <p>If you would rather pace them individually &mdash; or the engine dies and you need the two that do not require it &mdash; each still runs on its own: <code>demo:escalation</code>, <code>demo:identity</code>, <code>demo:tunnel</code>, <code>demo</code>, <code>demo:kill</code>.</p>
+</div>
 
 <p><b>Expected tally, in order.</b> If any number differs, something regressed — investigate before you present.</p>
 <table class="exp">
