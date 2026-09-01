@@ -6,39 +6,41 @@ import { describeEgressGap, isModelConfigured, loadConfig, writeCodexConfig } fr
 
 describe("output token budget configuration", () => {
   it.each([
-    ["OpenRouter", {}],
-    ["Gemini", { GEMINI_API_KEY: "gemini-key" }],
-  ])("requests no more than the preventive cap from %s", async (_provider, providerEnv) => {
+    [
+      "OpenRouter",
+      {
+        MODEL_PROVIDER: "openrouter",
+        OPENROUTER_API_KEY: "openrouter-provider-key",
+        OPENROUTER_MODEL: "provider/model",
+      },
+    ],
+    [
+      "Gemini adapter",
+      {
+        MODEL_PROVIDER: "gemini",
+        GEMINI_API_KEY: "gemini-provider-key",
+      },
+    ],
+    [
+      "ModelArk",
+      {
+        MODEL_PROVIDER: "ark",
+        ARK_API_KEY: "ark-provider-key",
+        ARK_MODEL: "endpoint-id",
+      },
+    ],
+  ])("does not emit the unsupported Codex output-cap key for %s", async (_label, overrides) => {
     const codexHome = await mkdtemp(path.join(tmpdir(), "launchpad-budget-"));
     try {
       const config = loadConfig({
         NODE_ENV: "test",
         CODEX_HOME: codexHome,
-        RUN_BUDGET_MAX_OUTPUT_TOKENS: "37",
-        ...providerEnv,
+        RUN_BUDGET_MAX_OUTPUT_TOKENS: "321",
+        ...overrides,
       });
       await writeCodexConfig(config);
-
       const generated = await readFile(path.join(codexHome, "config.toml"), "utf8");
-      expect(generated).toContain("model_max_output_tokens = 37");
-      expect(generated).not.toContain("model_max_output_tokens = 4096");
-    } finally {
-      await rm(codexHome, { recursive: true, force: true });
-    }
-  });
-
-  it("retains the lower built-in provider cap when the budget is higher", async () => {
-    const codexHome = await mkdtemp(path.join(tmpdir(), "launchpad-budget-"));
-    try {
-      const config = loadConfig({
-        NODE_ENV: "test",
-        CODEX_HOME: codexHome,
-        RUN_BUDGET_MAX_OUTPUT_TOKENS: "8192",
-      });
-      await writeCodexConfig(config);
-
-      const generated = await readFile(path.join(codexHome, "config.toml"), "utf8");
-      expect(generated).toContain("model_max_output_tokens = 4096");
+      expect(generated).not.toContain("model_max_output_tokens");
     } finally {
       await rm(codexHome, { recursive: true, force: true });
     }
@@ -257,6 +259,49 @@ describe("Gemini adapter credentials", () => {
     expect(config.geminiAdapterToken).toBe("");
     expect(config.openRouterApiKey).toBe("openrouter-provider-key");
     expect(config.openRouterBaseUrl).toBe("https://openrouter.ai/api/v1");
+  });
+
+  it("rejects the documented adapter-token placeholder", () => {
+    expect(() =>
+      loadConfig({
+        NODE_ENV: "test",
+        GEMINI_API_KEY: "google-provider-key",
+        GEMINI_ADAPTER_TOKEN: "replace-with-a-random-runtime-token",
+      }),
+    ).toThrow("GEMINI_ADAPTER_TOKEN must not use the documented placeholder value");
+  });
+
+  it.each(["APP_AUTH_TOKEN", "GEMINI_API_KEY"] as const)(
+    "rejects an adapter token reused as %s",
+    (sharedWith) => {
+      const sharedSecret = "shared-runtime-secret-1234567890";
+      expect(() =>
+        loadConfig({
+          NODE_ENV: "test",
+          GEMINI_API_KEY:
+            sharedWith === "GEMINI_API_KEY" ? sharedSecret : "google-provider-key",
+          APP_AUTH_TOKEN: sharedWith === "APP_AUTH_TOKEN" ? sharedSecret : "browser-token",
+          GEMINI_ADAPTER_TOKEN: sharedSecret,
+        }),
+      ).toThrow(
+        sharedWith === "APP_AUTH_TOKEN"
+          ? "GEMINI_ADAPTER_TOKEN must be distinct from APP_AUTH_TOKEN"
+          : "GEMINI_ADAPTER_TOKEN must be distinct from the provider API key",
+      );
+    },
+  );
+});
+
+describe("guardrail canary configuration", () => {
+  it("rejects non-empty canary values that are too short for safe redaction", () => {
+    expect(() =>
+      loadConfig({ NODE_ENV: "test", GUARDRAIL_CANARY_TOKEN: "short" }),
+    ).toThrow("GUARDRAIL_CANARY_TOKEN must be empty or at least 12 characters");
+  });
+
+  it("continues to treat an empty canary as disabled", () => {
+    expect(loadConfig({ NODE_ENV: "test", GUARDRAIL_CANARY_TOKEN: "" })
+      .guardrailCanaryToken).toBe("");
   });
 });
 

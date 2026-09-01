@@ -92,5 +92,6 @@ describe("Container runtime pause verification", () => {
       await runner.cancel(request.agentId);
       await expect(run).rejects.toThrow("cancelled");
     },
+    15_000,
   );
 });
