@@ -71,7 +71,12 @@ r = await grant({ ...attested, "x-principal-id": "user-a" }, {
 console.log(`2. Same, while claiming to be the human operator  -> ${code(r)}`);
 const impersonation = r.statusCode;
 
-r = await grant({ "x-principal-id": "user-a" }, {
+const principalSession = JSON.parse((await app.inject({
+  method: "POST", url: "/api/mock-principal-session", payload: { principalId: "user-a" },
+})).body);
+const humanHeaders = { "x-mock-principal-session": principalSession.sessionToken };
+
+r = await grant(humanHeaders, {
   principalId: agent.principalId, scope: "network:egress", target: "registry.npmjs.org",
 });
 console.log(`3. The human operator grants npmjs               -> ${code(r)}`);
