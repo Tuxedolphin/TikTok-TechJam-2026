@@ -1,3 +1,19 @@
+/**
+ * Policy evaluators, in two groups that must not be confused for each other.
+ *
+ * The authorization evaluators at the bottom of this file — `activeGrant`,
+ * `evaluateResourceAccess`, `evaluateEgress` — are enforcement. They run before
+ * the side effect and their verdict decides whether it happens at all.
+ *
+ * `evaluateActionRisk` is not. Codex reports shell and tool activity as
+ * `item.completed`, meaning the command has already run; classifying that text
+ * produces audit evidence (`SEC-*`) and nothing more. The distinction is load
+ * bearing, and the docs state it plainly rather than letting a `SEC-` rule id
+ * imply a block that never happened.
+ *
+ * Budget breakers sit between the two: token caps are enforced by the provider
+ * request, while the post-run totals are checked here after the fact.
+ */
 import type { AppConfig } from "./config.js";
 import { isNarrowerThan } from "./authority.js";
 import { HttpError } from "./errors.js";
@@ -16,6 +32,7 @@ export type RunPolicyKind =
   | "budget"
   | "approval"
   | "containment"
+  | "runtime_control"
   | "authz"
   | "egress"
   | "anomaly";
@@ -108,32 +125,17 @@ export function evaluateActionRisk(step: RunnerStepEvent): ActionRiskAssessment 
   };
 }
 
-export function rejectPromptIfCanaryPresent(config: AppConfig, prompt: string): void {
-  if (config.guardrailCanaryToken && prompt.includes(config.guardrailCanaryToken)) {
-    throw new RunPolicyViolationError(
-      "canary",
-      400,
-      "Prompt contains the configured canary token and was blocked before execution.",
-    );
-  }
-}
-
+/**
+ * The prompt and tool-call canary checks live inline in `AgentService`, which
+ * needs the violation as a value it can attach to the run inside an open
+ * mutation rather than as a throw. Only the output check is expressed here.
+ */
 export function rejectOutputIfCanaryPresent(config: AppConfig, output: string): void {
   if (config.guardrailCanaryToken && output.includes(config.guardrailCanaryToken)) {
     throw new RunPolicyViolationError(
       "canary",
       409,
       "Run output echoed the canary token outside the workspace boundary.",
-    );
-  }
-}
-
-export function rejectToolIfCanaryPresent(config: AppConfig, content: string): void {
-  if (config.guardrailCanaryToken && content.includes(config.guardrailCanaryToken)) {
-    throw new RunPolicyViolationError(
-      "canary",
-      409,
-      "Tool call or shell execution attempted to exfiltrate the canary token.",
     );
   }
 }

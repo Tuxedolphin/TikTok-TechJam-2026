@@ -73,6 +73,9 @@ jobs:
             exit 1
           fi
 
+      - name: Dependency audit
+        run: npm audit --audit-level=high
+
   identity-proofs:
     name: Identity and attenuation proofs
     needs: check

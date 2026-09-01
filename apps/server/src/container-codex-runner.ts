@@ -2,13 +2,12 @@ import { execFile, spawn, type ChildProcess } from "node:child_process";
 import { createInterface } from "node:readline";
 import { promisify } from "node:util";
 import type { AppConfig } from "./config.js";
-import { buildCodexArgs, parseCodexEventLine } from "./codex-runner.js";
+import { buildCodexArgs, parseCodexEventLine, type ParsedEvents } from "./codex-runner.js";
 import { RunCancelledError } from "./errors.js";
 import { RunPolicyViolationError } from "./run-policies.js";
 import { INTERNAL_NETWORK } from "./egress-network.js";
 import type {
   AgentRunner,
-  RunUsage,
   RunnerRequest,
   RunnerResult,
 } from "./types.js";
@@ -24,13 +23,6 @@ interface ActiveContainer {
   outputExceeded: boolean;
   settled: Promise<void>;
   termination: Promise<void> | null;
-}
-
-interface ParsedEvents {
-  messages: string[];
-  threadId: string | null;
-  usage: RunUsage | null;
-  errors: string[];
 }
 
 /**
@@ -58,10 +50,7 @@ export function containerEngineEnvironment(
 ): NodeJS.ProcessEnv {
   const environment: NodeJS.ProcessEnv = { NO_COLOR: "1" };
   if (includeRuntimeConfig) {
-    environment.OPENROUTER_API_KEY = config.openRouterApiKey;
-    environment.OPENAI_API_KEY = config.openRouterApiKey;
-    environment.OPENROUTER_BASE_URL = config.openRouterBaseUrl;
-    environment.OPENAI_BASE_URL = config.openRouterBaseUrl;
+    environment.MODEL_API_KEY = config.modelRuntimeApiKey;
   }
   for (const name of ["PATH", "HOME", "TMPDIR", "LANG", "LC_ALL", "XDG_RUNTIME_DIR"] as const) {
     if (process.env[name] !== undefined) environment[name] = process.env[name];
@@ -134,13 +123,7 @@ export function buildContainerRunArgs(
     // Secret values stay in the engine child's environment; passing only the
     // names prevents them from appearing in ps or /proc/<pid>/cmdline.
     "--env",
-    "OPENROUTER_API_KEY",
-    "--env",
-    "OPENAI_API_KEY",
-    "--env",
-    "OPENROUTER_BASE_URL",
-    "--env",
-    "OPENAI_BASE_URL",
+    "MODEL_API_KEY",
     "--env",
     "CODEX_HOME=/codex-home",
     "--env",
@@ -247,7 +230,7 @@ export class ContainerCodexRunner implements AgentRunner {
         ["pause", active.containerName],
         { timeout: 5_000, env: this.childEnvironment() },
       );
-      return "paused";
+      return (await this.containerPaused(active.containerName)) ? "paused" : "failed";
     } catch {
       return "failed";
     }
@@ -282,10 +265,19 @@ export class ContainerCodexRunner implements AgentRunner {
         ["unpause", active.containerName],
         { timeout: 5_000, env: this.childEnvironment() },
       );
-      return true;
+      return !(await this.containerPaused(active.containerName));
     } catch {
       return false;
     }
+  }
+
+  private async containerPaused(name: string): Promise<boolean> {
+    const { stdout } = await execFileAsync(
+      this.config.containerEngine,
+      ["inspect", "--format", "{{.State.Paused}}", name],
+      { timeout: 5_000, env: this.childEnvironment() },
+    );
+    return stdout.trim() === "true";
   }
 
   private removeContainer(active: ActiveContainer): Promise<void> {
@@ -426,7 +418,7 @@ export class ContainerCodexRunner implements AgentRunner {
         throw new Error("Codex output exceeded CODEX_MAX_OUTPUT_BYTES");
       }
       if (exitCode !== 0) {
-        const detail = parsed.errors.at(-1) ?? stderr.trim() ?? "No error detail";
+        const detail = parsed.errors.at(-1) || stderr.trim() || "No error detail";
         throw new Error(
           this.config.containerEngine +
             " Runtime exited with code " +

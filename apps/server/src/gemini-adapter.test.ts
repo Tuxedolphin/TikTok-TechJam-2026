@@ -33,6 +33,7 @@ describe("Gemini adapter credential boundary", () => {
       RUNTIME_PROVIDER: "container",
       PORT: "4317",
       GEMINI_API_KEY: providerKey,
+      RUN_BUDGET_MAX_OUTPUT_TOKENS: "37",
     });
     const app = await createApp(config, service);
 
@@ -69,6 +70,9 @@ describe("Gemini adapter credential boundary", () => {
       expect((upstreamInit.headers as Record<string, string>).Authorization).toBe(
         "Bearer " + providerKey,
       );
+      expect(JSON.parse(String(upstreamInit.body))).toMatchObject({
+        max_tokens: 37,
+      });
 
       const currentTime = Date.now();
       vi.spyOn(Date, "now").mockReturnValue(currentTime + 5_000);

@@ -72,6 +72,7 @@ export async function parseCodexEventLine(
         type: "message",
         title: "Agent response",
         detail: item.text.slice(0, 160),
+        phase: "after",
         rawPayload: item,
       });
     } else if (event.type === "item.started" && item.type === "command_execution") {
@@ -82,12 +83,23 @@ export async function parseCodexEventLine(
         detail: cmd,
         rawPayload: item,
       });
+    } else if (event.type === "item.completed" && item.type === "command_execution") {
+      const cmd = typeof item.command === "string" ? item.command : "command";
+      const exitCode = typeof item.exit_code === "number" ? ` (exit ${item.exit_code})` : "";
+      await onStep?.({
+        type: "command",
+        title: "Executed shell command",
+        detail: `${cmd}${exitCode}`,
+        phase: "after",
+        rawPayload: item,
+      });
     } else if (event.type === "item.completed" && item.type === "file_change") {
       const filePath = typeof item.path === "string" ? item.path : "file";
       await onStep?.({
         type: "file_change",
         title: "File modified",
         detail: filePath,
+        phase: "after",
         rawPayload: item,
       });
     } else if (
@@ -108,6 +120,7 @@ export async function parseCodexEventLine(
         type: "tool_call",
         title: `Starting tool ${name}`,
         detail: inputStr.slice(0, 160),
+        phase: "after",
         rawPayload: item,
       });
     }
@@ -394,7 +407,7 @@ export class CodexRunner implements AgentRunner {
         throw new Error("Codex output exceeded CODEX_MAX_OUTPUT_BYTES");
       }
       if (exitCode !== 0) {
-        const detail = parsed.errors.at(-1) ?? stderr.trim() ?? "No error detail";
+        const detail = parsed.errors.at(-1) || stderr.trim() || "No error detail";
         throw new Error("Codex exited with code " + exitCode + ": " + detail);
       }
       const output = parsed.messages.at(-1)?.trim();
@@ -446,10 +459,7 @@ export class CodexRunner implements AgentRunner {
     ] as const;
     const environment: NodeJS.ProcessEnv = {
       CODEX_HOME: this.config.codexHome,
-      OPENROUTER_API_KEY: this.config.openRouterApiKey,
-      OPENAI_API_KEY: this.config.openRouterApiKey,
-      OPENROUTER_BASE_URL: this.config.openRouterBaseUrl,
-      OPENAI_BASE_URL: this.config.openRouterBaseUrl,
+      MODEL_API_KEY: this.config.modelRuntimeApiKey,
       NO_COLOR: "1",
     };
     for (const name of inheritedNames) {

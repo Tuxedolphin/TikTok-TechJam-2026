@@ -1,3 +1,22 @@
+/**
+ * The decision the egress proxy asks for before it opens an upstream socket.
+ *
+ * This is the enforcement half of containment: the agent container has no route
+ * off-box, so every outbound connection arrives here first and a denial means
+ * the destination is never contacted at all — not that it was contacted and
+ * disapproved of afterward.
+ *
+ * Three things it deliberately does not trust:
+ *  - the principal a container claims, which is HMAC-verified against a server
+ *    secret the container never sees (`NET-EGRESS-IMPERSONATION-023`);
+ *  - a granted hostname, which is re-checked after resolution so a name
+ *    pointing into link-local space cannot reach cloud metadata
+ *    (`NET-EGRESS-PRIVATE-024`);
+ *  - the operator's patience, since an agent that floods the approval queue
+ *    would turn a human gate into a rubber stamp (`HITL-EGRESS-FLOOD-027`).
+ *
+ * If this authorizer cannot be reached, the proxy denies.
+ */
 import { createHmac, timingSafeEqual } from "node:crypto";
 import { evaluateEgress } from "./run-policies.js";
 import { latestRunFor, type JsonStore } from "./store.js";
@@ -11,6 +30,8 @@ export interface EgressAuthorizationRequest {
   method: string;
   /** Per-agent proxy secret, presented as the proxy-auth password. */
   secret?: string | undefined;
+  /** Aborted when the originating Runtime request disconnects while held. */
+  signal?: AbortSignal | undefined;
 }
 
 /**
@@ -58,6 +79,11 @@ export interface EgressAuthorizerOptions {
     decision: PolicyDecision,
     strikes: number,
   ) => Promise<void> | void;
+  requestApproval?: (
+    runId: string,
+    agentId: string,
+    input: EgressAuthorizationRequest,
+  ) => Promise<boolean>;
   quarantineAgent?: (agentId: string, reason: string) => Promise<void> | void;
 }
 
@@ -68,8 +94,21 @@ export interface EgressAuthorizerOptions {
  * Grants are read fresh on every call — no caching — so revoking one takes
  * effect on the agent's very next connection rather than at token expiry.
  */
+/**
+ * How many of one agent's requests may sit held awaiting a decision at once.
+ *
+ * Each held request persists an approval and installs a five-minute timer, and
+ * a strike is only counted when a decision *resolves*. Without a cap, an agent
+ * firing N ungranted requests creates N pending approvals before quarantine can
+ * see a single strike -- the operator's queue is flooded and the one decision
+ * that matters is buried. Beyond the cap we deny immediately and record the
+ * strike, which is what lets quarantine actually fire.
+ */
+export const MAX_CONCURRENT_HELD_REQUESTS = 3;
+
 export class EgressAuthorizer {
   private readonly strikesByAgent = new Map<string, number>();
+  private readonly heldByAgent = new Map<string, number>();
 
   constructor(
     private readonly store: JsonStore,
@@ -88,6 +127,12 @@ export class EgressAuthorizer {
    */
   resetStrikes(agentId: string): void {
     this.strikesByAgent.delete(agentId);
+    this.heldByAgent.delete(agentId);
+  }
+
+  /** Requests currently held for this agent awaiting an operator decision. */
+  heldFor(agentId: string): number {
+    return this.heldByAgent.get(agentId) ?? 0;
   }
 
   async authorize(input: EgressAuthorizationRequest): Promise<EgressAuthorizationResult> {
@@ -111,10 +156,16 @@ export class EgressAuthorizer {
       }
     }
 
+    // Reuse the snapshot taken above: it is a deep clone of the whole store, so
+    // taking a second one per connection would double an already hot cost.
+    const runId = agentId
+      ? (latestRunFor(database.runs, agentId)?.id ?? `egress-${agentId}`)
+      : `egress-${input.agentPrincipalId}`;
+
     const isPlatformEndpoint = this.options.standingAllowHosts.some(
       (entry) => entry === input.host || entry === `${input.host}:${input.port}`,
     );
-    const decision = isPlatformEndpoint
+    let decision: PolicyDecision = isPlatformEndpoint
       ? {
           allowed: true,
           ruleId: "NET-EGRESS-PLATFORM-021",
@@ -129,11 +180,51 @@ export class EgressAuthorizer {
           new Date().toISOString(),
         );
 
-    // Reuse the snapshot taken above: it is a deep clone of the whole store, so
-    // taking a second one per connection would double an already hot cost.
-    const runId = agentId
-      ? (latestRunFor(database.runs, agentId)?.id ?? `egress-${agentId}`)
-      : `egress-${input.agentPrincipalId}`;
+    // An ungranted request is held at the proxy boundary while a human decides.
+    // Approval applies only to this request; it does not create a reusable grant.
+    if (
+      !decision.allowed &&
+      decision.ruleId === "NET-EGRESS-020" &&
+      agentId &&
+      this.options.requestApproval
+    ) {
+      const held = this.heldByAgent.get(agentId) ?? 0;
+      if (held >= MAX_CONCURRENT_HELD_REQUESTS) {
+        // Refuse without creating an approval. A flooding agent must not be
+        // able to mint unbounded operator decisions, and this denial counts a
+        // strike below, so persistent flooding quarantines the agent.
+        decision = {
+          allowed: false,
+          ruleId: "HITL-EGRESS-FLOOD-027",
+          reason:
+            `Refused without asking: ${held} request(s) from this Agent are already ` +
+            `awaiting an operator decision (limit ${MAX_CONCURRENT_HELD_REQUESTS}).`,
+          principalId: input.agentPrincipalId,
+          grantId: null,
+        };
+      } else {
+        this.heldByAgent.set(agentId, held + 1);
+        let approved = false;
+        try {
+          approved = await this.options.requestApproval(runId, agentId, input);
+        } catch {
+          approved = false;
+        } finally {
+          const remaining = (this.heldByAgent.get(agentId) ?? 1) - 1;
+          if (remaining > 0) this.heldByAgent.set(agentId, remaining);
+          else this.heldByAgent.delete(agentId);
+        }
+        decision = {
+          allowed: approved,
+          ruleId: approved ? "HITL-EGRESS-APPROVED-025" : "HITL-EGRESS-DENIED-026",
+          reason: approved
+            ? `Operator approved this ${input.method} request to ${input.host}:${input.port}.`
+            : `Operator denied this ${input.method} request to ${input.host}:${input.port}.`,
+          principalId: input.agentPrincipalId,
+          grantId: null,
+        };
+      }
+    }
 
     // Platform endpoints are noise on the timeline; agent-initiated egress is not.
     if (decision.ruleId !== "NET-EGRESS-PLATFORM-021" && agentId) {

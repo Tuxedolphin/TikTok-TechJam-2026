@@ -1,3 +1,18 @@
+/**
+ * Principals and the grants between them — the "who" of Agent Passport.
+ *
+ * A human and the agent acting for that human are different principals. An
+ * agent holds no ambient authority: it may touch a resource or reach a host
+ * only while a grant says so, and every access re-reads the grant rather than
+ * consulting a cached decision, so a revocation is felt on the very next call
+ * instead of at the next token expiry.
+ *
+ * Delegation records its parent (`parentGrantId`), which is what makes
+ * revocation transitive: an agent that carved a narrower copy for a sub-agent
+ * cannot leave that copy alive after the operator revokes the grant it came
+ * from. Authority only flows downhill, and `authority.ts` is where that is
+ * decided.
+ */
 import { randomUUID } from "node:crypto";
 import { HttpError } from "./errors.js";
 import { authorizeGrantRequest, type AuthorityDecision } from "./authority.js";
@@ -63,6 +78,7 @@ export class IdentityService {
       target: input.target,
       expiresAt,
       revokedAt: null,
+      revokedBy: null,
       createdAt: now.toISOString(),
       parentGrantId: null,
     };
@@ -161,7 +177,7 @@ export class IdentityService {
     });
   }
 
-  async revokeGrant(id: string): Promise<Grant> {
+  async revokeGrant(id: string, revokedBy: string): Promise<Grant> {
     const { root, cascaded } = await this.store.mutate((database) => {
       const stored = database.grants.find((g) => g.id === id);
       if (!stored) throw new HttpError(404, `Unknown grant ${id}`);
@@ -191,6 +207,7 @@ export class IdentityService {
       for (const candidate of database.grants) {
         if (toRevoke.has(candidate.id) && candidate.revokedAt === null) {
           candidate.revokedAt = revokedAt;
+          candidate.revokedBy = revokedBy;
           revokedGrants.push(structuredClone(candidate));
         }
       }

@@ -1,6 +1,36 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { api } from "./api";
-import type { Agent, RunEvent } from "./types";
+import type { Agent, RunEvent, SystemInfo } from "./types";
+
+type Containment = { enforcing: boolean; runtimeProvider: SystemInfo["runtimeProvider"] } | null;
+
+function containmentShield(state: Containment): string {
+  if (state === null) return "shield-unknown";
+  return state.enforcing ? "shield-on" : "shield-off";
+}
+
+/**
+ * Names the reason containment is off, which is not always the same setting.
+ *
+ * Enforcement needs EGRESS_ENFORCEMENT=on *and* the container runtime, and the
+ * shipped .env.example pairs the former with RUNTIME_PROVIDER=local-process.
+ * Telling that operator to set a variable they have already set sends them to
+ * check the one thing that is correct and conclude the feature is broken.
+ */
+function containmentReason(state: Containment): string {
+  if (state === null) return "Checking whether this agent is contained…";
+  if (state.enforcing) {
+    return "This agent has no route to the network except through checks it cannot skip.";
+  }
+  if (state.runtimeProvider !== "container") {
+    return (
+      "This agent can reach the network directly: it runs as a host process " +
+      "(RUNTIME_PROVIDER=" + state.runtimeProvider + "), which has no network " +
+      "boundary to enforce. Start with `npm run poc` for the contained runtime."
+    );
+  }
+  return "This agent can reach the network directly. Set EGRESS_ENFORCEMENT=on to contain it.";
+}
 
 /**
  * What this agent was stopped from doing.
@@ -115,7 +145,12 @@ interface ProbeResult {
 export default function SecurityFeed({ agent }: { agent: Agent }) {
   const [events, setEvents] = useState<RunEvent[]>([]);
   const [error, setError] = useState<string | null>(null);
-  const [enforcing, setEnforcing] = useState<boolean | null>(null);
+  // Null until the fetch lands. "Not enforcing" and "not known yet" are
+  // different claims, and a security indicator must never assert the safer one
+  // before it has the answer.
+  const [containment, setContainment] = useState<
+    { enforcing: boolean; runtimeProvider: SystemInfo["runtimeProvider"] } | null
+  >(null);
   const [mode, setMode] = useState<"overview" | "log">(() => {
     try {
       return localStorage.getItem(MODE_KEY) === "log" ? "log" : "overview";
@@ -154,7 +189,12 @@ export default function SecurityFeed({ agent }: { agent: Agent }) {
     void api
       .system()
       .then((info) => {
-        if (mounted.current) setEnforcing(Boolean(info.egressEnforcement));
+        if (mounted.current) {
+          setContainment({
+            enforcing: Boolean(info.egressEnforcement),
+            runtimeProvider: info.runtimeProvider,
+          });
+        }
       })
       .catch(() => undefined);
     const interval = window.setInterval(() => void refresh(), 2000);
@@ -211,15 +251,10 @@ export default function SecurityFeed({ agent }: { agent: Agent }) {
       </header>
 
       <div className="containment-status">
-        <span className={"status-tag status-" + (enforcing === false ? "blocked" : "ready")}>
-          <span className="status-dot" />
-          {enforcing === false ? "Not enforcing" : "Enforcing"}
+        <span className={"shield " + containmentShield(containment)}>
+          {containment === null ? "Checking…" : containment.enforcing ? "Enforcing" : "Not enforcing"}
         </span>
-        <span className="status-line">
-          {enforcing === false
-            ? "Direct route active. Set EGRESS_ENFORCEMENT=on."
-            : "Isolated container: all traffic routed through proxy."}
-        </span>
+        <span className="status-line">{containmentReason(containment)}</span>
         <span className="blocked-tally mono">
           <strong>{blockedCount}</strong> blocked
         </span>

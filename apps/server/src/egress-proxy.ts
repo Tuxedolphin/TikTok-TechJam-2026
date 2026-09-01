@@ -39,6 +39,7 @@ export type EgressAuthorizer = (input: {
   port: number;
   method: string;
   secret: string;
+  signal?: AbortSignal | undefined;
 }) => Promise<EgressVerdict>;
 
 export interface EgressProxyOptions {
@@ -312,6 +313,7 @@ export function createEgressProxy(options: EgressProxyOptions): EgressProxyServe
     host: string,
     port: number,
     method: string,
+    signal: AbortSignal,
   ): Promise<EgressVerdict> => {
     if (!caller) {
       return {
@@ -327,6 +329,7 @@ export function createEgressProxy(options: EgressProxyOptions): EgressProxyServe
         port,
         method,
         secret: caller.secret,
+        signal,
       });
       options.onVerdict?.({ agentPrincipalId: caller.principalId, host, verdict });
       return verdict;
@@ -372,7 +375,18 @@ export function createEgressProxy(options: EgressProxyOptions): EgressProxyServe
       const principal = principalFromProxyAuth(request.headers["proxy-authorization"]);
       const generation = principal ? currentGeneration(principal.principalId) : 0;
       if (principal) track(principal.principalId, request, response);
-      const verdict = await decide(principal, target.hostname, port, request.method ?? "GET");
+      const controller = new AbortController();
+      response.once("close", () => {
+        if (!response.writableEnded) controller.abort();
+      });
+      const verdict = await decide(
+        principal,
+        target.hostname,
+        port,
+        request.method ?? "GET",
+        controller.signal,
+      );
+      if (controller.signal.aborted) return;
 
       if (
         principal &&
@@ -511,7 +525,10 @@ export function createEgressProxy(options: EgressProxyOptions): EgressProxyServe
       const principal = principalFromProxyAuth(request.headers["proxy-authorization"]);
       const generation = principal ? currentGeneration(principal.principalId) : 0;
       if (principal) track(principal.principalId, clientSocket);
-      const verdict = await decide(principal, host, port, "CONNECT");
+      const controller = new AbortController();
+      clientSocket.once("close", () => controller.abort());
+      const verdict = await decide(principal, host, port, "CONNECT", controller.signal);
+      if (controller.signal.aborted) return;
 
       if (
         principal &&
@@ -563,7 +580,7 @@ export function createEgressProxy(options: EgressProxyOptions): EgressProxyServe
         if (principal && reauthorizeIntervalMs > 0) {
           const recheck = setInterval(() => {
             void (async () => {
-              const current = await decide(principal, host, port, "CONNECT");
+              const current = await decide(principal, host, port, "CONNECT", new AbortController().signal);
               if (!current.allowed) {
                 options.onVerdict?.({
                   agentPrincipalId: principal.principalId,

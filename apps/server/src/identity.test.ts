@@ -73,7 +73,8 @@ describe("IdentityService", () => {
     const grant = await service.createGrant({
       principalId: "agent-1", grantedBy: "user-a", scope: "resource:read", target: "res-a",
     });
-    await service.revokeGrant(grant.id);
+    const revoked = await service.revokeGrant(grant.id, "user-a");
+    expect(revoked.revokedBy).toBe("user-a");
     const denied = await service.readResourceAsAgent("res-a", "agent-1");
     expect(denied.decision).toMatchObject({ allowed: false, ruleId: "AUTHZ-REVOKED-013" });
   });
@@ -127,7 +128,7 @@ describe("IdentityService", () => {
     const grant = await service.createGrant({
       principalId: "agent-1", grantedBy: "user-a", scope: "resource:read", target: "res-a",
     });
-    await service.revokeGrant(grant.id);
+    await service.revokeGrant(grant.id, "user-a");
     expect(lifecycle).toEqual(["grant.created", "grant.revoked"]);
   });
   it("does not hand out a Grant that aliases stored state", async () => {

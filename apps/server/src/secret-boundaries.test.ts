@@ -4,7 +4,9 @@ import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { AgentService } from "./agent-service.js";
 import { createApp } from "./app.js";
+import { IdentityService } from "./identity.js";
 import { loadConfig } from "./config.js";
+import { IdentityService } from "./identity.js";
 import { JsonStore } from "./store.js";
 import type { AgentRunner, RunnerRequest, RunnerResult } from "./types.js";
 import { WorkspaceManager } from "./workspace.js";
@@ -40,6 +42,14 @@ class SecretEchoRunner implements AgentRunner {
     return false;
   }
 
+  async pause(): Promise<boolean> {
+    return true;
+  }
+
+  async resume(): Promise<boolean> {
+    return true;
+  }
+
   async isAvailable(): Promise<boolean> {
     return true;
   }
@@ -67,12 +77,24 @@ describe("credential secrecy across server boundaries", () => {
       new SecretEchoRunner(providerKey, config.geminiAdapterToken),
     );
     await service.initialize();
-    const app = await createApp(config, service);
+    // Identity is wired as index.ts wires it: every action is attributed to a
+    // server-issued principal session rather than caller-provided display text.
+    const app = await createApp(config, service, new IdentityService(store));
 
     try {
+      const sessionResponse = await app.inject({
+        method: "POST",
+        url: "/api/mock-principal-session",
+        payload: { principalId: "user-a" },
+      });
+      expect(sessionResponse.statusCode).toBe(201);
+      const principalHeaders = {
+        "x-mock-principal-session": sessionResponse.json().sessionToken as string,
+      };
       const createResponse = await app.inject({
         method: "POST",
         url: "/api/agents",
+        headers: principalHeaders,
         payload: { name: "Secret boundary" },
       });
       expect(createResponse.statusCode).toBe(201);
@@ -81,6 +103,7 @@ describe("credential secrecy across server boundaries", () => {
       const sendResponse = await app.inject({
         method: "POST",
         url: `/api/agents/${agentId}/messages`,
+        headers: principalHeaders,
         payload: { content: prompt },
       });
       expect(sendResponse.statusCode).toBe(202);
@@ -89,11 +112,27 @@ describe("credential secrecy across server boundaries", () => {
 
       const responses = await Promise.all([
         Promise.resolve(sendResponse),
-        app.inject({ method: "GET", url: `/api/agents/${agentId}/messages` }),
-        app.inject({ method: "GET", url: `/api/agents/${agentId}/runs` }),
-        app.inject({ method: "GET", url: `/api/runs/${runId}` }),
-        app.inject({ method: "GET", url: `/api/agents/${agentId}/events` }),
-        app.inject({ method: "GET", url: `/api/runs/${runId}/events` }),
+        app.inject({
+          method: "GET",
+          url: `/api/agents/${agentId}/messages`,
+          headers: principalHeaders,
+        }),
+        app.inject({
+          method: "GET",
+          url: `/api/agents/${agentId}/runs`,
+          headers: principalHeaders,
+        }),
+        app.inject({ method: "GET", url: `/api/runs/${runId}`, headers: principalHeaders }),
+        app.inject({
+          method: "GET",
+          url: `/api/agents/${agentId}/events`,
+          headers: principalHeaders,
+        }),
+        app.inject({
+          method: "GET",
+          url: `/api/runs/${runId}/events`,
+          headers: principalHeaders,
+        }),
       ]);
       const visibleBodies = responses.map((response) => response.body).join("\n");
       const traceLog = JSON.stringify(service.getRunEvents(runId));
