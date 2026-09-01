@@ -108,12 +108,10 @@ describe("Container Codex runner", () => {
 
       expect(argv).not.toContain(providerKey);
       expect(argv).not.toContain(config.geminiAdapterToken);
-      expect(args).toContain("OPENROUTER_API_KEY");
-      expect(args).toContain("OPENAI_API_KEY");
-      expect(args).toContain("OPENROUTER_BASE_URL");
-      expect(args).toContain("OPENAI_BASE_URL");
-      expect(args.some((arg) => /^(OPENROUTER|OPENAI)_API_KEY=/.test(arg))).toBe(false);
-      expect(args.some((arg) => /^(OPENROUTER|OPENAI)_BASE_URL=/.test(arg))).toBe(false);
+      expect(args).toContain("MODEL_API_KEY");
+      expect(args.some((arg) => /^MODEL_API_KEY=/.test(arg))).toBe(false);
+      expect(args).not.toContain("OPENROUTER_API_KEY");
+      expect(args).not.toContain("OPENAI_API_KEY");
     },
   );
 
@@ -125,7 +123,7 @@ describe("Container Codex runner", () => {
     await writeFile(
       enginePath,
       `#!/bin/sh
-printf '%s|%s|%s\\n' "$1" "\${OPENROUTER_API_KEY-<unset>}" "\${OPENAI_API_KEY-<unset>}" >> "${recordPath}"
+printf '%s|%s\\n' "$1" "\${MODEL_API_KEY-<unset>}" >> "${recordPath}"
 if [ "$1" = "run" ]; then
   printf '%s\\n' '{"type":"item.completed","item":{"type":"agent_message","text":"done"}}'
 fi
@@ -148,12 +146,10 @@ fi
     const runner = new ContainerCodexRunner(config);
 
     expect(containerEngineEnvironment(config)).not.toMatchObject({
-      OPENROUTER_API_KEY: expect.anything(),
-      OPENAI_API_KEY: expect.anything(),
+      MODEL_API_KEY: expect.anything(),
     });
     expect(containerEngineEnvironment(config, true)).toMatchObject({
-      OPENROUTER_API_KEY: config.geminiAdapterToken,
-      OPENAI_API_KEY: config.geminiAdapterToken,
+      MODEL_API_KEY: config.geminiAdapterToken,
     });
 
     expect(await runner.isAvailable()).toBe(true);
@@ -165,10 +161,12 @@ fi
     });
 
     const records = (await readFile(recordPath, "utf8")).trim().split("\n");
-    expect(records[0]).toMatch(/^version\|<unset>\|<unset>$/);
-    expect(records[1]).toMatch(/^image\|<unset>\|<unset>$/);
-    expect(records[2]).toBe(`run|${config.geminiAdapterToken}|${config.geminiAdapterToken}`);
-    expect(records[2]).not.toContain(config.geminiApiKey);
+    expect(records[0]).toBe("version|<unset>");
+    expect(records[1]).toBe("image|<unset>");
+    expect(records[2]).toBe("ps|<unset>");
+    const runRecord = records.find((record) => record.startsWith("run|"));
+    expect(runRecord).toBe(`run|${config.geminiAdapterToken}`);
+    expect(runRecord).not.toContain(config.geminiApiKey);
   });
 
   it("handles empty credentials without synthesizing secret-bearing argv values", () => {
@@ -190,9 +188,37 @@ fi
 
     expect(args.join("\0")).not.toContain("undefined");
     expect(args.join("\0")).not.toContain("null");
-    expect(args).toContain("OPENROUTER_API_KEY");
-    expect(args).toContain("OPENAI_API_KEY");
+    expect(args).toContain("MODEL_API_KEY");
+    expect(args.some((arg) => arg.startsWith("MODEL_API_KEY="))).toBe(false);
   });
+
+  it.skipIf(process.platform === "win32")(
+    "propagates an orphaned container removal failure",
+    async () => {
+      const root = await mkdtemp(path.join(tmpdir(), "launchpad-engine-test-"));
+      temporaryDirectories.push(root);
+      const engine = path.join(root, "engine.sh");
+      await writeFile(
+        engine,
+        [
+          "#!/bin/sh",
+          "if [ \"$1\" = ps ]; then echo orphan-container; exit 0; fi",
+          "if [ \"$1\" = rm ]; then echo removal-failed >&2; exit 1; fi",
+          "exit 0",
+          "",
+        ].join("\n"),
+      );
+      await chmod(engine, 0o700);
+      const config = loadConfig({
+        NODE_ENV: "test",
+        RUNTIME_PROVIDER: "container",
+        CONTAINER_ENGINE: engine,
+        RUNTIME_INSTANCE_ID: "test-instance",
+      });
+      const runner = new ContainerCodexRunner(config);
+      await expect(runner.cancel("agent-id")).rejects.toThrow("removal-failed");
+    },
+  );
 
   it("resumes a thread inside the mounted Runtime workspace", () => {
     const config = loadConfig({

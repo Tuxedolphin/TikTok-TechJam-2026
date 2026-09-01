@@ -2,7 +2,8 @@
 
 The local profile runs the React/Fastify control plane on macOS or Linux and
 starts every Codex turn in a disposable Docker, Colima, or Podman container.
-Only the OpenRouter model API is remote.
+The model endpoint is the only remote dependency, and under egress enforcement
+the agent reaches it through the proxy sidecar like any other destination.
 
 ## Start
 

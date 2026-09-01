@@ -73,7 +73,8 @@ describe("IdentityService", () => {
     const grant = await service.createGrant({
       principalId: "agent-1", grantedBy: "user-a", scope: "resource:read", target: "res-a",
     });
-    await service.revokeGrant(grant.id);
+    const revoked = await service.revokeGrant(grant.id, "user-a");
+    expect(revoked.revokedBy).toBe("user-a");
     const denied = await service.readResourceAsAgent("res-a", "agent-1");
     expect(denied.decision).toMatchObject({ allowed: false, ruleId: "AUTHZ-REVOKED-013" });
   });
@@ -127,7 +128,7 @@ describe("IdentityService", () => {
     const grant = await service.createGrant({
       principalId: "agent-1", grantedBy: "user-a", scope: "resource:read", target: "res-a",
     });
-    await service.revokeGrant(grant.id);
+    await service.revokeGrant(grant.id, "user-a");
     expect(lifecycle).toEqual(["grant.created", "grant.revoked"]);
   });
   it("does not hand out a Grant that aliases stored state", async () => {
@@ -194,6 +195,19 @@ describe("IdentityService", () => {
       principalId: "agent-1", grantedBy: "agent-1", scope: "network:egress", target: "example.com",
     })).rejects.toMatchObject({ statusCode: 403 });
     expect(service.listGrants("agent-1")).toHaveLength(1);
+  });
+
+  it("refuses to delegate agent authority into a human principal", async () => {
+    const service = await makeService();
+    await service.createGrant({
+      principalId: "agent-1", grantedBy: "user-a",
+      scope: "network:egress", target: "example.com",
+    });
+    await expect(service.createGrant({
+      principalId: "user-b", grantedBy: "agent-1",
+      scope: "network:egress", target: "example.com", ttlMinutes: 5,
+    })).rejects.toMatchObject({ statusCode: 403 });
+    expect(service.listGrants("user-b")).toHaveLength(0);
   });
 
   it("refuses a wildcard target so policy and enforcement cannot disagree", async () => {

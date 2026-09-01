@@ -1,6 +1,6 @@
 import type { AgentService } from "./agent-service.js";
 import type { EgressNetworkManager } from "./egress-network.js";
-import type { IdentityService } from "./identity.js";
+import { cascadeGrantRevocation, type IdentityService } from "./identity.js";
 import type { JsonStore } from "./store.js";
 import {
   signReceipt,
@@ -30,48 +30,50 @@ export class AgentTerminator {
     // Raise the admission barrier before anything else, so a run cannot be
     // admitted during the freeze/revoke window and outlive this termination.
     this.agents.beginTermination(agentId);
-    const freeze = await this.freeze(agentId);
-    const steps: TerminationStep[] = [freeze];
-    const revoked: string[] = [];
-    const memoriesQuarantined: string[] = [];
+    let evidencePersisted = false;
+    try {
+      const freeze = await this.freeze(agentId);
+      const steps: TerminationStep[] = [freeze];
+      const revoked: string[] = [];
+      const memoriesQuarantined: string[] = [];
 
-    if (freeze.ok) {
-      steps.push(await this.revokeAndBlock(agentId, agent.principalId, revoked, memoriesQuarantined));
-      steps.push(await this.kill(agentId, reason));
-    } else {
-      // If a live runtime could not be frozen, kill it before changing grants.
-      // This fallback is safe but cannot claim the requested freeze-first proof.
-      steps.push(await this.kill(agentId, reason));
-      steps.push(await this.revokeAndBlock(agentId, agent.principalId, revoked, memoriesQuarantined));
+      if (freeze.ok) {
+        steps.push(await this.revokeAndBlock(agentId, agent.principalId, revoked, memoriesQuarantined));
+        steps.push(await this.kill(agentId, reason));
+      } else {
+        // If a live runtime could not be frozen, kill it before changing grants.
+        // This fallback is safe but cannot claim the requested freeze-first proof.
+        steps.push(await this.kill(agentId, reason));
+        steps.push(await this.revokeAndBlock(agentId, agent.principalId, revoked, memoriesQuarantined));
+      }
+
+      steps.push(await this.verifyContainment(agentId, agent.principalId));
+      const body: UnsignedReceipt = {
+        version: 2,
+        keyId: this.receiptKeys.keyId,
+        agentId,
+        agentPrincipalId: agent.principalId,
+        reason,
+        issuedAt: now(),
+        steps,
+        grantsRevoked: revoked,
+        memoriesQuarantined,
+        contained: steps.every((step) => step.ok),
+      };
+      const receipt: TerminationReceipt = {
+        ...body,
+        signature: signReceipt(body, this.receiptKeys.privateKeyPem),
+      };
+
+      await this.agents.recordTermination(agentId, receipt);
+      evidencePersisted = true;
+      return receipt;
+    } finally {
+      // A failed receipt write leaves the incident locked down. Clearing the
+      // in-progress guard would let start erase authorityBlocked/barrier state
+      // even though termination evidence was never persisted.
+      if (evidencePersisted) this.agents.endTermination(agentId);
     }
-
-    // Drain any connection the proxy is still piping for this principal before
-    // verifying. Authorization is per-connection, so a tunnel opened before
-    // revocation would otherwise keep flowing while the receipt claimed
-    // containment.
-    if (this.egress?.drainPrincipal) {
-      await Promise.resolve(this.egress.drainPrincipal(agent.principalId)).catch(() => null);
-    }
-    steps.push(await this.verifyContainment(agentId, agent.principalId));
-    const body: UnsignedReceipt = {
-      version: 2,
-      keyId: this.receiptKeys.keyId,
-      agentId,
-      agentPrincipalId: agent.principalId,
-      reason,
-      issuedAt: now(),
-      steps,
-      grantsRevoked: revoked,
-      memoriesQuarantined,
-      contained: steps.every((step) => step.ok),
-    };
-    const receipt: TerminationReceipt = {
-      ...body,
-      signature: signReceipt(body, this.receiptKeys.privateKeyPem),
-    };
-
-    await this.agents.recordTermination(agentId, receipt);
-    return receipt;
   }
 
   private async freeze(agentId: string): Promise<TerminationStep> {
@@ -103,12 +105,14 @@ export class AgentTerminator {
         if (!storedAgent) throw new Error("Agent disappeared during termination");
         storedAgent.authorityBlocked = true;
 
-        const stamped: string[] = [];
+        const roots = database.grants
+          .filter((grant) => grant.principalId === agentPrincipalId && grant.revokedAt === null)
+          .map((grant) => grant.id);
+        const stamped = new Set<string>();
         const revokedAt = now();
-        for (const grant of database.grants) {
-          if (grant.principalId === agentPrincipalId && grant.revokedAt === null) {
-            grant.revokedAt = revokedAt;
-            stamped.push(grant.id);
+        for (const root of roots) {
+          for (const id of cascadeGrantRevocation(database.grants, root, revokedAt)) {
+            stamped.add(id);
           }
         }
 
@@ -123,10 +127,19 @@ export class AgentTerminator {
             quarantined.push(entry.id);
           }
         }
-        return { stamped, quarantined };
+        return { stamped: [...stamped], quarantined };
       });
       revoked.push(...ids.stamped);
       memoriesQuarantined.push(...ids.quarantined);
+      // Authorization is per-connection, so a tunnel opened before revocation
+      // must be closed before containment can be claimed. A failed drain is
+      // evidence failure, not a best-effort cleanup to hide.
+      if (this.egress?.drainPrincipal) {
+        const drained = await this.egress.drainPrincipal(agentPrincipalId);
+        if (drained === null) {
+          throw new Error("Could not confirm that authorized proxy connections were drained.");
+        }
+      }
       return {
         step: "revoke",
         ok: true,
@@ -165,6 +178,9 @@ export class AgentTerminator {
           grant.revokedAt === null &&
           (grant.expiresAt === null || grant.expiresAt > currentTime),
       );
+      const liveMemories = database.memories.filter(
+        (entry) => entry.agentId === agentId && entry.quarantinedAt === null,
+      );
       const inMemoryStopped = !this.agents.hasLiveExecution(agentId) && agent?.status === "stopped";
       // The in-memory map is cleared even when `docker rm` failed, so it is not
       // proof the container is gone. Ask the engine directly. A confirmed
@@ -180,9 +196,6 @@ export class AgentTerminator {
           ? "runtime stop not independently confirmed by the engine"
           : `runtime confirmed ${runtimeConfirmed ? "stopped" : "STILL RUNNING"} by the engine`;
       const authorityBlocked = agent?.authorityBlocked === true;
-      const liveMemories = database.memories.filter(
-        (entry) => entry.agentId === agentId && entry.quarantinedAt === null,
-      );
 
       let networkBlocked = runtimeStopped;
       let networkDetail = "No runtime remains from which to open a route.";

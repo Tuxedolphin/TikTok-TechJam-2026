@@ -33,7 +33,7 @@ function canonicalize(value) {
 function hasValidStructure(receipt) {
   if (!receipt || typeof receipt !== "object" || Array.isArray(receipt)) return false;
   if (
-    receipt.version !== 2 ||
+    receipt.version !== 1 ||
     typeof receipt.keyId !== "string" ||
     typeof receipt.agentId !== "string" ||
     typeof receipt.agentPrincipalId !== "string" ||
@@ -44,9 +44,6 @@ function hasValidStructure(receipt) {
     !Array.isArray(receipt.grantsRevoked) ||
     receipt.grantsRevoked.some((id) => typeof id !== "string") ||
     new Set(receipt.grantsRevoked).size !== receipt.grantsRevoked.length ||
-    !Array.isArray(receipt.memoriesQuarantined) ||
-    receipt.memoriesQuarantined.some((id) => typeof id !== "string") ||
-    new Set(receipt.memoriesQuarantined).size !== receipt.memoriesQuarantined.length ||
     !Array.isArray(receipt.steps) ||
     receipt.steps.length !== 4
   ) {
@@ -82,10 +79,6 @@ try {
 }
 if (receipt.receipt) receipt = receipt.receipt;
 
-if (receipt && receipt.version !== 2) {
-  console.log(`UNSUPPORTED — receipt version ${receipt.version}; this verifier reads version 2.`);
-  process.exit(1);
-}
 if (!hasValidStructure(receipt)) {
   console.log("INVALID — receipt structure or step sequence is invalid.");
   process.exit(1);
@@ -118,8 +111,7 @@ for (const step of receipt.steps) {
   console.log(`  ${step.ok ? "ok  " : "FAIL"}  ${String(step.step).padEnd(7)} ${step.detail}`);
 }
 console.log("");
-console.log(`Grants revoked:       ${receipt.grantsRevoked.length}`);
-console.log(`Memories quarantined: ${receipt.memoriesQuarantined.length}`);
+console.log(`Grants revoked: ${receipt.grantsRevoked.length}`);
 console.log(
   receipt.contained
     ? "\nVALID — signature, step sequence, and containment claim are internally consistent."

@@ -1,7 +1,7 @@
 import path from "node:path";
 import { AgentService } from "./agent-service.js";
 import { createApp } from "./app.js";
-import { loadConfig, writeCodexConfig, type AppConfig } from "./config.js";
+import { describeEgressGap, loadConfig, writeCodexConfig, type AppConfig } from "./config.js";
 import { EgressAuthorizer } from "./egress-authorizer.js";
 import { EgressNetworkManager } from "./egress-network.js";
 import { IdentityService } from "./identity.js";
@@ -21,7 +21,7 @@ import { WorkspaceManager } from "./workspace.js";
 function platformHosts(config: AppConfig): string[] {
   const hosts = new Set<string>([`host.docker.internal:${config.port}`]);
   try {
-    const modelApi = new URL(config.openRouterBaseUrl);
+    const modelApi = new URL(config.modelBaseUrl);
     const port = modelApi.port || (modelApi.protocol === "https:" ? "443" : "80");
     hosts.add(`${modelApi.hostname}:${port}`);
   } catch {
@@ -74,6 +74,8 @@ egressAuthorizer = config.egressEnforcement
         service.recordPolicyDecision(runId, agentId, decision),
       recordBlocked: (runId, agentId, input, decision, strikes) =>
         service.recordEgressBlocked(runId, agentId, input.host, decision, strikes),
+      requestApproval: (runId, agentId, input) =>
+        service.requestEgressApproval(runId, agentId, input),
       quarantineAgent: (agentId, reason) => service.quarantineAgent(agentId, reason),
     })
   : undefined;
@@ -84,13 +86,21 @@ const app = await createApp(
   config, service, identity, egressAuthorizer, egressNetwork, terminator, memory,
 );
 
+// Said at startup rather than only in the UI: an operator running the server
+// headless would otherwise never learn that the containment they configured is
+// not active.
+const egressGap = describeEgressGap(config);
+if (egressGap) app.log.warn(egressGap);
+
 const shutdown = async (signal: string) => {
   app.log.info({ signal }, "Shutting down");
   await app.close();
   // Agent processes run in their own process group so a freeze reaches their
   // descendants; that also means they do not die with this server unless we
   // say so. Take them down explicitly rather than leaking orphans.
-  (runner as { terminateAll?: () => void }).terminateAll?.();
+  await Promise.resolve(runner.terminateAll?.()).catch((error: unknown) => {
+    app.log.error({ error }, "Runtime teardown failed during shutdown");
+  });
   await egressNetwork?.shutdown();
   process.exit(0);
 };

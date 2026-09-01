@@ -39,6 +39,7 @@ export type EgressAuthorizer = (input: {
   port: number;
   method: string;
   secret: string;
+  signal?: AbortSignal | undefined;
 }) => Promise<EgressVerdict>;
 
 export interface EgressProxyOptions {
@@ -115,6 +116,56 @@ export function principalFromProxyAuth(
   return username.length > 0 ? { principalId: decodeURIComponent(username), secret } : null;
 }
 
+function parseIPv4(address: string): number[] | null {
+  const parts = address.split(".");
+  if (parts.length !== 4 || parts.some((part) => !/^\d{1,3}$/.test(part))) return null;
+  const octets = parts.map(Number);
+  return octets.every((octet) => octet <= 255) ? octets : null;
+}
+
+function parseIPv6(address: string): number[] | null {
+  const sections = address.toLowerCase().split("::");
+  if (sections.length > 2) return null;
+
+  const parseSection = (section: string): number[] | null => {
+    if (!section) return [];
+    const words: number[] = [];
+    const parts = section.split(":");
+    for (const [index, part] of parts.entries()) {
+      if (part.includes(".")) {
+        if (index !== parts.length - 1) return null;
+        const octets = parseIPv4(part);
+        if (!octets) return null;
+        words.push((octets[0]! << 8) | octets[1]!, (octets[2]! << 8) | octets[3]!);
+      } else {
+        if (!/^[0-9a-f]{1,4}$/.test(part)) return null;
+        words.push(Number.parseInt(part, 16));
+      }
+    }
+    return words;
+  };
+
+  const left = parseSection(sections[0] ?? "");
+  const right = sections.length === 2 ? parseSection(sections[1] ?? "") : [];
+  if (!left || !right) return null;
+  const missing = 8 - left.length - right.length;
+  if (sections.length === 2) {
+    return missing > 0 ? [...left, ...Array<number>(missing).fill(0), ...right] : null;
+  }
+  return missing === 0 ? left : null;
+}
+
+function isPrivateIPv4(parts: number[]): boolean {
+  const [a = 0, b = 0] = parts;
+  if (a === 127 || a === 0 || a === 10) return true;
+  if (a === 100 && b >= 64 && b <= 127) return true;
+  if (a === 169 && b === 254) return true;
+  if (a === 172 && b >= 16 && b <= 31) return true;
+  if (a === 192 && b === 168) return true;
+  if (a >= 224) return true;
+  return false;
+}
+
 /**
  * Addresses an agent must never reach even with a grant: loopback, link-local
  * (which covers cloud metadata at 169.254.169.254), and private ranges. A
@@ -122,50 +173,35 @@ export function principalFromProxyAuth(
  * the grant was issued, so the check is on the resolved address, not the name.
  */
 export function isPrivateAddress(address: string): boolean {
-  if (isIP(address) === 6) {
-    const normalized = address.toLowerCase();
-    // An IPv4-mapped address (::ffff:a.b.c.d, and its hex ::ffff:aabb:ccdd
-    // form) reaches the same host as the bare IPv4. Anything less than
-    // normalizing it back to v4 lets a partial prefix list leak: the previous
-    // check listed ::ffff:10/192.168 but not ::ffff:172.16/12 or, worse,
-    // ::ffff:169.254.169.254 -- cloud metadata behind a mapped address.
-    const mapped = mappedIpv4(normalized);
-    if (mapped) return isPrivateAddress(mapped);
-    return (
-      normalized === "::1" ||
-      normalized === "::" ||
-      normalized.startsWith("fe80:") ||
-      normalized.startsWith("fc") ||
-      normalized.startsWith("fd")
-    );
+  if (isIP(address) === 4) {
+    const parts = parseIPv4(address);
+    return parts ? isPrivateIPv4(parts) : false;
   }
-  const parts = address.split(".").map(Number);
-  if (parts.length !== 4 || parts.some((p) => !Number.isInteger(p))) return false;
-  const [a = 0, b = 0] = parts;
-  if (a === 127 || a === 0 || a === 10) return true;
-  if (a === 169 && b === 254) return true;
-  if (a === 172 && b >= 16 && b <= 31) return true;
-  if (a === 192 && b === 168) return true;
-  return false;
-}
+  if (isIP(address) !== 6) return false;
 
-/**
- * The dotted-quad inside an IPv6 address that actually reaches an IPv4 host:
- * the v4-mapped form (::ffff:a.b.c.d and its hex ::ffff:aabb:ccdd spelling) and
- * the deprecated v4-compatible form (::a.b.c.d). Both are decoded so one policy
- * covers every spelling -- listing prefixes by hand is what let
- * ::ffff:169.254.169.254 through as "public".
- */
-function mappedIpv4(normalized: string): string | null {
-  const dotted = /^::(?:ffff:)?(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})$/.exec(normalized);
-  if (dotted?.[1]) return dotted[1];
-  const hex = /^::ffff:([0-9a-f]{1,4}):([0-9a-f]{1,4})$/.exec(normalized);
-  if (hex?.[1] && hex[2]) {
-    const high = parseInt(hex[1], 16);
-    const low = parseInt(hex[2], 16);
-    return `${high >> 8}.${high & 0xff}.${low >> 8}.${low & 0xff}`;
+  const words = parseIPv6(address);
+  if (!words) return false;
+  const isMapped = words.slice(0, 5).every((word) => word === 0) && words[5] === 0xffff;
+  const isCompatible =
+    words.slice(0, 6).every((word) => word === 0) &&
+    (words[6] !== 0 || (words[7] !== 0 && words[7] !== 1));
+  if (isMapped || isCompatible) {
+    return isPrivateIPv4([
+      words[6]! >> 8,
+      words[6]! & 0xff,
+      words[7]! >> 8,
+      words[7]! & 0xff,
+    ]);
   }
-  return null;
+
+  const firstWord = words[0] ?? 0;
+  return (
+    words.slice(0, 7).every((word) => word === 0) && words[7] === 1 ||
+    words.every((word) => word === 0) ||
+    (firstWord & 0xffc0) === 0xfe80 ||
+    (firstWord & 0xfe00) === 0xfc00 ||
+    (firstWord & 0xff00) === 0xff00
+  );
 }
 
 const privateAddressVerdict = (host: string): EgressVerdict => ({
@@ -212,8 +248,15 @@ export function createEgressProxy(options: EgressProxyOptions): EgressProxyServe
   const connectTimeoutMs = options.connectTimeoutMs ?? 30_000;
   const reauthorizeIntervalMs = options.reauthorizeIntervalMs ?? 15_000;
 
-  // Live connections, indexed by the principal they were authorized for.
+  // Live and pending connections, indexed by authenticated principal. A
+  // generation changes on drain so authorization/DNS work already in flight
+  // cannot connect after termination closes the currently tracked sockets.
   const liveByPrincipal = new Map<string, Set<Closable>>();
+  const generationByPrincipal = new Map<string, number>();
+  const currentGeneration = (principalId: string): number =>
+    generationByPrincipal.get(principalId) ?? 0;
+  const generationIsCurrent = (principalId: string, generation: number): boolean =>
+    currentGeneration(principalId) === generation;
   const track = (principalId: string, ...closables: Closable[]): void => {
     let set = liveByPrincipal.get(principalId);
     if (!set) {
@@ -224,7 +267,9 @@ export function createEgressProxy(options: EgressProxyOptions): EgressProxyServe
       set.add(closable);
       const forget = () => {
         set!.delete(closable);
-        if (set!.size === 0) liveByPrincipal.delete(principalId);
+        if (set!.size === 0 && liveByPrincipal.get(principalId) === set) {
+          liveByPrincipal.delete(principalId);
+        }
       };
       // ClientRequest / ServerResponse / Socket all emit "close".
       (closable as unknown as { once(event: string, cb: () => void): void }).once("close", forget);
@@ -232,6 +277,7 @@ export function createEgressProxy(options: EgressProxyOptions): EgressProxyServe
   };
 
   server.closePrincipalConnections = (agentPrincipalId: string): number => {
+    generationByPrincipal.set(agentPrincipalId, currentGeneration(agentPrincipalId) + 1);
     const set = liveByPrincipal.get(agentPrincipalId);
     if (!set) return 0;
     let closed = 0;
@@ -267,6 +313,7 @@ export function createEgressProxy(options: EgressProxyOptions): EgressProxyServe
     host: string,
     port: number,
     method: string,
+    signal: AbortSignal,
   ): Promise<EgressVerdict> => {
     if (!caller) {
       return {
@@ -282,6 +329,7 @@ export function createEgressProxy(options: EgressProxyOptions): EgressProxyServe
         port,
         method,
         secret: caller.secret,
+        signal,
       });
       options.onVerdict?.({ agentPrincipalId: caller.principalId, host, verdict });
       return verdict;
@@ -325,7 +373,35 @@ export function createEgressProxy(options: EgressProxyOptions): EgressProxyServe
         : new URL(rawUrl, `http://${request.headers.host ?? ""}`);
       const port = target.port ? Number(target.port) : 80;
       const principal = principalFromProxyAuth(request.headers["proxy-authorization"]);
-      const verdict = await decide(principal, target.hostname, port, request.method ?? "GET");
+      const generation = principal ? currentGeneration(principal.principalId) : 0;
+      if (principal) track(principal.principalId, request, response);
+      const controller = new AbortController();
+      response.once("close", () => {
+        if (!response.writableEnded) controller.abort();
+      });
+      const verdict = await decide(
+        principal,
+        target.hostname,
+        port,
+        request.method ?? "GET",
+        controller.signal,
+      );
+      if (controller.signal.aborted) return;
+
+      if (
+        principal &&
+        (!generationIsCurrent(principal.principalId, generation) || request.destroyed || response.destroyed)
+      ) {
+        if (!response.destroyed) {
+          response.writeHead(403, { "content-type": "application/json" });
+          response.end(DENIED_BODY({
+            allowed: false,
+            ruleId: "AUTHZ-REVOKED-013",
+            reason: "Authority changed while this connection was being authorized.",
+          }, target.hostname));
+        }
+        return;
+      }
 
       if (!verdict.allowed) {
         const unauthenticated = verdict.ruleId === "NET-EGRESS-NOAUTH-022";
@@ -340,6 +416,13 @@ export function createEgressProxy(options: EgressProxyOptions): EgressProxyServe
       }
 
       const resolved = await resolveTarget(target.hostname, verdict.allowPrivate === true);
+      if (
+        principal &&
+        (!generationIsCurrent(principal.principalId, generation) || request.destroyed || response.destroyed)
+      ) {
+        if (!response.destroyed) response.destroy();
+        return;
+      }
       if (!resolved) {
         response.writeHead(403, { "content-type": "application/json" });
         response.end(DENIED_BODY(privateAddressVerdict(target.hostname), target.hostname));
@@ -440,20 +523,47 @@ export function createEgressProxy(options: EgressProxyOptions): EgressProxyServe
       }
 
       const principal = principalFromProxyAuth(request.headers["proxy-authorization"]);
-      const verdict = await decide(principal, host, port, "CONNECT");
+      const generation = principal ? currentGeneration(principal.principalId) : 0;
+      if (principal) track(principal.principalId, clientSocket);
+      const controller = new AbortController();
+      clientSocket.once("close", () => controller.abort());
+      const verdict = await decide(principal, host, port, "CONNECT", controller.signal);
+      if (controller.signal.aborted) return;
 
+      if (
+        principal &&
+        (!generationIsCurrent(principal.principalId, generation) || clientSocket.destroyed)
+      ) {
+        if (!clientSocket.destroyed) clientSocket.destroy();
+        return;
+      }
       if (!verdict.allowed) {
         denyConnect(clientSocket, verdict, host);
         return;
       }
 
       const resolved = await resolveTarget(host, verdict.allowPrivate === true);
+      if (
+        principal &&
+        (!generationIsCurrent(principal.principalId, generation) || clientSocket.destroyed)
+      ) {
+        if (!clientSocket.destroyed) clientSocket.destroy();
+        return;
+      }
       if (!resolved) {
         denyConnect(clientSocket, privateAddressVerdict(host), host);
         return;
       }
 
       const upstream = connect(port, resolved, () => {
+        if (
+          principal &&
+          (!generationIsCurrent(principal.principalId, generation) || clientSocket.destroyed)
+        ) {
+          upstream.destroy();
+          if (!clientSocket.destroyed) clientSocket.destroy();
+          return;
+        }
         upstream.setTimeout(connectTimeoutMs, () => upstream.destroy());
         clientSocket.setTimeout(connectTimeoutMs, () => clientSocket.destroy());
         clientSocket.write("HTTP/1.1 200 Connection Established\r\n\r\n");
@@ -470,7 +580,7 @@ export function createEgressProxy(options: EgressProxyOptions): EgressProxyServe
         if (principal && reauthorizeIntervalMs > 0) {
           const recheck = setInterval(() => {
             void (async () => {
-              const current = await decide(principal, host, port, "CONNECT");
+              const current = await decide(principal, host, port, "CONNECT", new AbortController().signal);
               if (!current.allowed) {
                 options.onVerdict?.({
                   agentPrincipalId: principal.principalId,

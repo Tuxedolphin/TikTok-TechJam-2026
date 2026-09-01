@@ -15,9 +15,9 @@ import type {
 const starterPrompts = [
   {
     tag: "SAFE",
-    title: "Verify Test Suite",
-    desc: "npm test (Auto-Approved)",
-    prompt: "Safe turn: Run npm test to verify current tests (Auto-Approved)",
+    title: "Inspect Workspace",
+    desc: "pwd, ls -la (Auto-Approved)",
+    prompt: "Safe turn: Run pwd, then list workspace files with ls -la (Auto-Approved)",
   },
   {
     tag: "EGRESS",
@@ -218,11 +218,7 @@ export default function App() {
 
   const activeRunTokens = useMemo(() => {
     if (!activeRun?.usage) return 0;
-    return (
-      (activeRun.usage.inputTokens ?? 0) +
-      (activeRun.usage.cachedInputTokens ?? 0) +
-      (activeRun.usage.outputTokens ?? 0)
-    );
+    return (activeRun.usage.inputTokens ?? 0) + (activeRun.usage.outputTokens ?? 0);
   }, [activeRun]);
 
 
@@ -517,7 +513,7 @@ export default function App() {
     setBusy(true);
     setError(null);
     try {
-      await api.approve(approvalId, "Human Operator");
+      await api.approve(approvalId);
       if (selectedId) {
         await Promise.all([
           refreshApprovals(selectedId),
@@ -536,7 +532,7 @@ export default function App() {
     setBusy(true);
     setError(null);
     try {
-      await api.deny(approvalId, "Human Operator");
+      await api.deny(approvalId);
       if (selectedId) {
         const currentSessId = selectedSessionIdRef.current ?? undefined;
         await Promise.all([
@@ -649,7 +645,8 @@ export default function App() {
           <span className="eyebrow">Runtime</span>
           <strong>{system?.runtime ?? "Checking…"}</strong>
           <span>
-            {system?.openRouterModel ?? "OpenRouter model not configured"}
+            {system?.modelName ?? "Model not configured"}
+            {system?.modelProvider ? " · " + system.modelProvider : ""}
             {system?.containerEngine ? " · " + system.containerEngine : ""}
           </span>
           <span>
@@ -661,14 +658,14 @@ export default function App() {
       </aside>
 
       <main className="main">
-        {!system?.openRouterConfigured || !system?.codexAvailable ? (
+        {!system?.modelConfigured || !system?.codexAvailable ? (
           <div className="config-banner">
             <span>!</span>
             <div>
               <strong>Runtime configuration needed</strong>
               <p>
-                {!system?.openRouterConfigured
-                  ? "Set OPENROUTER_API_KEY and OPENROUTER_MODEL in .env before using the Playground."
+                {!system?.modelConfigured
+                  ? "Set MODEL_PROVIDER and that provider's API key and model in .env before using the Playground."
                   : system.runtimeProvider === "container"
                     ? "The local container engine or Agent Runtime image is unavailable. Rerun npm run poc."
                     : "Codex CLI was not found. Use the Docker image or install @openai/codex."}
@@ -1025,7 +1022,11 @@ export default function App() {
                         <span className={"status-tag status-" + (selected?.status === "waiting_approval" ? "waiting_approval" : activeRun.status)}>
                           <span className="status-dot" />
                           {["queued", "running"].includes(activeRun.status) && selected?.status !== "waiting_approval" && <Spinner />}
-                          {selected?.status === "waiting_approval" ? "Approval Required" : activeRun.status}
+                          {selected?.status === "waiting_approval"
+                            ? pendingApprovals[0]?.ruleId.startsWith("HITL-EGRESS-")
+                              ? "Request Held · Approval Required"
+                              : "Runtime Frozen · Approval Required"
+                            : activeRun.status}
                         </span>
                         <div className="telemetry-step-preview">
                           {selected?.status === "waiting_approval" && pendingApprovals.length > 0 ? (
@@ -1328,7 +1329,7 @@ export default function App() {
                               {runs.map((r) => {
                                 const isSelected = activeRun?.id === r.id;
                                 const rTokens = r.usage
-                                  ? (r.usage.inputTokens ?? 0) + (r.usage.cachedInputTokens ?? 0) + (r.usage.outputTokens ?? 0)
+                                  ? (r.usage.inputTokens ?? 0) + (r.usage.outputTokens ?? 0)
                                   : 0;
                                 return (
                                   <button

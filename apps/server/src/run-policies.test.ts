@@ -14,7 +14,7 @@ const resA: MockResource = { id: "res-a", ownerId: "user-a", name: "r", content:
 const grant = (over: Partial<Grant>): Grant => ({
   id: "g1", principalId: "agent-1", grantedBy: "user-a",
   scope: "resource:read", target: "res-a",
-  expiresAt: null, revokedAt: null, createdAt: NOW, ...over,
+  expiresAt: null, revokedAt: null, revokedBy: null, createdAt: NOW, ...over,
 });
 
 const budgetConfig = (over: Record<string, unknown> = {}) => loadConfig({
@@ -144,5 +144,36 @@ describe("evaluateEgress", () => {
     expect(evaluateEgress("agent-1", "registry.npmjs.org", [g], NOW)).toMatchObject({
       allowed: true, grantId: "g1",
     });
+  });
+
+  it("denies a delegated grant when its parent is missing or structurally insufficient", () => {
+    const missingParent = grant({ parentGrantId: "missing-parent" });
+    expect(evaluateResourceAccess("agent-1", "user-a", resA, [missingParent], NOW).allowed)
+      .toBe(false);
+
+    const insufficientParent = grant({
+      id: "parent",
+      principalId: "agent-parent",
+      target: "res-b",
+    });
+    const child = grant({
+      id: "child",
+      grantedBy: "agent-parent",
+      parentGrantId: "parent",
+    });
+    expect(evaluateResourceAccess("agent-1", "user-a", resA, [insufficientParent, child], NOW).allowed)
+      .toBe(false);
+  });
+
+  it("denies delegated grants whose parent chain contains a cycle", () => {
+    const first = grant({ id: "first", grantedBy: "agent-2", parentGrantId: "second" });
+    const second = grant({
+      id: "second",
+      principalId: "agent-2",
+      grantedBy: "agent-1",
+      parentGrantId: "first",
+    });
+    expect(evaluateResourceAccess("agent-1", "user-a", resA, [first, second], NOW).allowed)
+      .toBe(false);
   });
 });

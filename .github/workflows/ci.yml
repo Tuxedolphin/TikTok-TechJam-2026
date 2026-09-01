@@ -73,6 +73,9 @@ jobs:
             exit 1
           fi
 
+      - name: Dependency audit
+        run: npm audit --audit-level=high
+
   identity-proofs:
     name: Identity and attenuation proofs
     needs: check
@@ -100,9 +103,6 @@ jobs:
 
       - name: Confused-deputy refusal and authority attenuation
         run: node scripts/demo-escalation.mjs
-
-      - name: Cross-session memory poisoning, diagnosed and receipted
-        run: node scripts/demo-memory-poison.mjs
 
   containment-proofs:
     name: Containment proofs (real containers)

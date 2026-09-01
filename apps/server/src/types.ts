@@ -60,6 +60,7 @@ export type RunEventType =
   | "step.file_change"
   | "step.message"
   | "step.auto_approved"
+  | "step.risk_observed"
   | "step.approval_requested"
   | "step.approval_granted"
   | "step.approval_denied"
@@ -86,6 +87,31 @@ export interface RunEvent {
 export type ApprovalStatus = "pending" | "approved" | "denied";
 export type ActionRiskLevel = "low" | "medium" | "high" | "critical";
 
+export interface ApprovalActor {
+  principalId: string;
+  displayName: string;
+}
+
+export interface ApprovalEvidence {
+  initiatingHuman: ApprovalActor;
+  executingAgent: ApprovalActor;
+  action: {
+    type: "command" | "tool_call" | "file_change";
+    detail: string;
+  };
+  resource: string;
+  decision: ApprovalStatus | null;
+  result:
+    | "pending"
+    | "execution_authorized"
+    | "execution_resumed"
+    | "execution_blocked"
+    | "execution_cancelled"
+    | "execution_failed"
+    | "unknown";
+  resolvedBy: ApprovalActor | null;
+}
+
 export interface ApprovalRequest {
   id: string;
   runId: string;
@@ -98,13 +124,17 @@ export interface ApprovalRequest {
   status: ApprovalStatus;
   createdAt: string;
   resolvedAt: string | null;
-  resolvedBy: string | null;
+  resolvedByPrincipalId: string | null;
+  resolvedByDisplayName: string | null;
+  evidence: ApprovalEvidence;
 }
 
 export interface AgentRun {
   id: string;
   agentId: string;
   sessionId?: string | null | undefined;
+  initiatedByPrincipalId: string;
+  initiatedByDisplayName: string;
   status: RunStatus;
   prompt: string;
   output: string | null;
@@ -134,6 +164,7 @@ export interface Grant {
   target: string;          // resourceId for resource:*, hostname for network:egress
   expiresAt: string | null; // ISO; null = no expiry
   revokedAt: string | null;
+  revokedBy: string | null;
   createdAt: string;
   // When one agent delegates a narrower grant to another, the delegated grant
   // points back at the grant it was carved from. Revoking a parent cascades to
@@ -227,6 +258,8 @@ export interface RunnerStepEvent {
   type: "command" | "tool_call" | "file_change" | "message";
   title: string;
   detail: string;
+  /** Whether the Runtime observed the step before or after its side effect. */
+  phase?: "before" | "after";
   rawPayload?: unknown;
 }
 
@@ -251,6 +284,10 @@ export interface AgentRunner {
   pause?(agentId: string): Promise<"paused" | "idle" | "failed">;
   resume?(agentId: string): Promise<boolean>;
   isRunning?(agentId: string): boolean;
+  /** Remove runtime processes/containers left behind by a prior server process. */
+  reconcile?(): Promise<void>;
+  /** Tear down all runtimes owned by this server during graceful shutdown. */
+  terminateAll?(): Promise<void> | void;
   /** Independent engine check: is this agent's runtime confirmed gone? null = cannot confirm. */
   confirmStopped?(agentId: string): Promise<boolean | null>;
   isAvailable(): Promise<boolean>;
