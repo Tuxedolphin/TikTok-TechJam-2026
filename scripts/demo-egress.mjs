@@ -105,7 +105,29 @@ async function agentCurl(url) {
   }
 }
 
+/** The control: a standard agent container has unrestricted default egress. */
+async function uncontainedCurl(url) {
+  try {
+    const { stdout } = await execFileAsync(
+      config.containerEngine,
+      [
+        "run", "--rm",
+        "curlimages/curl:latest",
+        "-s", "-o", "/dev/null", "-w", "%{http_code}", "--max-time", "12", url,
+      ],
+      { timeout: 60_000 },
+    );
+    return stdout.trim();
+  } catch (error) {
+    return `error(${error.code ?? "?"})`;
+  }
+}
+
 try {
+  log(`0. WITHOUT Agent Passport: the same container reaches ${TARGET}`);
+  const withoutMiddleware = await uncontainedCurl(`http://${TARGET}/`);
+  log(`   -> HTTP ${withoutMiddleware}   (exfiltration succeeds: no network border)`);
+
   log("Bringing up the isolated network and authorizing proxy...");
   await network.ensure();
 
@@ -170,6 +192,7 @@ try {
     log(`   [${event.severity.padEnd(7)}] ${event.type.padEnd(16)} ${event.title}`);
   }
 
+  check("without middleware, a normal container can reach the internet", withoutMiddleware === "200", `HTTP ${withoutMiddleware}`);
   check("no grant means no route", noGrant === "403", `HTTP ${noGrant}`);
   check("a grant opens exactly that host", withGrant === "200", `HTTP ${withGrant}`);
   check("revocation is felt on the next connection", afterRevoke === "403", `HTTP ${afterRevoke}`);
