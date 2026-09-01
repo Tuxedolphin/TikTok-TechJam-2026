@@ -1,0 +1,784 @@
+<title>Agent Passport</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wght@400;500;600;700;800;900&family=IBM+Plex+Mono:wght@400;500;600;700&display=swap">
+
+<style>
+/* ═════════════════════════════════════════════════════════════
+   AGENT PASSPORT — pitch deck, v3
+   Readability pass: two typefaces (was three), 16px floor on all
+   body copy (was 12.5), three type registers per slide (was five),
+   ~50% less copy per slide. Border-control-at-night direction kept.
+   ═════════════════════════════════════════════════════════════ */
+
+:root{
+  --ground:#070C13;
+  --surface:#0D141D;
+  --surface-2:#151F2B;
+  --ink:#F0F4F1;
+  --ink-soft:#AFC0CB;   /* brightened for contrast on dark */
+  --ink-faint:#8296A3;  /* was #5F7280 — failed contrast at small sizes */
+  --rule:#22303E;
+  --rule-hard:#3A5064;
+  --deny:#FF5644;
+  --deny-wash:rgba(255,86,68,.13);
+  --allow:#3EDD92;
+  --allow-wash:rgba(62,221,146,.13);
+  --foil:#E0B64C;
+  --foil-wash:rgba(224,182,76,.12);
+  --guilloche:#2B4054;
+  --shadow:rgba(0,0,0,.62);
+  --glow:rgba(255,86,68,.30);
+
+  --display:"Archivo","Helvetica Neue",Helvetica,Arial,sans-serif;
+  --mono:"IBM Plex Mono",ui-monospace,"SF Mono",Menlo,monospace;
+}
+@media (prefers-color-scheme:light){
+  :root:not([data-theme="dark"]){
+    --ground:#EAECE6;
+    --surface:#F6F7F3;
+    --surface-2:#E1E4DC;
+    --ink:#0D1620;
+    --ink-soft:#3E4F5C;
+    --ink-faint:#63737F;
+    --rule:#C7CDC6;
+    --rule-hard:#8B978F;
+    --deny:#A82214;
+    --deny-wash:rgba(168,34,20,.10);
+    --allow:#12603D;
+    --allow-wash:rgba(18,96,61,.10);
+    --foil:#7C5E0E;
+    --foil-wash:rgba(124,94,14,.10);
+    --guilloche:#9FADB6;
+    --shadow:rgba(13,22,32,.16);
+    --glow:rgba(168,34,20,.20);
+  }
+}
+:root[data-theme="light"]{
+  --ground:#EAECE6;
+  --surface:#F6F7F3;
+  --surface-2:#E1E4DC;
+  --ink:#0D1620;
+  --ink-soft:#3E4F5C;
+  --ink-faint:#63737F;
+  --rule:#C7CDC6;
+  --rule-hard:#8B978F;
+  --deny:#A82214;
+  --deny-wash:rgba(168,34,20,.10);
+  --allow:#12603D;
+  --allow-wash:rgba(18,96,61,.10);
+  --foil:#7C5E0E;
+  --foil-wash:rgba(124,94,14,.10);
+  --guilloche:#9FADB6;
+  --shadow:rgba(13,22,32,.16);
+  --glow:rgba(168,34,20,.20);
+}
+
+*{box-sizing:border-box}
+body{
+  background:var(--ground); color:var(--ink);
+  font-family:var(--display); margin:0; min-height:100vh; overflow:hidden;
+}
+
+#stage{position:fixed; inset:0; display:grid; place-items:center}
+#frame{width:1280px; height:720px; position:relative; transform-origin:center center}
+
+.slide{
+  position:absolute; inset:0;
+  background:var(--surface);
+  border:1px solid var(--rule-hard);
+  box-shadow:0 24px 70px -30px var(--shadow);
+  padding:60px 76px 68px;
+  display:none; flex-direction:column; overflow:hidden;
+}
+.slide.on{display:flex}
+/* single frame device: foil corner ticks only — the inner border was noise */
+.slide::after{
+  content:""; position:absolute; inset:18px; pointer-events:none;
+  background:
+    linear-gradient(var(--foil),var(--foil)) left 0 top 0/24px 1px no-repeat,
+    linear-gradient(var(--foil),var(--foil)) left 0 top 0/1px 24px no-repeat,
+    linear-gradient(var(--foil),var(--foil)) right 0 top 0/24px 1px no-repeat,
+    linear-gradient(var(--foil),var(--foil)) right 0 top 0/1px 24px no-repeat,
+    linear-gradient(var(--foil),var(--foil)) left 0 bottom 0/24px 1px no-repeat,
+    linear-gradient(var(--foil),var(--foil)) left 0 bottom 0/1px 24px no-repeat,
+    linear-gradient(var(--foil),var(--foil)) right 0 bottom 0/24px 1px no-repeat,
+    linear-gradient(var(--foil),var(--foil)) right 0 bottom 0/1px 24px no-repeat;
+  opacity:.8;
+}
+
+/* ── three registers, and only three ───────────────────────── */
+/* 1. LABEL — mono, uppercase, 12px */
+.eyebrow{
+  font-family:var(--mono); font-size:12px; font-weight:500;
+  letter-spacing:.16em; text-transform:uppercase; color:var(--ink-faint);
+  margin:0 0 26px;
+}
+.eyebrow .hot{color:var(--deny)}
+
+/* 2. DISPLAY — Archivo, heavy */
+h1{font-weight:900; font-size:104px; line-height:.9; letter-spacing:-.04em;
+   margin:0; text-wrap:balance}
+h2{font-weight:800; font-size:46px; line-height:1.05; letter-spacing:-.03em;
+   margin:0 0 20px; text-wrap:balance; max-width:010ch; max-width:20ch}
+h3{font-weight:700; font-size:19px; line-height:1.25; letter-spacing:-.012em;
+   margin:0 0 9px}
+
+/* 3. BODY — Archivo 400, never below 16px */
+.lede{font-size:22px; line-height:1.5; color:var(--ink-soft); margin:0 0 34px;
+      max-width:60ch; font-weight:400}
+.lede em{color:var(--ink); font-style:normal; font-weight:600}
+p{margin:0 0 14px; line-height:1.55; font-size:17px}
+.mono{font-family:var(--mono)}
+.num{font-variant-numeric:tabular-nums}
+.hot{color:var(--deny)}
+.good{color:var(--allow)}
+
+/* ══ 01 COLD OPEN ═══════════════════════════════════════════ */
+#open{padding:0; justify-content:center; background:var(--ground)}
+.attack{position:relative; z-index:2; padding:0 76px; width:100%}
+.attack-head{
+  font-family:var(--mono); font-size:12px; letter-spacing:.18em;
+  text-transform:uppercase; color:var(--deny); margin:0 0 30px;
+  display:flex; align-items:center; gap:11px;
+}
+.blip{width:9px; height:9px; background:var(--deny); border-radius:50%; flex:none}
+.on .blip{animation:blip 1.15s ease-in-out infinite}
+@keyframes blip{0%,100%{opacity:1; box-shadow:0 0 0 0 var(--glow)}
+                50%{opacity:.45; box-shadow:0 0 0 10px transparent}}
+.attack h1{font-size:78px; line-height:.98; max-width:16ch}
+.attack .say{font-size:21px; line-height:1.5; color:var(--ink-soft);
+             max-width:54ch; margin:30px 0 0}
+
+.wire{position:relative; margin:44px 0 0; height:100px;
+      border-top:1px solid var(--rule-hard); border-bottom:1px solid var(--rule-hard);
+      background:var(--surface); overflow:hidden}
+.wire-ends{position:absolute; inset:0; display:flex; justify-content:space-between;
+           align-items:center; padding:0 24px; font-family:var(--mono); font-size:12px;
+           letter-spacing:.14em; text-transform:uppercase; color:var(--ink-faint); z-index:2}
+.wire-ends span:last-child{color:var(--deny)}
+.pkt{position:absolute; top:50%; margin-top:-13px; font-family:var(--mono);
+     font-size:14px; font-weight:600; color:var(--deny); background:var(--deny-wash);
+     border:1px solid var(--deny); padding:4px 11px; white-space:nowrap; opacity:0}
+.on .pkt{animation:fly 4.6s linear infinite}
+.pkt:nth-child(3){animation-delay:0s}
+.pkt:nth-child(4){animation-delay:1.15s}
+.pkt:nth-child(5){animation-delay:2.3s}
+.pkt:nth-child(6){animation-delay:3.45s}
+@keyframes fly{0%{left:15%; opacity:0}8%{opacity:1}86%{opacity:1}100%{left:80%; opacity:0}}
+
+/* ══ 03 TITLE ═══════════════════════════════════════════════ */
+#title{padding:0; justify-content:stretch}
+#guilloche{position:absolute; inset:0; width:100%; height:100%; opacity:.5}
+.t-inner{position:relative; z-index:1; flex:1; display:flex; flex-direction:column;
+         padding:64px 80px 0}
+.t-top{font-family:var(--mono); font-size:12px; letter-spacing:.17em;
+       text-transform:uppercase; color:var(--ink-faint)}
+.t-mid{flex:1; display:flex; flex-direction:column; justify-content:center; margin-top:-16px}
+.t-mid h1{font-size:132px; letter-spacing:-.05em}
+.t-rule{height:3px; background:var(--foil); width:128px; margin:30px 0 26px}
+.t-thesis{font-weight:700; font-size:34px; letter-spacing:-.022em; margin:0 0 16px}
+.t-sub{font-size:19px; line-height:1.5; color:var(--ink-soft); max-width:52ch; margin:0}
+.mrz{position:relative; z-index:1; border-top:1px solid var(--rule-hard);
+     background:var(--surface-2); font-family:var(--mono); font-size:14px; font-weight:500;
+     letter-spacing:.12em; color:var(--ink-faint); padding:14px 80px; line-height:1.6;
+     white-space:nowrap; overflow:hidden}
+
+/* ── cards: one idea, one sentence ─────────────────────────── */
+.grid{display:grid; gap:16px}
+.g3{grid-template-columns:repeat(3,1fr)}
+.card{border:1px solid var(--rule-hard); background:var(--ground);
+      padding:22px 22px 24px; display:flex; flex-direction:column}
+.card p{font-size:16.5px; line-height:1.5; color:var(--ink-soft); margin:0}
+
+/* ── before / after ────────────────────────────────────────── */
+.ba{display:grid; grid-template-columns:1fr 76px 1fr; align-items:stretch; flex:1; min-height:0}
+.ba-col{border:1px solid var(--rule-hard); padding:28px 30px; display:flex; flex-direction:column}
+.ba-col.now{background:var(--ground)}
+.ba-col.next{background:var(--allow-wash); border-color:var(--allow)}
+.ba-arrow{display:grid; place-items:center; color:var(--foil); font-size:30px}
+.ba-label{font-family:var(--mono); font-size:12px; letter-spacing:.15em;
+          text-transform:uppercase; margin:0 0 22px; align-self:flex-start}
+.l-now{color:var(--deny)}
+.l-next{color:var(--allow)}
+.ba ul{margin:0; padding:0; list-style:none; display:flex; flex-direction:column; gap:18px}
+.ba li{font-size:18px; line-height:1.45; color:var(--ink-soft);
+       padding-left:26px; position:relative}
+.ba li::before{position:absolute; left:0; top:1px; font-family:var(--mono); font-size:15px}
+.ba-col.now li::before{content:"✕"; color:var(--deny)}
+.ba-col.next li::before{content:"✓"; color:var(--allow)}
+
+/* ── two-panel compare ─────────────────────────────────────── */
+.compare{display:grid; grid-template-columns:1fr 1fr; flex:1; min-height:0;
+         border:1px solid var(--rule-hard)}
+.compare > div{padding:28px 30px; display:flex; flex-direction:column}
+.compare > div:first-child{border-right:1px solid var(--rule-hard)}
+.compare p{font-size:17.5px; line-height:1.55; color:var(--ink-soft)}
+.compare strong{color:var(--ink); font-weight:600}
+.col-label{font-family:var(--mono); font-size:12px; letter-spacing:.15em;
+           text-transform:uppercase; margin:0 0 20px; align-self:flex-start}
+.label-deny{color:var(--deny)}
+.label-ok{color:var(--allow)}
+.kicker{margin-top:auto; font-family:var(--mono); font-size:13.5px; margin-bottom:0}
+
+/* ══ 06 KILL CHAIN ══════════════════════════════════════════ */
+.chain{display:flex; flex-direction:column; flex:1; min-height:0; margin-top:4px}
+.ch-row{display:grid; grid-template-columns:1fr 186px 1fr; gap:26px; align-items:center;
+        padding:18px 0; border-bottom:1px solid var(--rule); opacity:0}
+.ch-row:last-child{border-bottom:none}
+.on .ch-row{animation:rise .5s cubic-bezier(.2,.7,.3,1) forwards}
+.on .ch-row:nth-child(1){animation-delay:.12s}
+.on .ch-row:nth-child(2){animation-delay:.52s}
+.on .ch-row:nth-child(3){animation-delay:.92s}
+.on .ch-row:nth-child(4){animation-delay:1.32s}
+.on .ch-row:nth-child(5){animation-delay:1.72s}
+@keyframes rise{from{opacity:0; transform:translateY(9px)}to{opacity:1; transform:none}}
+.ch-try{font-size:18px; color:var(--ink); line-height:1.35; font-weight:500}
+.ch-why{font-size:15.5px; color:var(--ink-soft); line-height:1.45}
+.ch-why .mono{font-size:14px; color:var(--ink-faint)}
+
+.stamp{font-family:var(--mono); font-size:15px; font-weight:700; letter-spacing:.07em;
+       padding:9px 12px; border:2px solid currentColor; text-align:center;
+       display:block; transform:rotate(-1.4deg)}
+.s-deny{color:var(--deny); background:var(--deny-wash)}
+.s-ok{color:var(--allow); background:var(--allow-wash)}
+.on .stamp{animation:slam .34s cubic-bezier(.2,1.5,.4,1) backwards}
+.on .ch-row:nth-child(1) .stamp{animation-delay:.34s}
+.on .ch-row:nth-child(2) .stamp{animation-delay:.74s}
+.on .ch-row:nth-child(3) .stamp{animation-delay:1.14s}
+.on .ch-row:nth-child(4) .stamp{animation-delay:1.54s}
+.on .ch-row:nth-child(5) .stamp{animation-delay:1.94s}
+@keyframes slam{0%{opacity:0; transform:rotate(-9deg) scale(1.7)}
+                70%{opacity:1}100%{opacity:1; transform:rotate(-1.4deg) scale(1)}}
+
+/* ── architecture ──────────────────────────────────────────── */
+.diagram{flex:1; min-height:0; display:flex; align-items:center}
+.diagram svg{width:100%; height:100%; display:block}
+.d-box{fill:var(--ground); stroke:var(--rule-hard); stroke-width:1.2}
+.d-box-hot{fill:var(--foil-wash); stroke:var(--foil); stroke-width:2}
+.d-zone{fill:none; stroke:var(--deny); stroke-width:1.6; stroke-dasharray:7 5}
+.d-zone-fill{fill:var(--deny-wash); stroke:none}
+.d-t{font-family:var(--display); font-size:18px; font-weight:700; fill:var(--ink)}
+.d-s{font-family:var(--display); font-size:14.5px; fill:var(--ink-soft)}
+.d-m{font-family:var(--mono); font-size:12.5px; letter-spacing:.1em; fill:var(--ink-faint)}
+.d-line{stroke:var(--rule-hard); stroke-width:1.6; fill:none}
+.d-ok{stroke:var(--allow); stroke-width:1.8; fill:none}
+.d-deny{stroke:var(--deny); stroke-width:2; fill:none}
+
+/* ── trace receipts ────────────────────────────────────────── */
+.feed{display:flex; flex-direction:column; flex:1; min-height:0;
+      border:1px solid var(--rule-hard); background:var(--ground)}
+.feed-row{display:grid; grid-template-columns:270px 1fr; gap:26px; padding:19px 26px;
+          border-bottom:1px solid var(--rule); align-items:baseline}
+.feed-row:last-child{border-bottom:none}
+.f-id{font-family:var(--mono); font-size:15px; font-weight:600}
+.f-x{font-size:17px; color:var(--ink-soft); line-height:1.45}
+
+/* ── stats ─────────────────────────────────────────────────── */
+.stats{display:grid; grid-template-columns:repeat(4,1fr); border-top:1px solid var(--rule-hard)}
+.stats > div{padding:24px 24px 0; border-right:1px solid var(--rule)}
+.stats > div:last-child{border-right:none}
+.stat-n{font-weight:900; font-size:62px; letter-spacing:-.045em; line-height:1;
+        font-variant-numeric:tabular-nums}
+.stat-l{font-family:var(--mono); font-size:12px; letter-spacing:.14em;
+        text-transform:uppercase; color:var(--ink-faint); margin-top:12px}
+.stat-d{font-size:16px; color:var(--ink-soft); line-height:1.45; margin-top:11px}
+
+/* ── boundaries ────────────────────────────────────────────── */
+.bnd{display:flex; flex-direction:column; flex:1; min-height:0}
+.bnd-row{display:grid; grid-template-columns:1fr 1fr; gap:36px; padding:22px 0;
+         border-bottom:1px solid var(--rule); align-items:start}
+.bnd-row:last-child{border-bottom:none}
+.bnd-a{font-size:17.5px; line-height:1.5; color:var(--ink)}
+.bnd-b{font-size:17px; line-height:1.5; color:var(--ink-soft);
+       padding-left:22px; border-left:2px solid var(--allow)}
+.bnd-b b{color:var(--allow); font-weight:600}
+.bnd-head{display:grid; grid-template-columns:1fr 1fr; gap:36px; padding-bottom:12px;
+          border-bottom:1px solid var(--rule-hard); font-family:var(--mono); font-size:12px;
+          letter-spacing:.15em; text-transform:uppercase; color:var(--ink-faint)}
+
+pre{font-family:var(--mono); font-size:16px; line-height:1.8; background:var(--ground);
+    border:1px solid var(--rule-hard); padding:20px 22px; margin:0; overflow-x:auto;
+    color:var(--ink)}
+pre .c{color:var(--ink-faint)}
+
+.foot{position:absolute; left:76px; right:76px; bottom:28px; display:flex;
+      justify-content:space-between; align-items:center; font-family:var(--mono);
+      font-size:12px; letter-spacing:.14em; text-transform:uppercase; color:var(--ink-faint);
+      border-top:1px solid var(--rule); padding-top:13px}
+.pg{font-variant-numeric:tabular-nums}
+
+/* ── chrome ────────────────────────────────────────────────── */
+#chrome{position:fixed; left:0; right:0; bottom:0; display:flex; justify-content:center;
+        gap:9px; padding:13px; z-index:20; font-family:var(--mono); font-size:11px;
+        letter-spacing:.12em; text-transform:uppercase; opacity:.3; transition:opacity .22s}
+#chrome:hover,#chrome:focus-within{opacity:1}
+#chrome button{font:inherit; letter-spacing:inherit; text-transform:inherit;
+               background:var(--surface); color:var(--ink-soft);
+               border:1px solid var(--rule-hard); padding:7px 13px; cursor:pointer}
+#chrome button:hover{color:var(--ink); border-color:var(--foil)}
+#chrome button:focus-visible{outline:2px solid var(--foil); outline-offset:2px}
+#counter{display:flex; align-items:center; padding:0 12px; color:var(--ink-faint);
+         font-variant-numeric:tabular-nums}
+
+#notes{position:fixed; right:16px; top:16px; width:340px; z-index:21;
+       background:var(--surface); border:1px solid var(--rule-hard); padding:20px 22px;
+       box-shadow:0 18px 44px -20px var(--shadow); font-size:15px; line-height:1.6;
+       color:var(--ink-soft); max-height:calc(100vh - 88px); overflow:auto}
+#notes h4{font-family:var(--mono); font-size:11px; letter-spacing:.15em;
+          text-transform:uppercase; color:var(--ink-faint); margin:0 0 12px; font-weight:500}
+#notes p{margin:0 0 11px; font-size:15px}
+#notes p:last-child{margin-bottom:0}
+#notes b{color:var(--ink)}
+#notes .beat{color:var(--foil); font-family:var(--mono); font-size:11px; letter-spacing:.12em;
+             text-transform:uppercase; display:block; margin:16px 0 7px}
+
+@media (prefers-reduced-motion:reduce){
+  *{transition:none!important}
+  .on .pkt,.on .blip{animation:none!important}
+  .on .pkt{opacity:1}
+  .ch-row,.on .ch-row{opacity:1!important; animation:none!important; transform:none!important}
+  .on .stamp{animation:none!important; opacity:1!important}
+}
+@media print{
+  @page{size:1280px 720px; margin:0}
+  body{overflow:visible}
+  #stage{position:static; display:block}
+  #frame{transform:none!important; width:1280px; height:auto}
+  .slide{display:flex!important; position:relative; inset:auto; width:1280px; height:720px;
+         box-shadow:none; break-after:page; page-break-after:always}
+  .ch-row{opacity:1!important; animation:none!important}
+  .stamp,.pkt{animation:none!important}
+  .pkt{opacity:1!important}
+  .pkt:nth-child(3){left:18%}.pkt:nth-child(4){left:36%}
+  .pkt:nth-child(5){left:54%}.pkt:nth-child(6){left:72%}
+  #chrome,#notes{display:none!important}
+}
+</style>
+
+<div id="stage">
+<div id="frame">
+
+<!-- ══ 01 ═══════════════════════════════════════════════════ -->
+<section class="slide on" id="open"
+  data-notes="<span class='beat'>0:00 — say nothing for two seconds</span><p>Let the packets run once before you speak.</p><p><b>&ldquo;This is a coding agent doing its job. It read a GitHub issue. The issue told it to run curl. Those are your cloud keys, and they are already gone.&rdquo;</b></p><span class='beat'>The turn</span><p>&ldquo;No exploit. No CVE. The agent did exactly what it was told &mdash; by the wrong person.&rdquo;</p><p>Do not say the project name yet.</p>">
+  <div class="attack">
+    <p class="attack-head"><span class="blip"></span> Live &mdash; agent run in progress</p>
+    <h1>The issue told the agent to run <span class="hot">curl</span>. So it did.</h1>
+    <div class="wire">
+      <div class="wire-ends"><span>Agent container</span><span>Attacker endpoint ↗</span></div>
+      <span class="pkt">AWS_SECRET_ACCESS_KEY</span>
+      <span class="pkt">~/.ssh/id_ed25519</span>
+      <span class="pkt">.env</span>
+      <span class="pkt">customers.db</span>
+    </div>
+    <p class="say">No exploit. No CVE. The agent did exactly what it was told &mdash; by the wrong person.</p>
+  </div>
+  <div class="foot"><span>TikTok TechJam 2026 · Track 1</span><span class="pg">01</span></div>
+</section>
+
+<!-- ══ 02 ═══════════════════════════════════════════════════ -->
+<section class="slide"
+  data-notes="<span class='beat'>0:20</span><p>Turn the attack into a business problem. Say it flat, as a fact:</p><p><b>&ldquo;This is why your agents are still toys.&rdquo;</b></p><p>Every team runs agents with fake keys and a human watching, because the blast radius is unbounded.</p><p>Land the closing line slowly &mdash; it sets up everything after it.</p>">
+  <p class="eyebrow">The consequence</p>
+  <h2>This is why your agents are still toys.</h2>
+  <p class="lede">Nobody hands an agent real credentials and walks away. So agents stay in sandboxes, with fake keys and a human watching the terminal.</p>
+  <div class="grid g3" style="margin-bottom:34px">
+    <div class="card">
+      <h3>Permissions are all-or-nothing</h3>
+      <p>An agent&rsquo;s reach is whatever the platform handed it. So teams hand it nothing real.</p>
+    </div>
+    <div class="card">
+      <h3>Approving every step is doing the work</h3>
+      <p>And an agent that floods you with prompts turns approval into a rubber stamp.</p>
+    </div>
+    <div class="card">
+      <h3>A flag after the fact is a receipt</h3>
+      <p>Pattern-matching the command tells you what left. It does not stop it leaving.</p>
+    </div>
+  </div>
+  <p style="font-weight:800; font-size:31px; letter-spacing:-.025em; line-height:1.25;
+            margin:0; border-left:4px solid var(--foil); padding-left:24px; max-width:34ch">
+    The bottleneck is not model quality. It is that nobody can bound what a hijacked one reaches.
+  </p>
+  <div class="foot"><span>The bottleneck</span><span class="pg">02</span></div>
+</section>
+
+<!-- ══ 03 ═══════════════════════════════════════════════════ -->
+<section class="slide" id="title"
+  data-notes="<span class='beat'>0:45 — the name lands</span><p><b>&ldquo;So we built the border.&rdquo;</b></p><p>Give the metaphor ten seconds: a passport is not a judgement about character. Border control does not decide whether you are a good person. It decides where you may go, it is checked at every crossing, and it can be revoked before you board.</p><p>&ldquo;We stopped trying to make the model trustworthy. We made the platform safe while the model is hostile.&rdquo;</p>">
+  <canvas id="guilloche" aria-hidden="true"></canvas>
+  <div class="t-inner">
+    <div class="t-top">TikTok TechJam 2026 · Track 1 · Agent Launchpad</div>
+    <div class="t-mid">
+      <h1>AGENT<br>PASSPORT</h1>
+      <div class="t-rule"></div>
+      <p class="t-thesis">Border control for agents that cannot be trusted.</p>
+      <p class="t-sub">A passport is not a judgement about character. It says where you may go &mdash; and it can be revoked before you board.</p>
+    </div>
+  </div>
+  <div class="mrz">P&lt;AGENTPASSPORT&lt;&lt;BORDER&lt;CONTROL&lt;FOR&lt;AGENTS&lt;&lt;&lt;&lt;&lt;&lt;&lt;&lt;&lt;&lt;&lt;<br>GRANTS&lt;SCOPED&lt;EXPIRING&lt;REVOCABLE&lt;ENFORCED&lt;IN&lt;THE&lt;NETWORK&lt;&lt;&lt;&lt;</div>
+</section>
+
+<!-- ══ 04 ═══════════════════════════════════════════════════ -->
+<section class="slide"
+  data-notes="<span class='beat'>1:00 — the value, before the mechanism</span><p>Judges decide whether they care here. Do not explain how it works yet.</p><p><b>&ldquo;With a border in place, the calculation inverts.&rdquo;</b></p><p>Hand it a real key &mdash; the key is useless anywhere you did not grant. Leave the room &mdash; probing gets it quarantined rather than lucky.</p><p>The line that matters most is the last one: <b>the guarantee does not depend on what the model was told.</b> That is what separates this from every prompt-level defence in the room.</p>">
+  <p class="eyebrow">What it unlocks</p>
+  <h2>With a border, the calculation inverts.</h2>
+  <div class="ba">
+    <div class="ba-col now">
+      <span class="ba-label l-now">Without one</span>
+      <ul>
+        <li>Fake credentials, so no real work</li>
+        <li>A human watching every command</li>
+        <li>Safety depends on the prompt holding</li>
+      </ul>
+    </div>
+    <div class="ba-arrow">&rarr;</div>
+    <div class="ba-col next">
+      <span class="ba-label l-next">With Agent Passport</span>
+      <ul>
+        <li>A real credential, useless off-grant</li>
+        <li>Leave the room &mdash; probing means quarantine</li>
+        <li>Revoke mid-run, the next connection dies</li>
+      </ul>
+    </div>
+  </div>
+  <p style="font-size:19px; color:var(--ink); margin:26px 0 0; font-weight:600; max-width:62ch">
+    The guarantee does not depend on the model behaving &mdash; the only kind worth having while injection is unsolved.
+  </p>
+  <div class="foot"><span>Bounded reach, not better prompts</span><span class="pg">04</span></div>
+</section>
+
+<!-- ══ 05 ═══════════════════════════════════════════════════ -->
+<section class="slide"
+  data-notes="<span class='beat'>1:20 — fifteen seconds, no longer</span><p>This is the required one-page architecture diagram. Trace it left to right and name only three things:</p><p><b>The boundary</b> (red zone). <b>The enforcement point</b> (gold box). <b>The failure mode</b> (authorizer unreachable &rarr; deny).</p><p>Point at the red line: <b>there is no route.</b> Not a blocked route. No route.</p>">
+  <p class="eyebrow">How it works</p>
+  <h2 style="font-size:40px; margin-bottom:6px">The agent has no route out. Only the border does.</h2>
+  <div class="diagram">
+    <svg viewBox="0 0 1128 372" role="img" aria-label="The agent container sits on an internal Docker network with no route off-box. Its only path out is a proxy sidecar that authorizes every request against the control plane before connecting.">
+      <rect class="d-zone-fill" x="10" y="66" width="600" height="222"/>
+      <rect class="d-zone" x="10" y="66" width="600" height="222"/>
+      <text class="d-m" x="26" y="90">INTERNAL NETWORK — NO ROUTE OFF-BOX</text>
+
+      <rect class="d-box" x="700" y="10" width="418" height="92"/>
+      <text class="d-t" x="720" y="40">Control plane</text>
+      <text class="d-s" x="720" y="64">Grants · authorizer · quarantine · trace</text>
+      <text class="d-m" x="720" y="88">READ FRESH EVERY CHECK — NO CACHE, NO TTL</text>
+
+      <rect class="d-box" x="46" y="130" width="230" height="122"/>
+      <text class="d-t" x="66" y="164">Agent container</text>
+      <text class="d-s" x="66" y="190">Codex CLI · workspace</text>
+      <text class="d-s" x="66" y="214" style="fill:var(--deny)">assume: hostile</text>
+      <text class="d-m" x="66" y="240">NO DIRECT ROUTE</text>
+
+      <rect class="d-box-hot" x="392" y="130" width="218" height="122"/>
+      <text class="d-t" x="412" y="164">Egress proxy</text>
+      <text class="d-s" x="412" y="190">authorizes every request</text>
+      <text class="d-s" x="412" y="212">before connect</text>
+      <text class="d-m" x="412" y="240" style="fill:var(--foil)">◆ ENFORCEMENT POINT</text>
+
+      <rect class="d-box" x="880" y="176" width="238" height="76"/>
+      <text class="d-t" x="900" y="208">Internet</text>
+      <text class="d-s" x="900" y="232">only through the border</text>
+
+      <path class="d-line" d="M276 190 H 386"/>
+      <path class="d-line" d="M380 184 l 10 6 -10 6"/>
+      <text class="d-m" x="288" y="178">ONLY PATH</text>
+
+      <path class="d-line" d="M610 200 H 874"/>
+      <path class="d-line" d="M868 194 l 10 6 -10 6"/>
+      <text class="d-m" x="672" y="188">IF AUTHORIZED</text>
+
+      <path class="d-ok" d="M500 130 V 104 H 700" stroke-dasharray="6 4"/>
+      <path class="d-ok" d="M694 98 l 10 6 -10 6"/>
+      <text class="d-m" x="520" y="96" style="fill:var(--allow)">ASK BEFORE CONNECT</text>
+
+      <path class="d-deny" d="M160 252 V 322 H 998 V 252" stroke-dasharray="8 5"/>
+      <g transform="translate(556,322)">
+        <line x1="-15" y1="-15" x2="15" y2="15" class="d-deny" stroke-dasharray="none"/>
+        <line x1="-15" y1="15" x2="15" y2="-15" class="d-deny" stroke-dasharray="none"/>
+      </g>
+      <text class="d-m" x="600" y="316" style="fill:var(--deny)">DIRECT EGRESS — NO ROUTE</text>
+
+      <text class="d-m" x="700" y="126" style="fill:var(--deny)">AUTHORIZER UNREACHABLE → PROXY DENIES</text>
+    </svg>
+  </div>
+  <div class="foot"><span>Enforcement lives in the network, not the UI</span><span class="pg">05</span></div>
+</section>
+
+<!-- ══ 06 ═══════════════════════════════════════════════════ -->
+<section class="slide"
+  data-notes="<span class='beat'>1:40 — THE MOMENT. Do not talk over it.</span><p>Five stamps, five beats. Let them land. Then:</p><p><b>&ldquo;That is not a mock. That is npm run demo &mdash; real containers, a real proxy, on a real isolated network. No API key, so you can run it yourselves in about a minute.&rdquo;</b></p><span class='beat'>Also your live demo running order</span><p>1&ndash;2 normal case · 3 denial · 4 containment escalation · 5 the bypass attempt.</p><p>Say the caveat once, confidently: revocation kills the <b>next</b> connection; it does not tear down an established stream.</p>">
+  <p class="eyebrow">The kill chain — <span class="hot">real containers, no API key</span></p>
+  <h2 style="font-size:42px; margin-bottom:8px">Watch a hijacked agent try every exit.</h2>
+  <div class="chain">
+    <div class="ch-row">
+      <span class="ch-try">Reach <span class="mono">example.com</span> with no grant</span>
+      <span class="stamp s-deny">403 BLOCKED</span>
+      <span class="ch-why">Default-deny at the border</span>
+    </div>
+    <div class="ch-row">
+      <span class="ch-try">Operator grants <span class="mono">network:egress</span></span>
+      <span class="stamp s-ok">200 ALLOWED</span>
+      <span class="ch-why">An active grant names this host</span>
+    </div>
+    <div class="ch-row">
+      <span class="ch-try">Operator revokes mid-run</span>
+      <span class="stamp s-deny">403 BLOCKED</span>
+      <span class="ch-why">Grants re-read per connection — no TTL to wait out</span>
+    </div>
+    <div class="ch-row">
+      <span class="ch-try">Agent keeps probing for an open host</span>
+      <span class="stamp s-deny">QUARANTINED</span>
+      <span class="ch-why">Strike threshold hit; agent stopped</span>
+    </div>
+    <div class="ch-row">
+      <span class="ch-try">Agent skips the proxy, dials out directly</span>
+      <span class="stamp s-deny">NO ROUTE</span>
+      <span class="ch-why">The network itself refuses. Nothing to bypass.</span>
+    </div>
+  </div>
+  <div class="foot"><span class="mono" style="text-transform:none">npm run demo</span><span class="pg">06</span></div>
+</section>
+
+<!-- ══ 07 ═══════════════════════════════════════════════════ -->
+<section class="slide"
+  data-notes="<span class='beat'>2:05 — the credibility slide</span><p>Answers the question a technical judge is already forming: <i>if this is obvious, why is it not in the starter kit?</i></p><p><b>Because the obvious version does not work, and you only find that out by measuring.</b></p><p>An internal network cuts off the host as well as the internet &mdash; so a proxy on the host is unreachable from the containers it is meant to police.</p><p>Deliver the last line as the flex it is.</p>">
+  <p class="eyebrow">Why this is not already in the starter kit</p>
+  <h2>The obvious design does not work.</h2>
+  <div class="compare">
+    <div>
+      <span class="col-label label-deny">Rejected — proxy on the host</span>
+      <p>The design most teams would ship: run the proxy on the host, point the container at it.</p>
+      <p>It cannot work. An internal network cuts off the <strong>host</strong> as well as the internet, so the container cannot reach that proxy <strong>at all</strong>. The policeman is on the wrong side of the wall.</p>
+      <p class="kicker" style="color:var(--ink-faint)">Measured, not assumed.</p>
+    </div>
+    <div>
+      <span class="col-label label-ok">Shipped — dual-attached sidecar</span>
+      <p>A container on the internal network <strong>can</strong> reach a sidecar by name, and can reach <strong>neither</strong> the host nor any public address.</p>
+      <p>Attaching that sidecar to a second network gives it a way out while every agent keeps none.</p>
+      <p class="kicker" style="color:var(--allow)">Verified on Docker / OrbStack.</p>
+    </div>
+  </div>
+  <div class="foot"><span>Engineering judgement, written down</span><span class="pg">07</span></div>
+</section>
+
+<!-- ══ 08 ═══════════════════════════════════════════════════ -->
+<section class="slide"
+  data-notes="<span class='beat'>2:20 — evidence, not booleans</span><p><b>&ldquo;Every decision is named. A trace that says false is a boolean. A trace that says AUTHZ-OWNER-010 is an explanation.&rdquo;</b></p><p>If you have time for one detail, use OWNER-010: cross-user access is denied <b>before</b> grants are consulted, so no grant can ever authorize it. That ordering is deliberate, not accidental.</p><p>Mention the console: grants show live expiry countdowns and revoke is one click.</p>">
+  <p class="eyebrow">The evidence it produces</p>
+  <h2 style="font-size:42px; margin-bottom:10px">Every decision is named.</h2>
+  <div class="feed">
+    <div class="feed-row">
+      <span class="f-id hot">AUTHZ-OWNER-010</span>
+      <span class="f-x">Cross-user access &mdash; denied <b style="color:var(--ink)">before</b> grants are consulted, so no grant can ever authorize it.</span>
+    </div>
+    <div class="feed-row">
+      <span class="f-id good">AUTHZ-GRANT-011</span>
+      <span class="f-x">Allowed by an active grant naming this host.</span>
+    </div>
+    <div class="feed-row">
+      <span class="f-id hot">AUTHZ-REVOKED-013</span>
+      <span class="f-x">The operator revoked it. Distinct from expiry, so the timeline shows intent.</span>
+    </div>
+    <div class="feed-row">
+      <span class="f-id hot">NET-EGRESS-PRIVATE-024</span>
+      <span class="f-x">A granted hostname resolved into link-local space &mdash; the cloud-metadata escape, closed.</span>
+    </div>
+    <div class="feed-row">
+      <span class="f-id hot">HITL-EGRESS-FLOOD-027</span>
+      <span class="f-x">Too many approvals held at once. An agent cannot turn the operator into a rubber stamp.</span>
+    </div>
+  </div>
+  <div class="foot"><span>A trace that explains, not a boolean</span><span class="pg">08</span></div>
+</section>
+
+<!-- ══ 09 ═══════════════════════════════════════════════════ -->
+<section class="slide"
+  data-notes="<span class='beat'>2:35 — reproducibility is scored, not assumed</span><p><b>&ldquo;You do not have to believe the demo. Run it.&rdquo;</b></p><p>Zero credentials is the detail to emphasise &mdash; most submissions need a key, so most judges never actually run them.</p><p>The honest flourish: the demo <b>prints observations rather than asserting them</b>, so a reviewer compares results themselves instead of trusting our green tick.</p>">
+  <p class="eyebrow">Proof</p>
+  <h2 style="font-size:42px">You do not have to believe the demo. Run it.</h2>
+  <div class="stats" style="margin-top:26px">
+    <div>
+      <div class="stat-n num">193</div>
+      <div class="stat-l">Tests passing</div>
+      <div class="stat-d">Across 20 suites — authorizer, proxy, identity, policies, secret boundaries.</div>
+    </div>
+    <div>
+      <div class="stat-n num good">0</div>
+      <div class="stat-l">Credentials needed</div>
+      <div class="stat-d">A real attack against a real proxy on a real isolated network.</div>
+    </div>
+    <div>
+      <div class="stat-n num">5</div>
+      <div class="stat-l">Failure modes shown</div>
+      <div class="stat-d">Denial, revocation, quarantine, impersonation, direct bypass.</div>
+    </div>
+    <div>
+      <div class="stat-n num">1</div>
+      <div class="stat-l">Command</div>
+      <div class="stat-d">Nothing hidden behind manual setup.</div>
+    </div>
+  </div>
+  <div style="margin-top:32px">
+    <pre>npm install
+npm run demo   <span class="c"># real containers · no key required</span></pre>
+  </div>
+  <div class="foot"><span>Verification is 20% of the score</span><span class="pg">09</span></div>
+</section>
+
+<!-- ══ 10 ═══════════════════════════════════════════════════ -->
+<section class="slide"
+  data-notes="<span class='beat'>2:45 — say this fast and with total confidence</span><p>Do not read all four. Say the framing line and let them read:</p><p><b>&ldquo;A containment claim is worth exactly what its limits are worth, so here is every one &mdash; with what closes it.&rdquo;</b></p><p>The right column is the point. Not apologies &mdash; a roadmap that shows you know what production costs.</p><p>If a judge probes one in Q&amp;A you have already won that exchange: you named it first.</p>">
+  <p class="eyebrow">Known boundaries</p>
+  <h2 style="font-size:42px; margin-bottom:22px">We know exactly where the border stops.</h2>
+  <div class="bnd">
+    <div class="bnd-head"><span>Today</span><span>What closes it</span></div>
+    <div class="bnd-row">
+      <span class="bnd-a">Principals are fixtures &mdash; no authentication behind them.</span>
+      <span class="bnd-b">An <b>identity provider</b>. The enforcement path above it does not change.</span>
+    </div>
+    <div class="bnd-row">
+      <span class="bnd-a">HTTPS is authorized by hostname, not by path.</span>
+      <span class="bnd-b"><b>TLS termination.</b> Anthropic&rsquo;s own sandbox documents the same limit &mdash; state of the art, not our shortcut.</span>
+    </div>
+    <div class="bnd-row">
+      <span class="bnd-a">Raw sockets and <span class="mono">git+ssh</span> are refused outright.</span>
+      <span class="bnd-b">A <b>layer-4 gate</b> on the same authorizer. Refusing is correct under default-deny meanwhile.</span>
+    </div>
+    <div class="bnd-row">
+      <span class="bnd-a">Quarantine strikes reset on restart; verified on Docker only.</span>
+      <span class="bnd-b"><b>Persist strikes</b>, and re-measure per container engine before claiming support.</span>
+    </div>
+  </div>
+  <div class="foot"><span>Documented in the repo, not discovered by the reviewer</span><span class="pg">10</span></div>
+</section>
+
+<!-- ══ 11 ═══════════════════════════════════════════════════ -->
+<section class="slide"
+  data-notes="<span class='beat'>2:55 — land it and stop talking</span><p>Return to the metaphor, then the invitation. Do not thank them, do not summarise, do not trail off.</p><p><b>&ldquo;A passport is not a judgement about character. It says where you may go &mdash; and it can be revoked at the border, before you board.&rdquo;</b></p><p>Beat.</p><p><b>&ldquo;We assumed the agent was compromised. Run it and watch it try.&rdquo;</b></p><p>Then silence. Let them ask first.</p>">
+  <p class="eyebrow">Close</p>
+  <h2 style="font-size:58px; max-width:19ch; line-height:1.04">Agents get real credentials the day something can take them back.</h2>
+  <p class="lede" style="font-size:23px; max-width:50ch; margin-top:26px">
+    Not a smarter model. A border, checked on every crossing.
+  </p>
+  <div style="margin-top:auto; display:grid; grid-template-columns:1fr 1fr; gap:40px;
+              border-top:1px solid var(--rule-hard); padding-top:26px; align-items:start">
+    <pre style="font-size:15px">npm install
+npm run demo   <span class="c"># no key required</span></pre>
+    <p style="font-size:17px; line-height:1.5; color:var(--ink-soft); margin:0">
+      <span class="mono" style="color:var(--ink)">docs/AGENT-PASSPORT.md</span> &mdash; the enforcement model, every rule ID, and everything it does not yet solve.
+    </p>
+  </div>
+  <p style="font-weight:800; font-size:29px; letter-spacing:-.025em; margin:28px 0 0;
+            color:var(--deny)">
+    We assumed the agent was compromised. Run it and watch it try.
+  </p>
+  <div class="foot"><span>Agent Passport · TikTok TechJam 2026</span><span class="pg">11</span></div>
+</section>
+
+</div>
+</div>
+
+<div id="notes" hidden>
+  <h4>Presenter notes — press N to hide</h4>
+  <div id="notes-body"></div>
+</div>
+
+<nav id="chrome">
+  <button id="prev" type="button" aria-label="Previous slide">&larr; Prev</button>
+  <span id="counter" class="num">01 / 11</span>
+  <button id="next" type="button" aria-label="Next slide">Next &rarr;</button>
+  <button id="replay" type="button">Replay · R</button>
+  <button id="notes-toggle" type="button">Notes · N</button>
+</nav>
+
+<script>
+(function(){
+  var slides  = Array.prototype.slice.call(document.querySelectorAll('.slide'));
+  var frame   = document.getElementById('frame');
+  var notes   = document.getElementById('notes');
+  var nbody   = document.getElementById('notes-body');
+  var counter = document.getElementById('counter');
+  var i = 0;
+
+  function pad(n){ return (n < 10 ? '0' : '') + n; }
+
+  function show(n){
+    i = Math.max(0, Math.min(slides.length - 1, n));
+    slides.forEach(function(s, k){ s.classList.toggle('on', k === i); });
+    counter.textContent = pad(i + 1) + ' / ' + pad(slides.length);
+    nbody.innerHTML = slides[i].getAttribute('data-notes') || '<p>No notes for this slide.</p>';
+    try { location.hash = String(i + 1); } catch (e) {}
+  }
+
+  function replay(){
+    var s = slides[i];
+    s.classList.remove('on');
+    void s.offsetWidth;
+    s.classList.add('on');
+  }
+
+  function fit(){
+    var m = 28;
+    var k = Math.min((window.innerWidth - m) / 1280, (window.innerHeight - m) / 720);
+    frame.style.transform = 'scale(' + k + ')';
+  }
+
+  document.getElementById('prev').addEventListener('click', function(){ show(i - 1); });
+  document.getElementById('next').addEventListener('click', function(){ show(i + 1); });
+  document.getElementById('replay').addEventListener('click', replay);
+  document.getElementById('notes-toggle').addEventListener('click', function(){
+    notes.hidden = !notes.hidden;
+  });
+
+  document.addEventListener('keydown', function(e){
+    if (e.metaKey || e.ctrlKey || e.altKey) return;
+    var k = e.key;
+    if (k === 'ArrowRight' || k === 'PageDown' || k === ' ') { e.preventDefault(); show(i + 1); }
+    else if (k === 'ArrowLeft' || k === 'PageUp') { e.preventDefault(); show(i - 1); }
+    else if (k === 'Home') { e.preventDefault(); show(0); }
+    else if (k === 'End')  { e.preventDefault(); show(slides.length - 1); }
+    else if (k === 'r' || k === 'R') { replay(); }
+    else if (k === 'n' || k === 'N') { notes.hidden = !notes.hidden; }
+  });
+
+  window.addEventListener('resize', fit);
+  fit();
+
+  var start = parseInt((location.hash || '').replace('#', ''), 10);
+  show(isNaN(start) ? 0 : start - 1);
+
+  var cv = document.getElementById('guilloche');
+  if (cv && cv.getContext) {
+    var draw = function(){
+      var dpr = Math.min(window.devicePixelRatio || 1, 2);
+      cv.width = 1280 * dpr; cv.height = 720 * dpr;
+      var g = cv.getContext('2d');
+      g.scale(dpr, dpr);
+      g.clearRect(0, 0, 1280, 720);
+      g.strokeStyle = (getComputedStyle(document.documentElement)
+                        .getPropertyValue('--guilloche') || '#2B4054').trim();
+      g.lineWidth = 0.5;
+      g.globalAlpha = 0.55;
+      var cx = 985, cy = 366;
+      [{R:250,r:41,d:138,step:.010},
+       {R:204,r:29,d:111,step:.010},
+       {R:158,r:23,d:85, step:.012}].forEach(function(o){
+        g.beginPath();
+        for (var t = 0; t <= Math.PI * 2 * 41; t += o.step) {
+          var k = o.R - o.r;
+          var x = cx + k * Math.cos(t) + o.d * Math.cos(k * t / o.r);
+          var y = cy + k * Math.sin(t) - o.d * Math.sin(k * t / o.r);
+          if (t === 0) g.moveTo(x, y); else g.lineTo(x, y);
+        }
+        g.stroke();
+      });
+    };
+    draw();
+    var mq = window.matchMedia('(prefers-color-scheme: dark)');
+    if (mq.addEventListener) mq.addEventListener('change', draw);
+  }
+})();
+</script>

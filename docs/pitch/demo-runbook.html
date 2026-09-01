@@ -1,0 +1,508 @@
+<title>Demo Runbook</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wght@400;500;600;700;800;900&family=IBM+Plex+Mono:wght@400;500;600;700&display=swap">
+
+<style>
+/* Agent Passport — live demo runbook.
+   Document treatment: read on a laptop backstage, or printed to PDF.
+   Light-first (rooms are bright); dark fully supported. */
+
+:root{
+  --paper:#F2F4F0; --card:#FBFCFA; --sunk:#E6E9E3;
+  --ink:#111A24; --ink-soft:#43535F; --ink-faint:#6B7A85;
+  --rule:#D2D8D0; --rule-hard:#A3AEA5;
+  --deny:#A32214; --deny-wash:rgba(163,34,20,.09);
+  --allow:#11603C; --allow-wash:rgba(17,96,60,.09);
+  --foil:#8A6A12; --foil-wash:rgba(138,106,18,.10);
+  --shadow:rgba(17,26,36,.10);
+  --display:"Archivo","Helvetica Neue",Helvetica,Arial,sans-serif;
+  --mono:"IBM Plex Mono",ui-monospace,"SF Mono",Menlo,monospace;
+}
+@media (prefers-color-scheme:dark){
+  :root:not([data-theme="light"]){
+    --paper:#0A1017; --card:#111A24; --sunk:#182430;
+    --ink:#EFF3F0; --ink-soft:#AEBFCA; --ink-faint:#8194A1;
+    --rule:#243240; --rule-hard:#3B4F61;
+    --deny:#FF5644; --deny-wash:rgba(255,86,68,.12);
+    --allow:#3EDD92; --allow-wash:rgba(62,221,146,.12);
+    --foil:#E0B64C; --foil-wash:rgba(224,182,76,.11);
+    --shadow:rgba(0,0,0,.5);
+  }
+}
+:root[data-theme="dark"]{
+  --paper:#0A1017; --card:#111A24; --sunk:#182430;
+  --ink:#EFF3F0; --ink-soft:#AEBFCA; --ink-faint:#8194A1;
+  --rule:#243240; --rule-hard:#3B4F61;
+  --deny:#FF5644; --deny-wash:rgba(255,86,68,.12);
+  --allow:#3EDD92; --allow-wash:rgba(62,221,146,.12);
+  --foil:#E0B64C; --foil-wash:rgba(224,182,76,.11);
+  --shadow:rgba(0,0,0,.5);
+}
+
+*{box-sizing:border-box}
+body{background:var(--paper); color:var(--ink); font-family:var(--display);
+     margin:0; font-size:17px; line-height:1.6}
+.wrap{max-width:920px; margin:0 auto; padding:56px 32px 120px}
+
+header{border-bottom:3px solid var(--ink); padding-bottom:26px; margin-bottom:14px}
+.kicker{font-family:var(--mono); font-size:12px; letter-spacing:.18em; text-transform:uppercase;
+        color:var(--foil); margin:0 0 14px}
+h1{font-weight:900; font-size:56px; line-height:1; letter-spacing:-.04em; margin:0 0 16px}
+.sub{font-size:20px; color:var(--ink-soft); margin:0; max-width:62ch}
+
+h2{font-weight:800; font-size:30px; letter-spacing:-.027em; line-height:1.15;
+   margin:56px 0 6px; padding-top:26px; border-top:1px solid var(--rule)}
+h2 .n{font-family:var(--mono); font-size:15px; color:var(--foil); display:block;
+      letter-spacing:.14em; margin-bottom:10px; font-weight:600}
+h3{font-weight:700; font-size:20px; letter-spacing:-.015em; margin:32px 0 10px}
+p{margin:0 0 15px; max-width:72ch}
+.dek{color:var(--ink-soft); font-size:18px; max-width:70ch; margin-bottom:26px}
+.mono{font-family:var(--mono)}
+
+pre{font-family:var(--mono); font-size:15px; line-height:1.7; background:var(--sunk);
+    border:1px solid var(--rule-hard); border-left:4px solid var(--foil);
+    padding:16px 18px; margin:0 0 16px; overflow-x:auto; color:var(--ink)}
+pre .c{color:var(--ink-faint)}
+pre .ok{color:var(--allow)}
+pre .no{color:var(--deny)}
+code{font-family:var(--mono); font-size:.92em; background:var(--sunk);
+     border:1px solid var(--rule); padding:1px 5px}
+
+.check{list-style:none; margin:0 0 20px; padding:0}
+.check li{display:grid; grid-template-columns:26px 1fr; gap:12px; padding:11px 0;
+          border-bottom:1px solid var(--rule); align-items:start}
+.check li:last-child{border-bottom:none}
+.check .box{width:16px; height:16px; border:2px solid var(--rule-hard); margin-top:5px}
+.check b{font-weight:600}
+.check .why{display:block; color:var(--ink-soft); font-size:15.5px; margin-top:3px}
+
+.ros{display:flex; flex-direction:column; border:1px solid var(--rule-hard); background:var(--card)}
+.ros-row{display:grid; grid-template-columns:88px 1fr; border-bottom:1px solid var(--rule)}
+.ros-row:last-child{border-bottom:none}
+.ros-row.hero{background:var(--foil-wash)}
+.ros-t{font-family:var(--mono); font-size:14px; font-weight:700; color:var(--foil);
+       padding:20px 0 20px 20px; font-variant-numeric:tabular-nums;
+       border-right:1px solid var(--rule)}
+.ros-c{padding:20px 22px}
+.ros-c h4{font-weight:700; font-size:18px; margin:0 0 10px; letter-spacing:-.01em}
+.say{border-left:3px solid var(--foil); padding:2px 0 2px 15px; margin:0 0 12px;
+     font-size:17px; line-height:1.55}
+.say::before{content:"SAY"; font-family:var(--mono); font-size:10.5px; letter-spacing:.16em;
+             color:var(--foil); display:block; margin-bottom:5px; font-weight:600}
+.do{background:var(--sunk); padding:11px 15px; margin:0; font-size:15.5px; color:var(--ink-soft)}
+.do::before{content:"DO"; font-family:var(--mono); font-size:10.5px; letter-spacing:.16em;
+            color:var(--ink-faint); display:block; margin-bottom:5px; font-weight:600}
+.do + .do{margin-top:8px}
+
+.note{border:1px solid var(--rule-hard); background:var(--card); padding:18px 20px; margin:0 0 20px}
+.note.warn{border-color:var(--deny); background:var(--deny-wash)}
+.note.good{border-color:var(--allow); background:var(--allow-wash)}
+.note.foil{border-color:var(--foil); background:var(--foil-wash)}
+.note p:last-child{margin-bottom:0}
+.note .lbl{font-family:var(--mono); font-size:11px; letter-spacing:.16em; text-transform:uppercase;
+           display:block; margin-bottom:9px; font-weight:600}
+.note.warn .lbl{color:var(--deny)}
+.note.good .lbl{color:var(--allow)}
+.note.foil .lbl{color:var(--foil)}
+
+.qa{border-top:1px solid var(--rule)}
+.qa details{border-bottom:1px solid var(--rule)}
+.qa summary{cursor:pointer; padding:16px 0; font-weight:700; font-size:18px;
+            list-style:none; display:flex; gap:12px; align-items:baseline}
+.qa summary::-webkit-details-marker{display:none}
+.qa summary::before{content:"?"; font-family:var(--mono); color:var(--foil); font-weight:700; flex:none}
+.qa summary:hover{color:var(--foil)}
+.qa summary:focus-visible{outline:2px solid var(--foil); outline-offset:3px}
+.qa .ans{padding:0 0 18px 24px; color:var(--ink-soft); font-size:16.5px}
+.qa .ans p{margin-bottom:11px}
+.qa .ans p:last-child{margin-bottom:0}
+.qa .ans b{color:var(--ink)}
+
+.exp{width:100%; border-collapse:collapse; margin:0 0 20px; font-size:16px}
+.exp th{font-family:var(--mono); font-size:11px; letter-spacing:.15em; text-transform:uppercase;
+        color:var(--ink-faint); text-align:left; padding:0 14px 10px 0;
+        border-bottom:2px solid var(--rule-hard); font-weight:600}
+.exp td{padding:13px 14px 13px 0; border-bottom:1px solid var(--rule); vertical-align:top;
+        color:var(--ink-soft); line-height:1.45}
+.exp tr:last-child td{border-bottom:none}
+.exp td.s{font-family:var(--mono); font-weight:700; color:var(--ink); width:34px}
+.exp td.v{font-family:var(--mono); font-size:14.5px; white-space:nowrap; width:1%}
+.v-no{color:var(--deny)} .v-ok{color:var(--allow)}
+
+.lines{display:flex; flex-direction:column; border:2px solid var(--ink)}
+.lines div{padding:22px 24px; border-bottom:1px solid var(--rule); font-size:20px;
+           font-weight:600; line-height:1.4}
+.lines div:last-child{border-bottom:none}
+.lines .who{font-family:var(--mono); font-size:11px; letter-spacing:.16em; text-transform:uppercase;
+            color:var(--foil); display:block; margin-bottom:8px; font-weight:600}
+
+footer{margin-top:64px; padding-top:22px; border-top:1px solid var(--rule);
+       font-family:var(--mono); font-size:13px; color:var(--ink-faint)}
+
+@media (max-width:680px){
+  .wrap{padding:36px 20px 80px}
+  h1{font-size:38px} h2{font-size:25px}
+  .ros-row{grid-template-columns:1fr}
+  .ros-t{border-right:none; border-bottom:1px solid var(--rule); padding:14px 20px 0}
+}
+@media print{
+  body{background:#fff; font-size:11pt}
+  .wrap{max-width:none; padding:0}
+  .qa details > .ans{display:block !important}
+  .qa summary{list-style:none}
+  h2{break-after:avoid}
+  h3,.ros-row,.note,.qa details,.lines div,.check li{break-inside:avoid}
+  pre{break-inside:avoid; white-space:pre-wrap; word-wrap:break-word}
+  a{color:inherit}
+}
+</style>
+
+<div class="wrap">
+
+<header>
+  <p class="kicker">Agent Passport · TikTok TechJam 2026 · Track 1</p>
+  <h1>Live Demo Runbook</h1>
+  <p class="sub">Three minutes: one real Agent run, then every attack class you built against &mdash; 32 invariants in 11 seconds &mdash; closing on a containment receipt the judges verify themselves. Every command below is real and was timed on this tree.</p>
+</header>
+
+<!-- ═══════════════════════════════════════════════════════ -->
+<h2><span class="n">SECTION 00</span>Read this before anything else</h2>
+
+<div class="note warn">
+  <span class="lbl">Blocking — verify the merge landed</span>
+  <p>The strongest material in this project — the confused-deputy exploit, authority attenuation, and signed termination receipts — came in through <strong>PR&nbsp;38</strong>. As of writing, <code>origin/main</code> contained <strong>none</strong> of it: <code>demo-escalation.mjs</code>, <code>demo-kill.mjs</code>, <code>demo-tunnel-bypass.mjs</code> and <code>verify-receipt.mjs</code> were all absent from that branch.</p>
+  <p><strong>Before you present, confirm the branch you are demoing from has all four.</strong> This entire runbook depends on them:</p>
+</div>
+
+<pre>ls scripts/demo-escalation.mjs scripts/demo-kill.mjs \
+   scripts/demo-tunnel-bypass.mjs scripts/verify-receipt.mjs
+npm run check     <span class="c"># typecheck → build → tests, in that order</span></pre>
+
+<p><strong>Status on merged <code>main</code>:</strong> all four scripts are present. <span class="mono v-ok">264 tests across 24 suites pass</span>.</p>
+
+<div class="note warn">
+  <span class="lbl">Open blocker — fix before submitting</span>
+  <p><code>npm run check</code> <strong>exits 1 even though every test passes.</strong> An unhandled <code>RunCancelledError</code> escapes <code>container-codex-runner-pause.test.ts</code> — a cancelled run's promise is never awaited or caught, so Vitest reports <em>"Errors 1 error"</em> and fails the run.</p>
+  <p>This matters because <b><code>npm run check</code> passing is on the track's own acceptance checklist.</b> A reviewer working that list hits a red on an otherwise green repository. It is a leaked promise in a test, not a containment defect — but fix it before submission, and do not invite judges to run <code>check</code> on stage until you have.</p>
+</div>
+
+<div class="note good">
+  <span class="lbl">Good news worth saying on stage</span>
+  <p>Every demo script now <strong>asserts</strong> its invariants through <code>scripts/demo-assert.mjs</code> and exits non-zero if containment breaks. It is no longer a thing you read — it is a thing that can fail. If the README still says the demos "print observations rather than asserting them", that line is stale and should be corrected before submission.</p>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════ -->
+<h2><span class="n">SECTION 01</span>Fifteen minutes before you present</h2>
+<p class="dek">The biggest risk in a three-minute demo is watching a build or an image pull in silence.</p>
+
+<ul class="check">
+  <li><span class="box"></span><span><b>Pre-build the server.</b>
+    <span class="why">Every <code>demo:*</code> script builds first. Build once now and the live runs start instantly.</span></span></li>
+  <li><span class="box"></span><span><b>Run each demo once, end to end.</b>
+    <span class="why">Caches the container images and proves the invariants hold on today's tree.</span></span></li>
+  <li><span class="box"></span><span><b>Start the platform and leave it running.</b>
+    <span class="why"><code>npm run poc</code> → <code>localhost:3000</code>. Never start it on stage.</span></span></li>
+  <li><span class="box"></span><span><b>Create the Agent in advance.</b>
+    <span class="why">Already in the list, lifecycle state visible. Creating one live burns twenty seconds on starter-kit CRUD.</span></span></li>
+  <li><span class="box"></span><span><b>Terminal font 18pt or larger.</b>
+    <span class="why">Judges read a projector from four metres. This demo is mostly terminal output — it has to be legible.</span></span></li>
+  <li><span class="box"></span><span><b>Two windows, no alt-tabbing.</b>
+    <span class="why">Browser left, terminal right, both visible at once.</span></span></li>
+  <li><span class="box"></span><span><b>Rehearse with a timer.</b>
+    <span class="why">The usual failure is running long and being cut off before the receipt — which is your best moment.</span></span></li>
+</ul>
+
+<h3>Pre-warm block</h3>
+<pre>npm install
+npm run build --workspace apps/server   <span class="c"># live demos then skip the build</span>
+node scripts/demo-escalation.mjs        <span class="c"># no engine, no key — always works</span>
+node scripts/demo-kill.mjs              <span class="c"># needs a container engine</span>
+docker ps                               <span class="c"># engine responds instantly?</span>
+npm run poc                             <span class="c"># leave running → localhost:3000</span></pre>
+
+<!-- ═══════════════════════════════════════════════════════ -->
+<h2><span class="n">SECTION 02</span>The three-minute run of show</h2>
+<p class="dek">You run <strong>every</strong> demo. All five together take <strong>11&ndash;13 seconds</strong> of compute, so runtime was never the constraint &mdash; narration is. Run the whole gauntlet at once, then walk back through output that is already on screen, at whatever pace the clock allows.</p>
+
+<div class="note good">
+  <span class="lbl">Measured on this tree, just now</span>
+  <p><span class="mono">escalation 10/10 &middot; egress 7/7 &middot; tunnel-bypass 2/2 &middot; kill 7/7 &middot; passport 6/6</span></p>
+  <p><strong>32 invariants across 5 attack classes in 11 seconds, every one machine-checked.</strong> Say that number out loud &mdash; it is the single most compressed proof of work you have.</p>
+</div>
+
+<div class="ros">
+
+  <div class="ros-row">
+    <div class="ros-t">0:00</div>
+    <div class="ros-c">
+      <h4>Cold open — do not introduce yourself</h4>
+      <p class="say">&ldquo;This is a coding agent doing its job. It read a GitHub issue. The issue told it to run <span class="mono">curl</span>. No exploit, no CVE &mdash; the agent did exactly what it was told, by the wrong person.&rdquo;</p>
+      <p class="do">Browser only. Name the project after this lands.</p>
+    </div>
+  </div>
+
+  <div class="ros-row">
+    <div class="ros-t">0:15</div>
+    <div class="ros-c">
+      <h4>Name it and frame it</h4>
+      <p class="say">&ldquo;Prompt injection is unsolved, so we stopped trying to make the model trustworthy. Agent Passport is border control for agents: it does not judge the agent&rsquo;s character, it decides where it may go &mdash; and revokes that before it boards.&rdquo;</p>
+      <p class="do">Show the Playground, Agent already created, lifecycle state visible.</p>
+    </div>
+  </div>
+
+  <div class="ros-row">
+    <div class="ros-t">0:27</div>
+    <div class="ros-c">
+      <h4>One real Agent run — the normal case <span class="mono" style="color:var(--ink-faint)">(required by the brief)</span></h4>
+      <p class="say">&ldquo;A real task through the real Codex runtime in a real container. Normal work is never interrupted &mdash; the border only matters when something tries to cross it.&rdquo;</p>
+      <p class="do">Playground → <code>Run pwd, then list the workspace with ls -la.</code> Talk while it runs.</p>
+      <p class="do">Trace drawer: <code>run.started</code> → <code>step.auto_approved</code> → <code>ALLOW-STANDARD-000</code> → <code>run.completed</code>.</p>
+    </div>
+  </div>
+
+  <div class="ros-row hero">
+    <div class="ros-t">1:00</div>
+    <div class="ros-c">
+      <h4>★ The gauntlet — every attack class, one command</h4>
+      <p class="say">&ldquo;Now assume the agent is hijacked. Here is every way we could think of for it to get out, run against real containers and a real proxy. Watch the clock &mdash; this is the whole thing.&rdquo;</p>
+      <p class="do">Paste the gauntlet from Section 03 and hit enter. <b>Do not narrate while it runs</b> — 11 seconds of silence with output flying past is more impressive than talking over it.</p>
+      <p class="do">When it lands, read the tally aloud: <b>&ldquo;thirty-two invariants, five attack classes, eleven seconds. Every one held, and a broken boundary exits non-zero.&rdquo;</b></p>
+    </div>
+  </div>
+
+  <div class="ros-row hero">
+    <div class="ros-t">1:25</div>
+    <div class="ros-c">
+      <h4>★ Walk the two that matter — scroll back up</h4>
+      <p class="say">On <b>escalation</b>: &ldquo;Everyone builds the network wall, so we asked what a hijacked agent does <em>instead</em>. The control plane is reachable from inside the container, because the model adapter lives there. Its cheapest attack is not breaking the wall &mdash; it is asking the platform for a wider door. That worked, until we closed it. Authority only flows downhill.&rdquo;</p>
+      <p class="do">Point at: it grants itself egress → <b>denied</b>. It claims to be the human → <b>denied</b>. It delegates to a sub-agent, then clones the grant back to itself → <b>denied</b>. Operator revokes the parent → the child <b>cascades</b>.</p>
+      <p class="do">Then one sentence each for the fast three: <em>&ldquo;the network border holds under default-deny, revocation and quarantine; an opaque CONNECT tunnel to the control plane is refused; and cross-user access is denied before grants are even consulted.&rdquo;</em></p>
+    </div>
+  </div>
+
+  <div class="ros-row hero">
+    <div class="ros-t">2:10</div>
+    <div class="ros-c">
+      <h4>★ The receipt — containment you don't take our word for</h4>
+      <p class="say">&ldquo;Last question a security reviewer always asks: how do I know you actually contained it? You don&rsquo;t have to trust us. Termination writes an Ed25519-signed receipt, and you verify it offline with the public key. <b>This program does not get a vote.</b>&rdquo;</p>
+      <p class="do">Scroll to the <b>kill</b> block: freeze → block authority → kill → verify, then the agent unable to reach its target because authority is gone.</p>
+      <p class="do">Then the closer: the script <b>tampers with the receipt and re-verifies — and it is rejected.</b> &ldquo;A public key lets you check a receipt. It does not let you forge one.&rdquo;</p>
+    </div>
+  </div>
+
+  <div class="ros-row">
+    <div class="ros-t">2:45</div>
+    <div class="ros-c">
+      <h4>Close, then stop talking</h4>
+      <p class="say">&ldquo;Agents get real credentials the day something can take them back &mdash; and prove it did. We assumed the agent was compromised. Run it and watch it try.&rdquo;</p>
+      <p class="do">Silence. Let them ask first.</p>
+    </div>
+  </div>
+
+</div>
+
+<h3>Cut order, if you are running long</h3>
+<p>Decide this <b>before</b> you are on stage, not during. Cut strictly in this order:</p>
+<table class="exp">
+  <thead><tr><th>Cut</th><th>What goes</th><th>Saves</th></tr></thead>
+  <tbody>
+    <tr><td class="s">1</td><td>The one-sentence walk of the fast three (egress, tunnel, passport) — the tally already proved they passed</td><td class="v">~20s</td></tr>
+    <tr><td class="s">2</td><td>The Trace-drawer walk in the Agent run — just show it completed</td><td class="v">~12s</td></tr>
+    <tr><td class="s">3</td><td>The escalation detail — keep the headline &ldquo;it asked for a wider door and was refused&rdquo;, drop the four sub-beats</td><td class="v">~18s</td></tr>
+  </tbody>
+</table>
+<div class="note warn">
+  <span class="lbl">Never cut</span>
+  <p>The gauntlet running live, the 32-invariant tally, and the tampered receipt being rejected. Those three are the submission.</p>
+</div>
+
+<div class="note foil">
+  <span class="lbl">If two people present</span>
+  <p>Speaker A: 0:00–1:00 (story, UI, normal case). Speaker B: 1:00–3:00 (gauntlet, walk-back, receipt, close). Hand over on <em>&ldquo;now assume the agent is hijacked&rdquo;</em>.</p>
+</div>
+
+<h2><span class="n">SECTION 03</span>The gauntlet, and what it prints</h2>
+<p class="dek">One command, five demos, every invariant asserted. Paste this exactly &mdash; the <span class="mono">grep</span> strips request logs that would otherwise scroll your results off the screen, and <span class="mono">pipefail</span> makes a failure inside the pipe still register.</p>
+
+<pre>set -o pipefail
+for d in escalation egress tunnel-bypass kill passport; do
+  printf '\n════ %s ════\n' "$d"
+  node scripts/demo-$d.mjs 2>&amp;1 | grep -v '"level":[0-9]*,"time"' \
+    || echo '!! INVARIANT FAILED — stop and look'
+done</pre>
+
+<p><b>Expected tally, in order.</b> If any number differs, something regressed — investigate before you present.</p>
+<table class="exp">
+  <thead><tr><th></th><th>Demo</th><th>Holds</th><th>What it proves</th></tr></thead>
+  <tbody>
+    <tr><td class="s">1</td><td><b>escalation</b></td><td class="v v-ok">10/10</td>
+        <td>Authority only flows downhill: an agent cannot widen its own grants, impersonate the human, clone a delegated grant back to itself, or trade capability families. Revoking a parent cascades to the child.</td></tr>
+    <tr><td class="s">2</td><td><b>egress</b></td><td class="v v-ok">7/7</td>
+        <td>Default-deny at the border, grant admits, revocation bites on the next connection, repeated probing quarantines, a guessed proxy credential fails, and a direct no-proxy attempt finds no route.</td></tr>
+    <tr><td class="s">3</td><td><b>tunnel-bypass</b></td><td class="v v-ok">2/2</td>
+        <td>An opaque CONNECT tunnel to the control plane is refused, and no authority is created through it.</td></tr>
+    <tr><td class="s">4</td><td><b>kill</b></td><td class="v v-ok">7/7</td>
+        <td>Freeze, atomically block authority and revoke, kill, verify — then a signed receipt, and an edited receipt is rejected.</td></tr>
+    <tr><td class="s">5</td><td><b>passport</b></td><td class="v v-ok">6/6</td>
+        <td>Identity and grants: no grant denies, a human grant allows, cross-user access is denied <b>before</b> grants are consulted, and revocation is felt on the next read.</td></tr>
+  </tbody>
+</table>
+
+<p style="font-size:19px; font-weight:600">Total: <span class="mono v-ok">32 invariants</span> across <span class="mono">5 attack classes</span> in <span class="mono">~11 seconds</span>.</p>
+
+<h3>If a judge wants to verify the receipt by hand</h3>
+<pre>node scripts/verify-receipt.mjs receipt.json \
+  --public-key .data/receipt-signing-public.pem</pre>
+<p>It checks the trusted key ID, the signature, the exact step set and order, unique revoked-grant IDs, and that step outcomes agree with the <code>contained</code> claim. A public key permits verification but not forgery.</p>
+
+<h2><span class="n">SECTION 04</span>When it breaks on stage</h2>
+<p class="dek">Work down this ladder without apologising. Recovering calmly reads as competence.</p>
+
+<div class="note">
+  <span class="lbl">Rung 1 — the container engine is down</span>
+  <p><code>demo-escalation.mjs</code> and <code>demo-passport.mjs</code> need <b>no engine and no key</b>. Your best demo is also your most robust one. Say: <em>&ldquo;engine's not cooperating — here is the authority boundary, which does not need it.&rdquo;</em></p>
+</div>
+
+<div class="note">
+  <span class="lbl">Rung 2 — the live Agent run hangs on the model</span>
+  <p>Do not wait. Say: <em>&ldquo;the provider is slow, which is exactly why containment cannot depend on the model,&rdquo;</em> and go straight to the escalation demo. It never touches a model API.</p>
+</div>
+
+<div class="note">
+  <span class="lbl">Rung 3 — nothing runs</span>
+  <p>Narrate over a <b>pre-recorded capture</b> and say plainly that it is a recording. Judges forgive a recording; they do not forgive two minutes of silence.</p>
+</div>
+
+<div class="note good">
+  <span class="lbl">Rung 0 — record the fallback tonight</span>
+  <p>Capture clean runs of <code>demo-escalation</code> and <code>demo-kill</code> while everything works. Five minutes now, and the worst case stops being catastrophic.</p>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════ -->
+<h2><span class="n">SECTION 05</span>Questions judges will ask</h2>
+<p class="dek">Grounded in what the code does. Where an answer needs checking against your merged branch, it says so.</p>
+
+<div class="qa">
+
+<details><summary>Isn't this just a firewall?</summary>
+<div class="ans">
+<p>Lead with the escalation demo, not the network. <b>A firewall would not have stopped the actual attack</b> — the agent never touched the network boundary; it asked the control plane for a wider grant, from inside.</p>
+<p>What stops that is an authority model: humans originate authority, agents may only ever pass along less, and capability families are incomparable so network access can never be traded out of storage access.</p>
+</div></details>
+
+<details><summary>How did you find the confused-deputy bug?</summary>
+<div class="ans">
+<p>Be direct: the control plane is reachable from inside an agent container <b>because the model adapter lives there</b>. Once you see that, the cheapest attack is obviously not the wall — it is the door.</p>
+<p><code>demo-escalation.mjs</code> reproduces both the original exploit and the fixed behaviour, so the fix is regression-tested rather than asserted.</p>
+</div></details>
+
+<details><summary>What does the receipt actually prove?</summary>
+<div class="ans">
+<p>Claim it narrowly and you will be believed: <b>the signed receipt authenticates the control plane's recorded termination observations</b> — origin, integrity, internal consistency, and that the step outcomes agree with the containment claim.</p>
+<p>It does <b>not</b> claim earlier effects were undone, and offline verification cannot independently recreate the runtime observation. Saying that unprompted is worth more than overclaiming.</p>
+</div></details>
+
+<details><summary>Does revoking kill a connection that is already open?</summary>
+<div class="ans">
+<p><b>No</b> — and that is precisely why termination exists as a separate path. Revocation stops the next connection. Termination freezes first, then atomically blocks authority and revokes, then kills, then verifies. If a live runtime cannot be frozen, it records that failure and <b>refuses to claim containment</b>.</p>
+</div></details>
+
+<details><summary>Your human identity is still a mock.</summary>
+<div class="ans">
+<p>Agree immediately and draw the line precisely. <b>Human identity is a mock</b> — <code>x-principal-id</code> is unauthenticated. <b>Agent identity is not</b>: it is bound to the containment topology, the proxy strips caller-supplied attestation and stamps the identity itself, and the agent container never holds the server secret.</p>
+<p>Production needs an operator IdP and RBAC. The enforcement path above it does not change.</p>
+</div></details>
+
+<details><summary>What about DNS or another covert channel?</summary>
+<div class="ans">
+<p>Contain the claim: HTTP and HTTPS go through the proxy, the internal network removes the direct route, and non-HTTP TCP is refused because it cannot traverse an HTTP proxy. Opaque CONNECT tunnels to the control plane are refused outright — <code>demo-tunnel-bypass.mjs</code>.</p>
+<p><b>If you have not measured DNS on your merged branch, say so.</b> A caught overclaim discounts everything else you said.</p>
+</div></details>
+
+<details><summary>Why hostname and not full URL for HTTPS?</summary>
+<div class="ans">
+<p>CONNECT exposes only the host, so per-path rules need TLS termination. <b>Anthropic's own sandbox-runtime documents the same limit</b> — state of the art, not a shortcut.</p>
+</div></details>
+
+<details><summary>How much of this was the starter kit?</summary>
+<div class="ans">
+<p>Precision reads as confidence. The approval UI, canary tripwire, budget breakers and trace timeline <b>came with the kit</b>. This project added identity, scoped and revocable grants, the authority-attenuation model, the network gate enforced before the socket opens, verified termination, and the signed receipts.</p>
+</div></details>
+
+<details><summary>What would you do next?</summary>
+<div class="ans">
+<p>Have one specific answer: <b>authenticate the operator</b> (the last mock in the identity story), then <b>persist quarantine strikes</b>, which currently reset on restart. Both are named as limitations in the repo — you were tracking them, not discovering them under questioning.</p>
+</div></details>
+
+</div>
+
+<!-- ═══════════════════════════════════════════════════════ -->
+<h2><span class="n">SECTION 06</span>The three lines everyone must know cold</h2>
+<p class="dek">If the laptop dies and you are talking to a judge in a corridor, these still land.</p>
+
+<div class="lines">
+  <div><span class="who">The premise</span>&ldquo;Prompt injection is unsolved, so we stopped trying to make the model trustworthy and made the platform safe while the model is hostile.&rdquo;</div>
+  <div><span class="who">The insight</span>&ldquo;Everyone builds the network wall. A hijacked agent's cheapest attack is not breaking it &mdash; it is asking the platform for a wider door. We found that hole and closed it: authority only flows downhill.&rdquo;</div>
+  <div><span class="who">The proof</span>&ldquo;Termination writes a signed receipt you verify offline with a public key. You do not have to trust our demo.&rdquo;</div>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════ -->
+<h2><span class="n">SECTION 07</span>Everything else you shipped — claim it somewhere</h2>
+<p class="dek">The three-minute demo deliberately features two capabilities. These are the rest, merged and working. Do not cram them into the demo — use them in Q&amp;A, and make sure every one appears in the written submission, because several are scored there.</p>
+
+<table class="exp">
+  <thead><tr><th>PR</th><th>Capability</th><th>Where to claim it</th></tr></thead>
+  <tbody>
+    <tr><td class="s">48</td>
+        <td><b>HITL approval before egress side effects.</b> An ungranted request is held at the proxy before the upstream socket opens; approval is request-scoped, so the next request asks again. Cancellation and disconnect propagate so stale approvals are denied cleanly.</td>
+        <td>Q&amp;A: <i>&ldquo;what if the operator wants to allow just one thing?&rdquo;</i> Reserve demo: <code>vitest run src/egress-hitl.integration.test.ts</code></td></tr>
+    <tr><td class="s">49</td>
+        <td><b>Approval attribution from server-issued sessions.</b> Caller-supplied names are rejected; evidence records initiator, Agent, action, resource, decision, result, and the session actor who resolved it.</td>
+        <td>Q&amp;A: <i>&ldquo;who approved this, and can they lie about it?&rdquo;</i> Visible in <code>demo:identity</code>.</td></tr>
+    <tr><td class="s">46</td>
+        <td><b>Provider keys never reach the container argv.</b> Config is passed by environment name; the Runtime authenticates with a generated internal adapter token; credentials are redacted from messages, run output, events, adapter errors, and streamed responses.</td>
+        <td><b>Put this in the README.</b> &ldquo;No secrets in source, history, logs, traces, screenshots, or demo output&rdquo; is an explicit acceptance item — this is the evidence for it.</td></tr>
+    <tr><td class="s">43</td>
+        <td><b>Output token budgets enforced before generation</b>, with preventive controls distinguished from observational ones in API metadata, UI and docs.</td>
+        <td>Q&amp;A: <i>&ldquo;what stops a runaway agent burning your budget?&rdquo;</i> The preventive/observational distinction is the same intellectual honesty as your telemetry labelling — say so.</td></tr>
+    <tr><td class="s">42</td>
+        <td><b>Fail-closed pause and resume.</b> Approval publishing requires a <i>verified</i> runtime pause; container pause state is checked rather than trusting the CLI. Missing or failed controls stop the run deterministically.</td>
+        <td>Q&amp;A: <i>&ldquo;what if the pause silently fails?&rdquo;</i> Pairs with termination: you verify rather than assume, in both paths.</td></tr>
+    <tr><td class="s">52</td>
+        <td><b>Provider failures are diagnosable.</b> A revoked Gemini key returns Google's <code>400 INVALID_ARGUMENT</code>; it is re-labelled <code>401</code> naming the variable to check. An empty turn caused by reasoning exhausting the output cap becomes <code>502</code> naming the cap, instead of silently reporting success.</td>
+        <td>Only if asked, or if the demo misbehaves — it explains the failure instantly. Also a good <i>&ldquo;what did you learn&rdquo;</i> answer.</td></tr>
+    <tr><td class="s">51</td>
+        <td><b>Credential hygiene.</b> Placeholder or reused adapter tokens are rejected; canary tokens under 12 characters are refused.</td>
+        <td>One line in the README's security section.</td></tr>
+  </tbody>
+</table>
+
+<div class="note foil">
+  <span class="lbl">If PR 50 lands — memory passport</span>
+  <p>PR&nbsp;50 (<i>&ldquo;give a belief a provenance, so a poisoned one arrives powerless&rdquo;</i>) was still open at the time of writing, and none of its files were on <code>main</code>. If you merge it before submitting, <strong>re-check this runbook</strong>: memory provenance is a genuinely different capability from network and authority containment, and it deserves either its own sentence in the close or its own Q&amp;A entry.</p>
+  <p>Do <b>not</b> add it to the three-minute demo. Two attacks well told beats three rushed.</p>
+</div>
+
+<footer>
+  Agent Passport · Track 1, Agent Launchpad · Step labels verified against
+  <span class="mono">demo-escalation.mjs</span>, <span class="mono">demo-kill.mjs</span>,
+  <span class="mono">demo-egress.mjs</span> and <span class="mono">demo-assert.mjs</span>.
+</footer>
+
+</div>
+
+<script>
+/* Expand every Q&A item before printing so the PDF carries the answers. */
+(function(){
+  function openAll(){
+    var d = document.querySelectorAll('.qa details');
+    for (var i = 0; i < d.length; i++) d[i].open = true;
+  }
+  window.addEventListener('beforeprint', openAll);
+  var mq = window.matchMedia && window.matchMedia('print');
+  if (mq && mq.addEventListener) {
+    mq.addEventListener('change', function(e){ if (e.matches) openAll(); });
+  }
+})();
+</script>
