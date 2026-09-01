@@ -23,6 +23,7 @@ export interface Agent {
   codexThreadId: string | null;
   activeSessionId: string | null;
   lastError: string | null;
+  authorityBlocked?: boolean;
   createdAt: string;
   updatedAt: string;
 }
@@ -54,7 +55,6 @@ export type RunEventType =
   | "run.failed"
   | "run.blocked"
   | "run.cancelled"
-  | "run.memory_injected"
   | "step.command"
   | "step.tool_call"
   | "step.file_change"
@@ -68,7 +68,8 @@ export type RunEventType =
   | "grant.created"
   | "grant.revoked"
   | "grant.expired"
-  | "egress.blocked";
+  | "egress.blocked"
+  | "agent.terminated";
 
 export interface RunEvent {
   id: string;
@@ -156,13 +157,18 @@ export type GrantScope = "resource:read" | "resource:write" | "network:egress";
 export interface Grant {
   id: string;
   principalId: string;     // agent principal receiving the grant
-  grantedBy: string;       // human principal id
+  grantedBy: string;       // human principal id, or an agent principal for delegation
   scope: GrantScope;
   target: string;          // resourceId for resource:*, hostname for network:egress
   expiresAt: string | null; // ISO; null = no expiry
   revokedAt: string | null;
   revokedBy: string | null;
   createdAt: string;
+  // When one agent delegates a narrower grant to another, the delegated grant
+  // points back at the grant it was carved from. Revoking a parent cascades to
+  // its descendants, so a delegated copy cannot outlive the authority it came
+  // from. Absent on human-issued (root) grants.
+  parentGrantId?: string | null;
 }
 
 export interface MockResource {
@@ -241,8 +247,14 @@ export interface RunnerRequest {
 export interface AgentRunner {
   run(request: RunnerRequest): Promise<RunnerResult>;
   cancel(agentId: string): Promise<boolean>;
-  /** Required: a high-risk step is refused outright if the runtime cannot be frozen. */
-  pause(agentId: string): Promise<boolean>;
-  resume(agentId: string): Promise<boolean>;
+  pause?(agentId: string): Promise<"paused" | "idle" | "failed">;
+  resume?(agentId: string): Promise<boolean>;
+  isRunning?(agentId: string): boolean;
+  /** Remove runtime processes/containers left behind by a prior server process. */
+  reconcile?(): Promise<void>;
+  /** Tear down all runtimes owned by this server during graceful shutdown. */
+  terminateAll?(): Promise<void> | void;
+  /** Independent engine check: is this agent's runtime confirmed gone? null = cannot confirm. */
+  confirmStopped?(agentId: string): Promise<boolean | null>;
   isAvailable(): Promise<boolean>;
 }

@@ -1,7 +1,7 @@
 import { chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { tmpdir } from "node:os";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { loadConfig } from "./config.js";
 import { ContainerCodexRunner } from "./container-codex-runner.js";
 import type { RunnerRequest } from "./types.js";
@@ -33,7 +33,9 @@ import { existsSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 const state = ${JSON.stringify(state)};
 const command = process.argv[2];
 
-if (command === "run") {
+if (command === "ps") {
+  process.stdout.write("");
+} else if (command === "run") {
   writeFileSync(state + ".keep", "true");
   process.stdout.write(JSON.stringify({
     type: "item.completed",
@@ -86,7 +88,13 @@ describe("Container runtime pause verification", () => {
       };
 
       const run = runner.run(request);
-      expect(await runner.pause(request.agentId)).toBe(actualPauseState);
+      // `run` awaits an orphan-container reconciliation pass before it
+      // registers the agent as active, so a pause issued immediately would
+      // race that registration rather than exercising the pause path itself.
+      await vi.waitFor(() => {
+        if (!runner.isRunning(request.agentId)) throw new Error("not yet running");
+      });
+      expect(await runner.pause(request.agentId)).toBe(actualPauseState ? "paused" : "failed");
       expect(await runner.resume(request.agentId)).toBe(true);
       expect(await readFile(state, "utf8")).toBe("false");
       await runner.cancel(request.agentId);

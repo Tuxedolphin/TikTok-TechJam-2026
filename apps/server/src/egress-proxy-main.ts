@@ -9,10 +9,21 @@
  * Started by EgressNetworkManager; not part of the API server process.
  */
 import { createEgressProxy, type EgressVerdict } from "./egress-proxy.js";
+import { egressProxySecret } from "./egress-authorizer.js";
 
 const port = Number(process.env["EGRESS_PROXY_PORT"] ?? 8888);
 const authorizeUrl = process.env["EGRESS_AUTHORIZE_URL"];
 const authorizeToken = process.env["EGRESS_AUTHORIZE_TOKEN"] ?? "";
+const agentSecret = process.env["EGRESS_AGENT_SECRET"];
+
+process.on("uncaughtException", (err) => {
+  console.error("[egress] uncaught error in proxy:", err?.message || err);
+});
+
+process.on("unhandledRejection", (reason) => {
+  console.error("[egress] unhandled rejection in proxy:", reason);
+});
+
 /** Just past the control plane's 5-minute approval window. */
 const AUTHORIZE_TIMEOUT_MS = 315_000;
 
@@ -20,8 +31,24 @@ if (!authorizeUrl) {
   console.error("EGRESS_AUTHORIZE_URL is required");
   process.exit(1);
 }
+if (!agentSecret) {
+  console.error("EGRESS_AGENT_SECRET is required");
+  process.exit(1);
+}
+
+// The control plane is wherever we send authorization requests.
+const controlPlaneUrl = new URL(authorizeUrl);
+const controlPlane = {
+  host: controlPlaneUrl.hostname,
+  port: Number(controlPlaneUrl.port || (controlPlaneUrl.protocol === "https:" ? 443 : 80)),
+};
 
 const server = createEgressProxy({
+  controlPlane,
+  // The agent secret is already private to this sidecar; reuse it to gate the
+  // drain control endpoint so the control plane can tear down a terminated
+  // principal's live tunnels.
+  controlToken: agentSecret,
   authorize: async ({
     agentPrincipalId,
     host,
@@ -51,6 +78,10 @@ const server = createEgressProxy({
     }
     return (await response.json()) as EgressVerdict;
   },
+  attest: (agentPrincipalId) => ({
+    "x-agent-attested-principal": agentPrincipalId,
+    "x-agent-attested-proof": egressProxySecret(agentPrincipalId, agentSecret),
+  }),
   onVerdict: ({ agentPrincipalId, host, verdict }) => {
     console.log(
       `[egress] ${verdict.allowed ? "ALLOW" : "DENY "} ${agentPrincipalId} -> ${host} (${verdict.ruleId})`,

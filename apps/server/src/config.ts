@@ -107,6 +107,9 @@ export function loadConfig(environment: Record<string, unknown> = process.env) {
 
   const env = envSchema.parse(environment);
   const authToken = env.APP_AUTH_TOKEN?.trim() ?? "";
+  // Both sides are wanted: this branch's agent-attestation secret and main's
+  // dedicated Runtime->adapter token. They protect different boundaries.
+  const internalAgentSecret = randomBytes(32).toString("hex");
   const hasUsableKey = (value: string | undefined) => {
     const key = value?.trim() ?? "";
     return key.length > 0 && !key.startsWith("replace-");
@@ -214,6 +217,8 @@ export function loadConfig(environment: Record<string, unknown> = process.env) {
     egressProbeImage: env.EGRESS_PROBE_IMAGE,
     serverDistPath: resolveServerDistPath(),
     authToken,
+    // Random per process so source access does not reveal agent credentials.
+    internalAgentSecret,
     modelProvider,
     modelApiKey,
     modelRuntimeApiKey,

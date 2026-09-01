@@ -30,6 +30,20 @@ interface ActiveContainer {
  * server's own process environment holds credentials that have no business
  * reaching a `docker`/`podman` invocation.
  */
+/**
+ * The proxy URL values, keyed by the names `buildContainerRunArgs` forwards.
+ * Empty when enforcement is off, so the agent container gets no proxy env.
+ */
+export function proxyChildEnv(egressProxyUrl: string | undefined): NodeJS.ProcessEnv {
+  if (!egressProxyUrl) return {};
+  return {
+    HTTP_PROXY: egressProxyUrl,
+    HTTPS_PROXY: egressProxyUrl,
+    http_proxy: egressProxyUrl,
+    https_proxy: egressProxyUrl,
+  };
+}
+
 export function containerEngineEnvironment(
   config: AppConfig,
   includeRuntimeConfig = false,
@@ -76,14 +90,20 @@ export function buildContainerRunArgs(
       ? [
           "--network",
           INTERNAL_NETWORK,
+          // Passed by name, not value. The proxy URL embeds this agent's
+          // per-process proxy secret; `--env NAME=value` would put that secret
+          // in the engine's argv, and /proc/<pid>/cmdline is world-readable, so
+          // any local process could recover it and impersonate the agent at the
+          // proxy. The value travels in the engine child's own environment
+          // instead (see proxyChildEnv).
           "--env",
-          "HTTP_PROXY=" + request.egressProxyUrl,
+          "HTTP_PROXY",
           "--env",
-          "HTTPS_PROXY=" + request.egressProxyUrl,
+          "HTTPS_PROXY",
           "--env",
-          "http_proxy=" + request.egressProxyUrl,
+          "http_proxy",
           "--env",
-          "https_proxy=" + request.egressProxyUrl,
+          "https_proxy",
           "--env",
           "NO_PROXY=localhost,127.0.0.1",
         ]
@@ -100,6 +120,8 @@ export function buildContainerRunArgs(
     String(config.containerPidsLimit),
     "--user",
     config.containerUser,
+    // Secret values stay in the engine child's environment; passing only the
+    // names prevents them from appearing in ps or /proc/<pid>/cmdline.
     "--env",
     "MODEL_API_KEY",
     "--env",
@@ -108,6 +130,8 @@ export function buildContainerRunArgs(
     "HOME=/tmp",
     "--env",
     "NO_COLOR=1",
+    "--env",
+    "NODE_OPTIONS=--use-env-proxy",
     "--mount",
     "type=bind,src=" + request.workspacePath + ",dst=/workspace",
     "--mount",
@@ -144,7 +168,12 @@ export class ContainerCodexRunner implements AgentRunner {
 
   async cancel(agentId: string): Promise<boolean> {
     const active = this.active.get(agentId);
-    if (!active) return false;
+    if (!active) {
+      const orphaned = await this.runtimeContainerIds(agentId);
+      if (orphaned.length === 0) return false;
+      await this.removeContainerIds(orphaned);
+      return true;
+    }
 
     active.cancelled = true;
     await this.removeContainer(active);
@@ -152,18 +181,78 @@ export class ContainerCodexRunner implements AgentRunner {
     return true;
   }
 
-  async pause(agentId: string): Promise<boolean> {
+  /** Remove labeled runtimes left behind by a previous server process. */
+  async reconcile(): Promise<void> {
+    const orphaned = await this.runtimeContainerIds();
+    if (orphaned.length > 0) await this.removeContainerIds(orphaned);
+  }
+
+  /** Tear down every active container before the server/proxy exits. */
+  async terminateAll(): Promise<void> {
+    const active = [...this.active.values()];
+    for (const runtime of active) runtime.cancelled = true;
+    const removals = await Promise.allSettled(active.map((runtime) => this.removeContainer(runtime)));
+    await Promise.allSettled(active.map((runtime) => runtime.settled));
+    const failure = removals.find((result) => result.status === "rejected");
+    if (failure?.status === "rejected") throw failure.reason;
+  }
+
+  private async runtimeContainerIds(agentId?: string): Promise<string[]> {
+    const filters = [
+      "--filter",
+      "label=io.codejam.launchpad=agent-runtime",
+      "--filter",
+      `label=io.codejam.instance-id=${this.config.runtimeInstanceId}`,
+      ...(agentId ? ["--filter", `label=io.codejam.agent-id=${agentId}`] : []),
+    ];
+    const { stdout } = await execFileAsync(
+      this.config.containerEngine,
+      ["ps", "-aq", ...filters],
+      { timeout: 8_000, env: this.childEnvironment() },
+    );
+    return stdout.toString().split(/\s+/).filter(Boolean);
+  }
+
+  private async removeContainerIds(ids: string[]): Promise<void> {
+    await execFileAsync(
+      this.config.containerEngine,
+      ["rm", "--force", ...ids],
+      { timeout: 8_000, env: this.childEnvironment() },
+    );
+  }
+
+  async pause(agentId: string): Promise<"paused" | "idle" | "failed"> {
     const active = this.active.get(agentId);
-    if (!active || active.cancelled) return false;
+    if (!active || active.cancelled) return "idle";
     try {
       await execFileAsync(
         this.config.containerEngine,
         ["pause", active.containerName],
         { timeout: 5_000, env: this.childEnvironment() },
       );
-      return await this.containerPaused(active.containerName);
+      return (await this.containerPaused(active.containerName)) ? "paused" : "failed";
     } catch {
-      return false;
+      return "failed";
+    }
+  }
+
+  isRunning(agentId: string): boolean {
+    return this.active.has(agentId);
+  }
+
+  /**
+   * Asks the engine directly whether this agent's container still exists,
+   * rather than trusting the in-memory active map. `docker rm --force` can time
+   * out or fail while the daemon-side container keeps running; the map is
+   * cleared regardless, so a receipt could claim a kill that did not happen.
+   * Returns false only on a confirmed sighting of the container; a query error
+   * is reported as "unconfirmed" (null) rather than a false all-clear.
+   */
+  async confirmStopped(agentId: string): Promise<boolean | null> {
+    try {
+      return (await this.runtimeContainerIds(agentId)).length === 0;
+    } catch {
+      return null;
     }
   }
 
@@ -199,10 +288,15 @@ export class ContainerCodexRunner implements AgentRunner {
         { timeout: 8_000, env: this.childEnvironment() },
       )
         .then(() => undefined)
-        .catch(() => {
+        .catch((error: unknown) => {
           active.child.kill("SIGTERM");
           const forceKill = setTimeout(() => active.child.kill("SIGKILL"), 3_000);
           forceKill.unref();
+          throw new Error(
+            `Failed to remove Runtime container ${active.containerName}: ${
+              error instanceof Error ? error.message : String(error)
+            }`,
+          );
         });
     }
     return active.termination;
@@ -212,13 +306,19 @@ export class ContainerCodexRunner implements AgentRunner {
     if (this.active.has(request.agentId)) {
       throw new Error("Agent already has an active Runtime container");
     }
+    // A prior timeout/output-limit cleanup may have failed after the engine
+    // child exited. Reconcile this agent again before reusing its deterministic
+    // container name; if removal still fails, reject instead of spawning into
+    // a stale runtime or surfacing a misleading name-conflict later.
+    const orphaned = await this.runtimeContainerIds(request.agentId);
+    if (orphaned.length > 0) await this.removeContainerIds(orphaned);
 
     const child = spawn(
       this.config.containerEngine,
       buildContainerRunArgs(request, this.config),
       {
         cwd: request.workspacePath,
-        env: this.childEnvironment(true),
+        env: { ...this.childEnvironment(true), ...proxyChildEnv(request.egressProxyUrl) },
         stdio: ["ignore", "pipe", "pipe"],
       },
     );
@@ -267,7 +367,7 @@ export class ContainerCodexRunner implements AgentRunner {
           totalBytes += Buffer.byteLength(line, "utf8") + 1;
           if (totalBytes > this.config.codexMaxOutputBytes) {
             active.outputExceeded = true;
-            void this.removeContainer(active);
+            void this.removeContainer(active).catch(() => undefined);
             break;
           }
           if (line.trim()) {
@@ -277,7 +377,7 @@ export class ContainerCodexRunner implements AgentRunner {
       } catch (err) {
         stdoutError = err instanceof Error ? err : new Error(String(err));
         active.cancelled = true;
-        void this.removeContainer(active);
+        void this.removeContainer(active).catch(() => undefined);
       }
     })();
 
@@ -289,7 +389,7 @@ export class ContainerCodexRunner implements AgentRunner {
     const timeout = setTimeout(() => {
       active.timedOut = true;
       active.budgetExceeded = isBudgetTimeout;
-      void this.removeContainer(active);
+      void this.removeContainer(active).catch(() => undefined);
     }, effectiveTimeoutMs);
     timeout.unref();
 

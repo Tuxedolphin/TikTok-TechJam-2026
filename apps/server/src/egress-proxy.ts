@@ -7,6 +7,14 @@ import {
 } from "node:http";
 import { connect, isIP, type Socket } from "node:net";
 import { lookup as dnsLookup } from "node:dns/promises";
+import { timingSafeEqual } from "node:crypto";
+
+/** Constant-time comparison, matching how the rest of the codebase checks secrets. */
+function secretsMatch(presented: string, expected: string): boolean {
+  const a = Buffer.from(presented);
+  const b = Buffer.from(expected);
+  return a.length === b.length && timingSafeEqual(a, b);
+}
 
 /**
  * Verdict returned by the authorizer for one outbound connection attempt.
@@ -36,12 +44,41 @@ export type EgressAuthorizer = (input: {
 
 export interface EgressProxyOptions {
   authorize: EgressAuthorizer;
+  /**
+   * Stamps the authenticated agent identity onto forwarded requests. Because
+   * the agent has no route off-box except this proxy, a header applied here
+   * cannot be omitted or forged by the agent -- the containment topology is
+   * what makes the attestation trustworthy.
+   */
+  attest?: (agentPrincipalId: string) => Record<string, string>;
+  /**
+   * The control plane, which must never be reachable through a CONNECT tunnel.
+   * A tunnel is opaque -- this proxy pipes bytes without parsing them -- so a
+   * request sent through one carries no attestation and would reach the
+   * control plane looking like it came from a human operator.
+   */
+  controlPlane?: { host: string; port: number };
   /** Called for every verdict so the caller can log; must never throw. */
   onVerdict?: (input: { agentPrincipalId: string; host: string; verdict: EgressVerdict }) => void;
   /** Idle/connect timeout for upstream connections. */
   connectTimeoutMs?: number;
+  /**
+   * How often an established CONNECT tunnel is re-authorized. Authorization is
+   * otherwise per-connection, so a long-lived tunnel opened while a grant was
+   * live keeps flowing after that grant is revoked -- revocation would only be
+   * felt on the next connection. Set to 0 to disable.
+   */
+  reauthorizeIntervalMs?: number;
   /** Test-only escape hatch: upstreams on loopback are otherwise refused. */
   allowPrivateAddresses?: boolean;
+  /**
+   * Bearer token gating the in-band drain control request. When set, a
+   * `POST /__egress_control/drain` carrying this token and an
+   * `x-egress-principal` header drains that principal's live connections. The
+   * control plane uses this during termination; agent containers never learn
+   * the token.
+   */
+  controlToken?: string;
 }
 
 /**
@@ -79,6 +116,56 @@ export function principalFromProxyAuth(
   return username.length > 0 ? { principalId: decodeURIComponent(username), secret } : null;
 }
 
+function parseIPv4(address: string): number[] | null {
+  const parts = address.split(".");
+  if (parts.length !== 4 || parts.some((part) => !/^\d{1,3}$/.test(part))) return null;
+  const octets = parts.map(Number);
+  return octets.every((octet) => octet <= 255) ? octets : null;
+}
+
+function parseIPv6(address: string): number[] | null {
+  const sections = address.toLowerCase().split("::");
+  if (sections.length > 2) return null;
+
+  const parseSection = (section: string): number[] | null => {
+    if (!section) return [];
+    const words: number[] = [];
+    const parts = section.split(":");
+    for (const [index, part] of parts.entries()) {
+      if (part.includes(".")) {
+        if (index !== parts.length - 1) return null;
+        const octets = parseIPv4(part);
+        if (!octets) return null;
+        words.push((octets[0]! << 8) | octets[1]!, (octets[2]! << 8) | octets[3]!);
+      } else {
+        if (!/^[0-9a-f]{1,4}$/.test(part)) return null;
+        words.push(Number.parseInt(part, 16));
+      }
+    }
+    return words;
+  };
+
+  const left = parseSection(sections[0] ?? "");
+  const right = sections.length === 2 ? parseSection(sections[1] ?? "") : [];
+  if (!left || !right) return null;
+  const missing = 8 - left.length - right.length;
+  if (sections.length === 2) {
+    return missing > 0 ? [...left, ...Array<number>(missing).fill(0), ...right] : null;
+  }
+  return missing === 0 ? left : null;
+}
+
+function isPrivateIPv4(parts: number[]): boolean {
+  const [a = 0, b = 0] = parts;
+  if (a === 127 || a === 0 || a === 10) return true;
+  if (a === 100 && b >= 64 && b <= 127) return true;
+  if (a === 169 && b === 254) return true;
+  if (a === 172 && b >= 16 && b <= 31) return true;
+  if (a === 192 && b === 168) return true;
+  if (a >= 224) return true;
+  return false;
+}
+
 /**
  * Addresses an agent must never reach even with a grant: loopback, link-local
  * (which covers cloud metadata at 169.254.169.254), and private ranges. A
@@ -86,27 +173,35 @@ export function principalFromProxyAuth(
  * the grant was issued, so the check is on the resolved address, not the name.
  */
 export function isPrivateAddress(address: string): boolean {
-  if (isIP(address) === 6) {
-    const normalized = address.toLowerCase();
-    return (
-      normalized === "::1" ||
-      normalized === "::" ||
-      normalized.startsWith("fe80:") ||
-      normalized.startsWith("fc") ||
-      normalized.startsWith("fd") ||
-      normalized.startsWith("::ffff:127.") ||
-      normalized.startsWith("::ffff:10.") ||
-      normalized.startsWith("::ffff:192.168.")
-    );
+  if (isIP(address) === 4) {
+    const parts = parseIPv4(address);
+    return parts ? isPrivateIPv4(parts) : false;
   }
-  const parts = address.split(".").map(Number);
-  if (parts.length !== 4 || parts.some((p) => !Number.isInteger(p))) return false;
-  const [a = 0, b = 0] = parts;
-  if (a === 127 || a === 0 || a === 10) return true;
-  if (a === 169 && b === 254) return true;
-  if (a === 172 && b >= 16 && b <= 31) return true;
-  if (a === 192 && b === 168) return true;
-  return false;
+  if (isIP(address) !== 6) return false;
+
+  const words = parseIPv6(address);
+  if (!words) return false;
+  const isMapped = words.slice(0, 5).every((word) => word === 0) && words[5] === 0xffff;
+  const isCompatible =
+    words.slice(0, 6).every((word) => word === 0) &&
+    (words[6] !== 0 || (words[7] !== 0 && words[7] !== 1));
+  if (isMapped || isCompatible) {
+    return isPrivateIPv4([
+      words[6]! >> 8,
+      words[6]! & 0xff,
+      words[7]! >> 8,
+      words[7]! & 0xff,
+    ]);
+  }
+
+  const firstWord = words[0] ?? 0;
+  return (
+    words.slice(0, 7).every((word) => word === 0) && words[7] === 1 ||
+    words.every((word) => word === 0) ||
+    (firstWord & 0xffc0) === 0xfe80 ||
+    (firstWord & 0xfe00) === 0xfc00 ||
+    (firstWord & 0xff00) === 0xff00
+  );
 }
 
 const privateAddressVerdict = (host: string): EgressVerdict => ({
@@ -132,9 +227,71 @@ const DENIED_BODY = (verdict: EgressVerdict, host: string): string =>
  * authorized before a byte leaves; there is no cached decision, so revoking a
  * grant takes effect on the agent's very next connection.
  */
-export function createEgressProxy(options: EgressProxyOptions): Server {
-  const server = createServer();
+/** A proxy that can also drain the connections it is piping for a principal. */
+export type EgressProxyServer = Server & {
+  /**
+   * Destroys every connection currently piping for this principal and returns
+   * how many were closed. Authorization is per-connection, so an already-
+   * established tunnel keeps flowing after its grant is revoked and its agent
+   * killed; termination must drain these, or an in-flight exfiltration can
+   * complete after the receipt claims containment.
+   */
+  closePrincipalConnections(agentPrincipalId: string): number;
+};
+
+interface Closable {
+  destroy(): void;
+}
+
+export function createEgressProxy(options: EgressProxyOptions): EgressProxyServer {
+  const server = createServer() as EgressProxyServer;
   const connectTimeoutMs = options.connectTimeoutMs ?? 30_000;
+  const reauthorizeIntervalMs = options.reauthorizeIntervalMs ?? 15_000;
+
+  // Live and pending connections, indexed by authenticated principal. A
+  // generation changes on drain so authorization/DNS work already in flight
+  // cannot connect after termination closes the currently tracked sockets.
+  const liveByPrincipal = new Map<string, Set<Closable>>();
+  const generationByPrincipal = new Map<string, number>();
+  const currentGeneration = (principalId: string): number =>
+    generationByPrincipal.get(principalId) ?? 0;
+  const generationIsCurrent = (principalId: string, generation: number): boolean =>
+    currentGeneration(principalId) === generation;
+  const track = (principalId: string, ...closables: Closable[]): void => {
+    let set = liveByPrincipal.get(principalId);
+    if (!set) {
+      set = new Set();
+      liveByPrincipal.set(principalId, set);
+    }
+    for (const closable of closables) {
+      set.add(closable);
+      const forget = () => {
+        set!.delete(closable);
+        if (set!.size === 0 && liveByPrincipal.get(principalId) === set) {
+          liveByPrincipal.delete(principalId);
+        }
+      };
+      // ClientRequest / ServerResponse / Socket all emit "close".
+      (closable as unknown as { once(event: string, cb: () => void): void }).once("close", forget);
+    }
+  };
+
+  server.closePrincipalConnections = (agentPrincipalId: string): number => {
+    generationByPrincipal.set(agentPrincipalId, currentGeneration(agentPrincipalId) + 1);
+    const set = liveByPrincipal.get(agentPrincipalId);
+    if (!set) return 0;
+    let closed = 0;
+    for (const closable of [...set]) {
+      try {
+        closable.destroy();
+        closed += 1;
+      } catch {
+        // Already gone; the "close" handler will have removed it.
+      }
+    }
+    liveByPrincipal.delete(agentPrincipalId);
+    return closed;
+  };
 
   /**
    * Resolves a host once and refuses private targets, then hands back the
@@ -191,6 +348,22 @@ export function createEgressProxy(options: EgressProxyOptions): Server {
   // Plain HTTP: the absolute-form request URI carries the target.
   server.on("request", (request: IncomingMessage, response: ServerResponse) => {
     void (async () => {
+      // In-band control channel: the control plane asks the proxy to drain a
+      // terminated principal's live connections. Origin-form path, bearer
+      // token, no forwarding. A wrong or missing token is a 404 so the endpoint
+      // is invisible to an agent probing for it.
+      if (request.url === "/__egress_control/drain" && request.method === "POST") {
+        const presented = (request.headers["x-egress-control-token"] as string | undefined) ?? "";
+        const principalId = (request.headers["x-egress-principal"] as string | undefined) ?? "";
+        if (!options.controlToken || !secretsMatch(presented, options.controlToken)) {
+          response.writeHead(404).end();
+          return;
+        }
+        const closed = server.closePrincipalConnections(principalId);
+        response.writeHead(200, { "content-type": "application/json" });
+        response.end(JSON.stringify({ closed }));
+        return;
+      }
       // Absolute-form (`GET http://host/path`) is what a proxy normally sees,
       // but origin-form (`GET /path` + Host header) is legal too; joining the
       // two keeps the path instead of silently rewriting every request to "/".
@@ -200,6 +373,8 @@ export function createEgressProxy(options: EgressProxyOptions): Server {
         : new URL(rawUrl, `http://${request.headers.host ?? ""}`);
       const port = target.port ? Number(target.port) : 80;
       const principal = principalFromProxyAuth(request.headers["proxy-authorization"]);
+      const generation = principal ? currentGeneration(principal.principalId) : 0;
+      if (principal) track(principal.principalId, request, response);
       const controller = new AbortController();
       response.once("close", () => {
         if (!response.writableEnded) controller.abort();
@@ -212,6 +387,21 @@ export function createEgressProxy(options: EgressProxyOptions): Server {
         controller.signal,
       );
       if (controller.signal.aborted) return;
+
+      if (
+        principal &&
+        (!generationIsCurrent(principal.principalId, generation) || request.destroyed || response.destroyed)
+      ) {
+        if (!response.destroyed) {
+          response.writeHead(403, { "content-type": "application/json" });
+          response.end(DENIED_BODY({
+            allowed: false,
+            ruleId: "AUTHZ-REVOKED-013",
+            reason: "Authority changed while this connection was being authorized.",
+          }, target.hostname));
+        }
+        return;
+      }
 
       if (!verdict.allowed) {
         const unauthenticated = verdict.ruleId === "NET-EGRESS-NOAUTH-022";
@@ -226,6 +416,13 @@ export function createEgressProxy(options: EgressProxyOptions): Server {
       }
 
       const resolved = await resolveTarget(target.hostname, verdict.allowPrivate === true);
+      if (
+        principal &&
+        (!generationIsCurrent(principal.principalId, generation) || request.destroyed || response.destroyed)
+      ) {
+        if (!response.destroyed) response.destroy();
+        return;
+      }
       if (!resolved) {
         response.writeHead(403, { "content-type": "application/json" });
         response.end(DENIED_BODY(privateAddressVerdict(target.hostname), target.hostname));
@@ -233,6 +430,11 @@ export function createEgressProxy(options: EgressProxyOptions): Server {
       }
 
       const headers = { ...request.headers };
+      // Never let the caller supply its own attestation; only this proxy may.
+      for (const forged of Object.keys(headers)) {
+        if (forged.toLowerCase().startsWith("x-agent-attested")) delete headers[forged];
+      }
+      Object.assign(headers, principal ? (options.attest?.(principal.principalId) ?? {}) : {});
       // Hop-by-hop headers are meaningful only on the agent->proxy leg.
       for (const hop of [
         "proxy-authorization",
@@ -266,6 +468,9 @@ export function createEgressProxy(options: EgressProxyOptions): Server {
         if (!response.headersSent) response.writeHead(502, { "content-type": "text/plain" });
         response.end("upstream error\n");
       });
+      // Registered so termination can drain an in-flight request for a
+      // principal whose authority was just revoked.
+      if (principal) track(principal.principalId, upstream, response);
       // A client that vanishes mid-body must not strand the upstream socket.
       request.on("error", () => upstream.destroy());
       request.pipe(upstream);
@@ -287,36 +492,119 @@ export function createEgressProxy(options: EgressProxyOptions): Server {
     clientSocket.end();
   };
 
+  server.on("clientError", (_err, socket) => {
+    socket.destroy();
+  });
+
   server.on("connect", (request: IncomingMessage, clientSocket: Socket, head: Buffer) => {
+    clientSocket.on("error", () => {});
     void (async () => {
       const { host, port } = parseAuthority(request.url ?? "", 443);
+
+      // Refuse to tunnel to the control plane: attestation cannot be applied
+      // to bytes this proxy never parses, and an unattested request there
+      // would be indistinguishable from a human operator's.
+      if (
+        options.controlPlane &&
+        host === options.controlPlane.host &&
+        port === options.controlPlane.port
+      ) {
+        denyConnect(
+          clientSocket,
+          {
+            allowed: false,
+            ruleId: "NET-EGRESS-TUNNEL-025",
+            reason:
+              "The control plane cannot be reached through a tunnel; use a proxied request so it can be attributed to this agent.",
+          },
+          host,
+        );
+        return;
+      }
+
       const principal = principalFromProxyAuth(request.headers["proxy-authorization"]);
+      const generation = principal ? currentGeneration(principal.principalId) : 0;
+      if (principal) track(principal.principalId, clientSocket);
       const controller = new AbortController();
       clientSocket.once("close", () => controller.abort());
       const verdict = await decide(principal, host, port, "CONNECT", controller.signal);
       if (controller.signal.aborted) return;
 
+      if (
+        principal &&
+        (!generationIsCurrent(principal.principalId, generation) || clientSocket.destroyed)
+      ) {
+        if (!clientSocket.destroyed) clientSocket.destroy();
+        return;
+      }
       if (!verdict.allowed) {
         denyConnect(clientSocket, verdict, host);
         return;
       }
 
       const resolved = await resolveTarget(host, verdict.allowPrivate === true);
+      if (
+        principal &&
+        (!generationIsCurrent(principal.principalId, generation) || clientSocket.destroyed)
+      ) {
+        if (!clientSocket.destroyed) clientSocket.destroy();
+        return;
+      }
       if (!resolved) {
         denyConnect(clientSocket, privateAddressVerdict(host), host);
         return;
       }
 
       const upstream = connect(port, resolved, () => {
+        if (
+          principal &&
+          (!generationIsCurrent(principal.principalId, generation) || clientSocket.destroyed)
+        ) {
+          upstream.destroy();
+          if (!clientSocket.destroyed) clientSocket.destroy();
+          return;
+        }
         upstream.setTimeout(connectTimeoutMs, () => upstream.destroy());
         clientSocket.setTimeout(connectTimeoutMs, () => clientSocket.destroy());
         clientSocket.write("HTTP/1.1 200 Connection Established\r\n\r\n");
         if (head.length > 0) upstream.write(head);
         upstream.pipe(clientSocket);
         clientSocket.pipe(upstream);
+        if (principal) track(principal.principalId, clientSocket, upstream);
+
+        // Keep asking. A tunnel authorized once would otherwise outlive the
+        // grant that opened it -- revocation felt only on the next connection,
+        // which for a long-lived stream may be never. Re-checking on a timer
+        // makes revocation bite mid-flight, and a re-check that throws tears
+        // the tunnel down (fail closed), matching the initial decision.
+        if (principal && reauthorizeIntervalMs > 0) {
+          const recheck = setInterval(() => {
+            void (async () => {
+              const current = await decide(principal, host, port, "CONNECT", new AbortController().signal);
+              if (!current.allowed) {
+                options.onVerdict?.({
+                  agentPrincipalId: principal.principalId,
+                  host,
+                  verdict: current,
+                });
+                upstream.destroy();
+                clientSocket.destroy();
+              }
+            })();
+          }, reauthorizeIntervalMs);
+          recheck.unref();
+          const stopRecheck = () => clearInterval(recheck);
+          upstream.once("close", stopRecheck);
+          clientSocket.once("close", stopRecheck);
+        }
       });
-      upstream.on("error", () => clientSocket.end());
+      // Tear the tunnel down fully when either end goes, on clean close as well
+      // as error. Handling only "error" left a half-open tunnel able to keep
+      // flushing upstream bytes after the agent's own socket had closed.
+      upstream.on("error", () => clientSocket.destroy());
+      upstream.on("close", () => clientSocket.destroy());
       clientSocket.on("error", () => upstream.destroy());
+      clientSocket.on("close", () => upstream.destroy());
     })();
   });
 

@@ -137,6 +137,14 @@ describe("production authentication configuration", () => {
 });
 
 describe("egress enforcement configuration", () => {
+  it("generates an unpredictable internal secret independently of browser auth", () => {
+    const first = loadConfig({ NODE_ENV: "test", APP_AUTH_TOKEN: "shared-browser-token" });
+    const second = loadConfig({ NODE_ENV: "test", APP_AUTH_TOKEN: "shared-browser-token" });
+    expect(first.internalAgentSecret).toHaveLength(64);
+    expect(first.internalAgentSecret).not.toBe(first.authToken);
+    expect(first.internalAgentSecret).not.toBe(second.internalAgentSecret);
+  });
+
   it("enforces by default under the container runtime", () => {
     const config = loadConfig({ NODE_ENV: "test", RUNTIME_PROVIDER: "container" });
     expect(config.egressEnforcement).toBe(true);

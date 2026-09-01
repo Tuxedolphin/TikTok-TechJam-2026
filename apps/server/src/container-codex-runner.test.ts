@@ -8,6 +8,7 @@ import {
   ContainerCodexRunner,
   containerEngineEnvironment,
   containerName,
+  proxyChildEnv,
 } from "./container-codex-runner.js";
 
 const temporaryDirectories: string[] = [];
@@ -19,6 +20,31 @@ afterEach(async () => {
 });
 
 describe("Container Codex runner", () => {
+  it("forwards the proxy URL by env name, never as a value in argv", () => {
+    const config = loadConfig({
+      NODE_ENV: "test",
+      OPENROUTER_API_KEY: "k",
+      OPENROUTER_MODEL: "openrouter/test-model",
+      CODEX_HOME: "/tmp/codex-home",
+      RUNTIME_PROVIDER: "container",
+      CONTAINER_RUNTIME_IMAGE: "runtime:test",
+    });
+    // The URL carries the agent's per-process proxy secret in its userinfo.
+    const proxyUrl = "http://agent-1:deadbeefsecret@launchpad-egress-proxy:8888";
+    const args = buildContainerRunArgs(
+      { agentId: "a", workspacePath: "/tmp/ws", prompt: "go", threadId: null, egressProxyUrl: proxyUrl },
+      config,
+    );
+
+    // /proc/<pid>/cmdline is world-readable; the secret must not be in argv.
+    expect(args.join("\0")).not.toContain("deadbeefsecret");
+    expect(args).toContain("HTTP_PROXY");
+    expect(args.some((arg) => arg.startsWith("HTTP_PROXY="))).toBe(false);
+    // It reaches the container through the engine child's environment instead.
+    expect(proxyChildEnv(proxyUrl).HTTP_PROXY).toBe(proxyUrl);
+    expect(proxyChildEnv(undefined)).toEqual({});
+  });
+
   it("builds an isolated Docker/Podman-compatible invocation", () => {
     const config = loadConfig({
       NODE_ENV: "test",
@@ -137,8 +163,10 @@ fi
     const records = (await readFile(recordPath, "utf8")).trim().split("\n");
     expect(records[0]).toBe("version|<unset>");
     expect(records[1]).toBe("image|<unset>");
-    expect(records[2]).toBe(`run|${config.geminiAdapterToken}`);
-    expect(records[2]).not.toContain(config.geminiApiKey);
+    expect(records[2]).toBe("ps|<unset>");
+    const runRecord = records.find((record) => record.startsWith("run|"));
+    expect(runRecord).toBe(`run|${config.geminiAdapterToken}`);
+    expect(runRecord).not.toContain(config.geminiApiKey);
   });
 
   it("handles empty credentials without synthesizing secret-bearing argv values", () => {
@@ -163,6 +191,34 @@ fi
     expect(args).toContain("MODEL_API_KEY");
     expect(args.some((arg) => arg.startsWith("MODEL_API_KEY="))).toBe(false);
   });
+
+  it.skipIf(process.platform === "win32")(
+    "propagates an orphaned container removal failure",
+    async () => {
+      const root = await mkdtemp(path.join(tmpdir(), "launchpad-engine-test-"));
+      temporaryDirectories.push(root);
+      const engine = path.join(root, "engine.sh");
+      await writeFile(
+        engine,
+        [
+          "#!/bin/sh",
+          "if [ \"$1\" = ps ]; then echo orphan-container; exit 0; fi",
+          "if [ \"$1\" = rm ]; then echo removal-failed >&2; exit 1; fi",
+          "exit 0",
+          "",
+        ].join("\n"),
+      );
+      await chmod(engine, 0o700);
+      const config = loadConfig({
+        NODE_ENV: "test",
+        RUNTIME_PROVIDER: "container",
+        CONTAINER_ENGINE: engine,
+        RUNTIME_INSTANCE_ID: "test-instance",
+      });
+      const runner = new ContainerCodexRunner(config);
+      await expect(runner.cancel("agent-id")).rejects.toThrow("removal-failed");
+    },
+  );
 
   it("resumes a thread inside the mounted Runtime workspace", () => {
     const config = loadConfig({
@@ -204,7 +260,15 @@ fi
     expect(config.openRouterBaseUrl).toBe(
       "http://host.docker.internal:3000/api/adapter",
     );
-    expect(args).toContain("HTTP_PROXY=http://launchpad-egress-proxy:8888");
+    // The proxy URL embeds the agent's per-process proxy secret, so it is
+    // forwarded by env NAME only -- never as an argv value, where
+    // /proc/<pid>/cmdline would expose it. The value reaches the container
+    // through the engine child's environment instead.
+    expect(args).toContain("HTTP_PROXY");
+    expect(args.some((arg) => arg.startsWith("HTTP_PROXY="))).toBe(false);
+    expect(proxyChildEnv("http://launchpad-egress-proxy:8888").HTTP_PROXY).toBe(
+      "http://launchpad-egress-proxy:8888",
+    );
     expect(args).toContain("NO_PROXY=localhost,127.0.0.1");
     expect(args).not.toContain("host.docker.internal:host-gateway");
   });

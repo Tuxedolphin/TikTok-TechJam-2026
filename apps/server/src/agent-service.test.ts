@@ -21,8 +21,8 @@ class FakeRunner implements AgentRunner {
   async cancel(): Promise<boolean> {
     return false;
   }
-  async pause(): Promise<boolean> {
-    return true;
+  async pause(): Promise<"paused" | "idle" | "failed"> {
+    return "paused";
   }
   async resume(): Promise<boolean> {
     return true;
@@ -104,29 +104,6 @@ describe("Agent lifecycle", () => {
     expect(messages.map((message) => message.role)).toEqual(["user", "assistant"]);
     expect(messages[1]?.content).toContain("write hello world");
     expect(service.getAgent(agent.id).codexThreadId).toBe("fake-thread");
-  });
-
-  it("injects recent messages from the active session into the next run", async () => {
-    const prompts: string[] = [];
-    const { service } = await makeService({
-      run: async (request) => {
-        prompts.push(request.prompt);
-        return { output: "done", threadId: "thread", usage: null };
-      },
-      cancel: async () => false,
-      isAvailable: async () => true,
-    });
-    const agent = await service.createAgent({ name: "Rememberer" });
-
-    const first = await service.sendMessage(agent.id, "My project is called Atlas");
-    await expect.poll(() => service.getRun(first.run.id).status).toBe("completed");
-    const second = await service.sendMessage(agent.id, "What is my project called?");
-    await expect.poll(() => service.getRun(second.run.id).status).toBe("completed");
-
-    expect(prompts[1]).toContain("## Session memory");
-    expect(prompts[1]).toContain("User: My project is called Atlas");
-    expect(prompts[1]).toContain("## Current request\nWhat is my project called?");
-    expect(service.getRunEvents(second.run.id).some((event) => event.type === "run.memory_injected")).toBe(true);
   });
 
   it("atomically accepts only one concurrent run per Agent", async () => {
@@ -257,7 +234,7 @@ describe("Agent lifecycle", () => {
         return { output: "done", threadId: "thread", usage: null };
       },
       cancel: async () => true,
-      pause: async () => true,
+      pause: async () => "paused" as const,
       resume: async () => true,
       isAvailable: async () => true,
     });
@@ -281,7 +258,7 @@ describe("Agent lifecycle", () => {
         return { output: "done", threadId: "thread", usage: null };
       },
       cancel: async () => true,
-      pause: async () => true,
+      pause: async () => "paused" as const,
       resume: async () => true,
       isAvailable: async () => true,
     });
@@ -332,7 +309,7 @@ describe("Agent lifecycle", () => {
         return { output: "response to " + request.prompt, threadId: "thread-" + (request.threadId ? "resumed" : "new"), usage: null };
       },
       cancel: async () => true,
-      pause: async () => true,
+      pause: async () => "paused" as const,
       resume: async () => true,
       isAvailable: async () => true,
     });
@@ -392,7 +369,7 @@ describe("Agent lifecycle", () => {
         return { output: "Tests passed.", threadId: "thread", usage: null };
       },
       cancel: async () => true,
-      pause: async () => true,
+      pause: async () => "paused" as const,
       resume: async () => true,
       isAvailable: async () => true,
     });
@@ -423,7 +400,7 @@ describe("Agent lifecycle", () => {
         return { output: "unexpected", threadId: "thread", usage: null };
       },
       cancel: async () => true,
-      pause: async () => true,
+      pause: async () => "paused" as const,
       resume: async () => true,
       isAvailable: async () => true,
     });
@@ -454,7 +431,7 @@ describe("Agent lifecycle", () => {
         return { output: "Egress succeeded.", threadId: "thread", usage: null };
       },
       cancel: async () => true,
-      pause: async () => true,
+      pause: async () => "paused",
       resume: async () => true,
       isAvailable: async () => true,
     });
@@ -524,8 +501,8 @@ describe("Agent lifecycle", () => {
         stepExecuted = true;
         return { output: "done", threadId: "thread", usage: null };
       },
-      pause: async () => new Promise<boolean>((resolve) => {
-        releasePause = () => resolve(true);
+      pause: async () => new Promise<"paused" | "idle" | "failed">((resolve) => {
+        releasePause = () => resolve("paused");
       }),
       resume: async () => true,
       cancel: async () => true,
@@ -560,7 +537,7 @@ describe("Agent lifecycle", () => {
         });
         return { output: "unexpected", threadId: "thread", usage: null };
       },
-      pause: async () => false,
+      pause: async () => "idle" as const,
       cancel: async () => true,
       isAvailable: async () => true,
     });
@@ -609,7 +586,7 @@ describe("Agent lifecycle", () => {
         });
         return { output: "unexpected", threadId: "thread", usage: null };
       },
-      pause: async () => true,
+      pause: async () => "paused" as const,
       resume: async () => false,
       cancel: async () => true,
       isAvailable: async () => true,
@@ -647,7 +624,7 @@ describe("Agent lifecycle", () => {
         cancelCalled = true;
         return true;
       },
-      pause: async () => true,
+      pause: async () => "paused",
       resume: async () => true,
       isAvailable: async () => true,
     });
@@ -687,15 +664,97 @@ describe("Agent lifecycle", () => {
     expect(service.getRun(run.id).error).toContain("Action blocked by operator denial");
   });
 
-  it.each(["false", "rejection", "missing"] as const)(
+  it("persists approval denial when a waiting run is cancelled", async () => {
+    const { service } = await makeService({
+      run: async (request) => {
+        await request.onStep?.({
+          type: "command",
+          phase: "before",
+          title: "Run curl",
+          detail: "curl https://api.partner.org/data",
+        });
+        return { output: "must not complete", threadId: "thread", usage: null };
+      },
+      cancel: async () => true,
+      pause: async () => "paused",
+      resume: async () => true,
+      isAvailable: async () => true,
+    });
+    const agent = await service.createAgent({ name: "Cancelled approval" });
+    const { run } = await service.sendMessage(agent.id, "post data");
+    await expect.poll(() => service.getAgent(agent.id).status).toBe("waiting_approval");
+
+    await service.stopAgent(agent.id);
+
+    expect(service.getRun(run.id).status).toBe("cancelled");
+    expect(service.listApprovals(agent.id)).toEqual([
+      expect.objectContaining({
+        status: "denied",
+        resolvedByDisplayName: "System (Run cancelled)",
+      }),
+    ]);
+  });
+
+  it("installs the termination barrier even when the Agent is idle", async () => {
+    const { service } = await makeService();
+    const agent = await service.createAgent({ name: "Idle" });
+
+    await expect(service.freezeAgent(agent.id)).resolves.toBe("idle");
+    await expect(service.sendMessage(agent.id, "start after termination")).rejects.toMatchObject({
+      statusCode: 409,
+    });
+  });
+
+  it("does not let start clear an in-progress termination barrier", async () => {
+    const { service } = await makeService();
+    const agent = await service.createAgent({ name: "Terminating" });
+
+    service.beginTermination(agent.id);
+    await expect(service.startAgent(agent.id)).rejects.toMatchObject({ statusCode: 409 });
+    await expect(service.sendMessage(agent.id, "race termination")).rejects.toMatchObject({
+      statusCode: 409,
+    });
+    service.endTermination(agent.id);
+    await expect(service.startAgent(agent.id)).resolves.toMatchObject({ status: "ready" });
+  });
+
+  it("reconciles orphaned runtimes before accepting work", async () => {
+    let reconciled = false;
+    const { service } = await makeService({
+      run: async () => ({ output: "done", threadId: null, usage: null }),
+      cancel: async () => false,
+      reconcile: async () => {
+        reconciled = true;
+      },
+      isAvailable: async () => true,
+    });
+
+    expect(reconciled).toBe(true);
+    const agent = await service.createAgent({ name: "Reconciled" });
+    await expect(service.runtimeConfirmedStopped(agent.id)).resolves.toBeNull();
+  });
+
+  it("does not trust an empty in-memory map when the runtime still exists", async () => {
+    const { service } = await makeService({
+      run: async () => ({ output: "done", threadId: null, usage: null }),
+      cancel: async () => false,
+      confirmStopped: async () => false,
+      isAvailable: async () => true,
+    });
+    const agent = await service.createAgent({ name: "Orphaned" });
+
+    await expect(service.runtimeConfirmedStopped(agent.id)).resolves.toBe(false);
+  });
+
+  it.each(["idle", "rejection", "missing"] as const)(
     "fails closed without presenting approval when pause %s",
     async (mode) => {
       let cancelCalls = 0;
       let resumeCalls = 0;
       let stepExecuted = false;
       const pauseControl =
-        mode === "false"
-          ? { pause: async () => false }
+        mode === "idle"
+          ? { pause: async () => "idle" as const }
           : mode === "rejection"
             ? {
                 pause: async () => {
@@ -763,7 +822,7 @@ describe("Agent lifecycle", () => {
         cancelCalls += 1;
         return true;
       },
-      pause: async () => true,
+      pause: async () => "paused" as const,
       resume: async () => true,
       isAvailable: async () => true,
     });
@@ -813,7 +872,7 @@ describe("Agent lifecycle", () => {
           return true;
         },
         isAvailable: async () => true,
-        pause: async () => true,
+        pause: async () => "paused" as const,
       });
       const agent = await service.createAgent({ name: "ResumeFailureAgent" });
       const { run } = await service.sendMessage(agent.id, "post data to partner API");
@@ -848,7 +907,7 @@ describe("Agent lifecycle", () => {
         return { output: "done", threadId: "thread", usage: null };
       },
       cancel: async () => true,
-      pause: async () => true,
+      pause: async () => "paused" as const,
       resume: async () => true,
       isAvailable: async () => true,
     });
@@ -900,7 +959,7 @@ describe("Agent lifecycle", () => {
         return { output: "done", threadId: "thread", usage: null };
       },
       cancel: async () => true,
-      pause: async () => true,
+      pause: async () => "paused" as const,
       resume: async () => true,
       isAvailable: async () => true,
     });
@@ -942,7 +1001,7 @@ describe("Agent lifecycle", () => {
         return { output: "done", threadId: "thread", usage: null };
       },
       cancel: async () => true,
-      pause: async () => true,
+      pause: async () => "paused" as const,
       resume: async () => true,
       isAvailable: async () => true,
     });
@@ -1047,7 +1106,7 @@ describe("Agent lifecycle", () => {
         return { output: "done", threadId: "thread", usage: null };
       },
       cancel: async () => true,
-      pause: async () => false,
+      pause: async () => "idle" as const,
       isAvailable: async () => true,
     });
     const agent = await service.createAgent({ name: "PauseFailure" });
@@ -1071,7 +1130,7 @@ describe("Agent lifecycle", () => {
         return { output: "done", threadId: "thread", usage: null };
       },
       cancel: async () => true,
-      pause: async () => true,
+      pause: async () => "paused" as const,
       resume: async () => false,
       isAvailable: async () => true,
     });

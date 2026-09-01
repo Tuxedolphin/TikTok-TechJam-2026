@@ -6,11 +6,12 @@ Every capability answers one question: what can a hijacked agent actually do?
 
 | A hijacked agent tries to… | What stops it | Where |
 |---|---|---|
-| Act beyond its mandate | No action without a scoped, expiring grant | `identity.ts`, `run-policies.ts` |
+| Act beyond its mandate | Authority can only be delegated within the same capability family, target, and lifetime | `authority.ts`, `identity.ts` |
 | Read another user's data | Ownership denial in the backend, before any grant is consulted | `evaluateResourceAccess` |
 | Exfiltrate over the network | No route off-box; the proxy authorizes every connection | `egress-network.ts`, `egress-proxy.ts` |
 | Keep probing for a way out | Quarantine after repeated denials | `egress-authorizer.ts` |
 | Hide what it did | Every decision is a trace event | `recordPolicyDecision`, `recordEgressBlocked` |
+| Continue after termination | Freeze, authority barrier, revoke, kill, and state verification | `terminator.ts`, `termination.ts` |
 
 ## What "enforced" means here
 
@@ -29,17 +30,34 @@ Under `EGRESS_ENFORCEMENT=on`, an agent container is attached to a Docker networ
 └──────────────────────────────────────────────────────────────────┘
 ```
 
-The proxy asks the control plane about **every** request and CONNECT before a byte leaves. It reads grants fresh each time — there is no cached decision and no token TTL to wait out — so revocation is felt on the agent's next connection. If the authorizer cannot be reached, the proxy denies. Agent identity travels as proxy-auth credentials, so one proxy serves every agent without trusting anything the container says about itself.
+The proxy asks the control plane about **every** request and CONNECT before a byte leaves. It reads grants fresh each time — there is no cached decision and no token TTL to wait out — so revocation is felt on the agent's next connection. If the authorizer cannot be reached, the proxy denies. Agent identity travels with a per-process secret generated independently of `APP_AUTH_TOKEN`; the secret is available to the proxy sidecar but not to agent containers. It reaches the sidecar by environment name rather than as a `docker run` argument, because `/proc/<pid>/cmdline` is world-readable — and that one secret derives every agent's proxy password, so a local reader could otherwise impersonate any agent and spend its grants. The proxy strips caller-supplied attestation headers and stamps the authenticated principal on forwarded control-plane requests. Opaque CONNECT tunnels to the control plane are refused because they cannot carry that attestation.
 
 This topology was chosen after testing, not assumed. A host-side proxy does **not** work: an `--internal` network severs host reachability along with internet reachability, so a container on it cannot reach a proxy listening on the host at all. Measured on Docker/OrbStack, a container attached only to `launchpad-egress-internal` can resolve and reach a sidecar by container name, and can reach neither the host gateway nor any public address. Dual-attaching the sidecar to a second, non-internal network is what gives it a path out while the agent keeps none.
 
 ## Reproducing the evidence
 
 ```bash
+npm run proofs             # all five, needs a container engine
+npm run proofs:no-engine   # identity and attenuation only
+```
+
+Or one at a time:
+
+```bash
 npm run build --workspace apps/server
 node scripts/demo-passport.mjs   # identity: ownership denial, grants, revocation
 node scripts/demo-egress.mjs     # containment: real containers, real blocked exfiltration
+node scripts/demo-escalation.mjs # confused-deputy refusal, and attenuated delegation allowed
+node scripts/demo-tunnel-bypass.mjs # opaque control-plane tunnel refusal
+node scripts/demo-kill.mjs       # freeze/revoke/kill/verify receipt
 ```
+
+Each script **asserts** its invariants and exits non-zero when one breaks, so a
+regression fails rather than scrolling past in the output. They are not
+illustrations of a claim; they are the check on it. Every push runs all five —
+the container ones against real Docker containers on the CI runner — so the
+badge above tracks whether containment actually holds, not just whether the
+code compiles.
 
 `demo-egress.mjs` needs a running container engine. It walks the full kill chain and prints the trace receipts:
 
@@ -48,6 +66,16 @@ node scripts/demo-egress.mjs     # containment: real containers, real blocked ex
 3. Operator revokes it mid-flight → **403**, `AUTHZ-REVOKED-013` on the timeline
 4. Agent keeps probing → **quarantined**, status flips to `stopped`
 5. Agent tries to skip the proxy entirely → **no route**, the network itself refuses
+
+Termination first prevents queued execution from starting or pauses a live runtime. It then atomically blocks new authority and revokes existing grants, tears down the runtime, and verifies the persisted agent state, live grant set, runtime state, and—when enabled—the egress boundary. Restarting the agent is the explicit operator action that clears the authority barrier.
+
+Receipts use a persisted Ed25519 signing key. Fetch `GET /api/receipt-key` before termination, then verify a receipt with:
+
+```bash
+node scripts/verify-receipt.mjs receipt.json --public-key .data/receipt-signing-public.pem
+```
+
+The public key verifies origin and integrity without granting signing capability. The receipt attests to observations made by the control plane; offline verification cannot independently observe the terminated runtime.
 
 ## Rule IDs
 
@@ -64,10 +92,14 @@ Decisions are named so a trace reads as an explanation rather than a boolean.
 | `NET-EGRESS-NOAUTH-022` | The caller presented no principal. |
 | `NET-EGRESS-IMPERSONATION-023` | A caller named a principal but could not prove it. The proxy password is HMAC-derived from a server secret the container never sees, so claiming another agent's identity fails here rather than succeeding silently. |
 | `NET-EGRESS-PRIVATE-024` | A grant existed, but the host resolved into private or link-local space. Grants name hosts; without this, a granted name pointed at `169.254.169.254` would reach cloud metadata. |
+| `NET-EGRESS-TUNNEL-025` | An opaque CONNECT tunnel attempted to reach the control plane. |
 | `HITL-EGRESS-025` | The approval request itself: one ungranted outbound request, held before connect while the operator decides. |
 | `HITL-EGRESS-APPROVED-025` | The operator released that single held request. Request-scoped — the next one asks again. |
 | `HITL-EGRESS-DENIED-026` | The operator refused it. The destination never received a connection. |
 | `HITL-EGRESS-FLOOD-027` | Too many requests held at once. An agent cannot exhaust the operator's attention into becoming a rubber stamp. |
+| `AUTHORITY-HUMAN-030` | A known human principal originated authority. |
+| `AUTHORITY-SELF-ESCALATION-031` | An agent attempted to grant itself authority it did not hold. |
+| `AUTHORITY-NARROWING-032` | Agent delegation was allowed or denied by capability, target, and lifetime attenuation. |
 
 Post-execution telemetry, reported by Codex after a command ran and never
 presented as prevention: `SEC-DESTRUCTIVE-001`, `SEC-CREDENTIALS-002`,
@@ -83,11 +115,13 @@ presented as prevention: `SEC-DESTRUCTIVE-001`, `SEC-CREDENTIALS-002`,
 | `EGRESS_PROXY_IMAGE` | `node:22-alpine` | Image for the sidecar; it runs the compiled proxy from the server's `dist`. |
 | `EGRESS_QUARANTINE_THRESHOLD` | `3` | Blocked attempts before the agent is stopped. |
 
-Enforcement applies to the container runtime. `RUNTIME_PROVIDER=local-process` runs Codex as a host process and is not isolated — use it for development only.
+Enforcement applies to the container runtime. `RUNTIME_PROVIDER=local-process` runs Codex as a host process and is not isolated — use it for development only. It does run each turn in its own process group, so a freeze or kill reaches tool descendants rather than only the direct child, and termination asks the OS whether that group still has members instead of inferring it from an empty map. A process that double-forks into a new group still escapes, which is why this runtime is development-only rather than a containment boundary.
 
 ## Honest limitations
 
 - **The principal set is a mock, even though the session is not.** Operator identity is an opaque server-issued token from `POST /api/mock-principal-session`, held server-side with an 8h TTL and presented as `x-mock-principal-session`; a client cannot name a principal it was not issued. On the egress path the agent principal is HMAC-verified rather than trusted (`NET-EGRESS-IMPERSONATION-023`). What remains a mock is the *population*: `user-a` and `user-b` are fixtures with no authentication behind them, so anyone who can reach the control plane can open a session as either. Real deployment needs an identity provider; the enforcement path above it would not change.
+- **Receipts attest; they do not recreate the observation.** Ed25519 lets a third party verify who signed the recorded steps and that they were not edited. The verifier still relies on the control plane to have observed runtime and grant state honestly.
+- **An established tunnel is re-authorized on a timer, not per byte.** A CONNECT tunnel is re-checked every 15 seconds and torn down when its grant no longer holds, so revocation bites mid-stream rather than only on the next connection. Bytes already in flight within that window still pass.
 - **HTTPS is authorized by hostname, not URL.** CONNECT only exposes the host, so per-path rules are impossible without terminating TLS. Anthropic's own sandbox-runtime documents the same limit.
 - **Non-HTTP TCP is refused outright.** `git+ssh` and raw sockets do not traverse an HTTP proxy. Under default-deny that is the correct outcome, not a bug — but it does constrain what agents can do.
 - **The topology is verified on Docker/OrbStack only.** Rootless Podman is documented as unable to route an internal network to the host; re-run the measurements before trusting another engine.

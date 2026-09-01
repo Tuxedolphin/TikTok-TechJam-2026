@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { spawn, type ChildProcess } from "node:child_process";
+import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { createInterface } from "node:readline";
 import { promisify } from "node:util";
 import type { AppConfig } from "./config.js";
@@ -60,9 +60,13 @@ export async function parseCodexEventLine(
     parsed.threadId = event.thread_id;
   }
 
-  if (event.type === "item.completed" && event.item && typeof event.item === "object") {
+  if (event.item && typeof event.item === "object") {
     const item = event.item as Record<string, unknown>;
-    if (item.type === "agent_message" && typeof item.text === "string") {
+    if (
+      event.type === "item.completed" &&
+      item.type === "agent_message" &&
+      typeof item.text === "string"
+    ) {
       parsed.messages.push(item.text);
       await onStep?.({
         type: "message",
@@ -71,7 +75,15 @@ export async function parseCodexEventLine(
         phase: "after",
         rawPayload: item,
       });
-    } else if (item.type === "command_execution") {
+    } else if (event.type === "item.started" && item.type === "command_execution") {
+      const cmd = typeof item.command === "string" ? item.command : "command";
+      await onStep?.({
+        type: "command",
+        title: "Starting shell command",
+        detail: cmd,
+        rawPayload: item,
+      });
+    } else if (event.type === "item.completed" && item.type === "command_execution") {
       const cmd = typeof item.command === "string" ? item.command : "command";
       const exitCode = typeof item.exit_code === "number" ? ` (exit ${item.exit_code})` : "";
       await onStep?.({
@@ -81,7 +93,7 @@ export async function parseCodexEventLine(
         phase: "after",
         rawPayload: item,
       });
-    } else if (item.type === "file_change") {
+    } else if (event.type === "item.completed" && item.type === "file_change") {
       const filePath = typeof item.path === "string" ? item.path : "file";
       await onStep?.({
         type: "file_change",
@@ -90,7 +102,10 @@ export async function parseCodexEventLine(
         phase: "after",
         rawPayload: item,
       });
-    } else if (item.type === "mcp_tool_call" || item.type === "tool_call") {
+    } else if (
+      event.type === "item.started" &&
+      (item.type === "mcp_tool_call" || item.type === "tool_call")
+    ) {
       const name =
         typeof item.tool === "string"
           ? item.tool
@@ -103,7 +118,7 @@ export async function parseCodexEventLine(
           : JSON.stringify(item.input ?? item.arguments ?? "");
       await onStep?.({
         type: "tool_call",
-        title: `Invoked tool ${name}`,
+        title: `Starting tool ${name}`,
         detail: inputStr.slice(0, 160),
         phase: "after",
         rawPayload: item,
@@ -137,7 +152,40 @@ export async function parseCodexEventLine(
   }
 }
 
+/**
+ * Signals the child's whole process group (negative pid) so descendants get it
+ * too, falling back to the direct child. Returns whether a signal was delivered.
+ */
+export function signalProcessTree(child: ChildProcess, signal: NodeJS.Signals): boolean {
+  if (typeof child.pid === "number") {
+    if (process.platform === "win32") {
+      // Windows has no SIGSTOP/SIGCONT equivalent. Kill requests still need to
+      // reach the complete process tree rather than only the direct Codex child.
+      if (signal === "SIGSTOP" || signal === "SIGCONT") return false;
+      const result = spawnSync("taskkill", ["/PID", String(child.pid), "/T", "/F"], {
+        windowsHide: true,
+        stdio: "ignore",
+      });
+      return result.status === 0;
+    }
+    try {
+      process.kill(-child.pid, signal);
+      return true;
+    } catch {
+      // No process group (or already gone); fall through to the direct child.
+    }
+  }
+  try {
+    return child.kill(signal);
+  } catch {
+    return false;
+  }
+}
+
 export class CodexRunner implements AgentRunner {
+  /** Process-group leader pid of the last run per agent, kept after exit. */
+  private readonly lastGroupPid = new Map<string, number>();
+
   private readonly active = new Map<
     string,
     {
@@ -175,23 +223,68 @@ export class CodexRunner implements AgentRunner {
     return true;
   }
 
-  async pause(agentId: string): Promise<boolean> {
+  async pause(agentId: string): Promise<"paused" | "idle" | "failed"> {
     const active = this.active.get(agentId);
-    if (!active || active.cancelled) return false;
+    if (!active || active.cancelled) return "idle";
     try {
-      active.child.kill("SIGSTOP");
-      return true;
+      return signalProcessTree(active.child, "SIGSTOP") ? "paused" : "failed";
     } catch {
-      return false;
+      return "failed";
     }
+  }
+
+  isRunning(agentId: string): boolean {
+    return this.active.has(agentId);
+  }
+
+  /**
+   * Asks the OS whether this agent's process group still has members, rather
+   * than inferring it from an empty in-memory map. Signal 0 performs the
+   * permission and existence check without delivering anything: ESRCH means
+   * the group is gone, success means something is still alive in it -- a
+   * shell or tool descendant that outlived its parent.
+   *
+   * Returns null when there is nothing to check (no run recorded) or when the
+   * platform cannot answer, which the caller must not read as "gone". A
+   * process that double-forks into a new group still escapes this; that is why
+   * this runtime is development-only.
+   */
+  async confirmStopped(agentId: string): Promise<boolean | null> {
+    const active = this.active.get(agentId);
+    const pid = active?.child.pid ?? this.lastGroupPid.get(agentId);
+    if (typeof pid !== "number") return null;
+    try {
+      process.kill(-pid, 0);
+      return false; // the group still has at least one live member
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code === "ESRCH") return true;
+      if (code === "EPERM") return false; // alive, owned by someone else
+      return null;
+    }
+  }
+
+  /**
+   * Kills every live process group this runner started.
+   *
+   * Running each child in its own process group is what lets a stop or kill
+   * reach its tool descendants -- but it also detaches them from this server's
+   * group, so they would survive a shutdown that used to take them down with
+   * it. Called on shutdown so isolation does not trade one leak for another.
+   */
+  terminateAll(): void {
+    for (const [agentId, active] of this.active.entries()) {
+      if (typeof active.child.pid === "number") this.lastGroupPid.set(agentId, active.child.pid);
+      signalProcessTree(active.child, "SIGKILL");
+    }
+    this.active.clear();
   }
 
   async resume(agentId: string): Promise<boolean> {
     const active = this.active.get(agentId);
     if (!active || active.cancelled) return false;
     try {
-      active.child.kill("SIGCONT");
-      return true;
+      return signalProcessTree(active.child, "SIGCONT");
     } catch {
       return false;
     }
@@ -207,6 +300,11 @@ export class CodexRunner implements AgentRunner {
       cwd: request.workspacePath,
       env: this.childEnvironment(),
       stdio: ["ignore", "pipe", "pipe"],
+      // Its own process group, so a stop/kill reaches shell and tool
+      // descendants, not just the direct Codex process. Without this, a spawned
+      // command could keep running after the parent was signalled and the
+      // active map cleared, and a receipt could claim a kill that missed it.
+      detached: true,
     });
     const effectiveTimeoutMs =
       this.config.runBudgetMaxDurationMs !== null &&
@@ -323,7 +421,12 @@ export class CodexRunner implements AgentRunner {
       };
     } finally {
       clearTimeout(timeout);
+      // The direct Codex process may exit before a tool descendant. Always send
+      // one final group kill before clearing the timer/map so child exit cannot
+      // cancel the only signal that would reach the remainder of the tree.
+      signalProcessTree(active.child, "SIGKILL");
       if (active.forceKillTimer) clearTimeout(active.forceKillTimer);
+      if (typeof child.pid === "number") this.lastGroupPid.set(request.agentId, child.pid);
       this.active.delete(request.agentId);
     }
   }
@@ -332,10 +435,9 @@ export class CodexRunner implements AgentRunner {
     child: ChildProcess;
     forceKillTimer: NodeJS.Timeout | null;
   }): void {
-    if (active.child.exitCode !== null || active.child.signalCode !== null) return;
-    active.child.kill("SIGTERM");
+    signalProcessTree(active.child, "SIGTERM");
     if (!active.forceKillTimer) {
-      active.forceKillTimer = setTimeout(() => active.child.kill("SIGKILL"), 3_000);
+      active.forceKillTimer = setTimeout(() => signalProcessTree(active.child, "SIGKILL"), 3_000);
       active.forceKillTimer.unref();
     }
   }

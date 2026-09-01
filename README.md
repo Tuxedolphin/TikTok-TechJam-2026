@@ -1,6 +1,8 @@
 # Agent Passport
 
-**Your coding agent tried an ungranted outbound connection. Watch container-mode enforcement reject it.**
+[![CI](https://github.com/Tuxedolphin/TikTok-TechJam-2026/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/Tuxedolphin/TikTok-TechJam-2026/actions/workflows/ci.yml)
+
+**Your coding agent just tried to send your credentials to an unknown server. Watch it fail.**
 
 AI coding agents read untrusted content and then run commands. Prompt injection
 is unsolved, so the honest assumption is that an Agent can become hostile.
@@ -29,19 +31,12 @@ not terminate an already established connection after revocation.
 
 The Agent Launchpad starter kit already provided agent CRUD, the Playground, the Codex container runtime, human-in-the-loop approvals, a canary tripwire, budget breakers, and the trace timeline. **This project adds the parts that were missing:**
 
-- **Mock Agent identity.** Human and Agent principals are distinct records, but
-  request headers are trusted and are not cryptographic identity proof.
-- **Scoped, expiring, revocable grants.** Resource checks and each new outbound
-  proxy authorization read the current grant store. Revocation does not break
-  an already established stream.
-- **Container-mode network containment.** The internal network and authorizing
-  proxy prevent ungranted new connections. This does not apply to
-  `local-process`, and standing platform hosts bypass grant checks.
-- **Containment escalation.** Repeated blocked attempts quarantine the Agent;
-  strike counts are in memory and reset on restart or operator start.
-- **Correlated history.** Grant-backed policy decisions and denials are written
-  to the Run timeline. The JSON history is mutable and deletable, and some
-  platform and authentication decisions are not recorded.
+- **Agent identity.** A human principal and an agent principal are different things. Every agent is owned by a user and acts as its own principal.
+- **Scoped, expiring, revocable grants.** An agent may read *this* resource, or reach *this* host, for *this* long. Decisions are re-checked on every single access — nothing is cached, so revocation is felt on the very next call rather than at token expiry.
+- **Enforced network containment.** Not pattern-matching on command text after the fact: the agent container has no route off-box, and a proxy authorizes every connection. A blocked host is unreachable, not merely disapproved.
+- **Containment escalation.** Repeated blocked attempts — the signature of a hijacked agent hunting for an exfil route — quarantine the agent automatically.
+- **A receipt for everything.** Every allow and every deny lands on the run timeline with a rule ID explaining itself.
+- **Verifiable termination.** Termination freezes or blocks execution, atomically closes the authority channel, revokes grants, tears down the runtime, verifies state, and signs the evidence with Ed25519.
 
 Full detail, including what is *not* solved: **[docs/AGENT-PASSPORT.md](docs/AGENT-PASSPORT.md)**.
 

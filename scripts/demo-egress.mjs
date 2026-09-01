@@ -26,6 +26,7 @@ import {
   PROXY_CONTAINER,
 } from "../apps/server/dist/egress-network.js";
 import { createApp } from "../apps/server/dist/app.js";
+import { check, finish } from "./demo-assert.mjs";
 
 const execFileAsync = promisify(execFile);
 const PORT = 3199;
@@ -50,7 +51,7 @@ const workspaces = new WorkspaceManager(path.join(root, "ws"));
 const runner = {
   run: async () => ({ output: "", threadId: null, usage: null }),
   cancel: async () => false,
-  pause: async () => true,
+  pause: async () => "paused",
   resume: async () => true,
   isAvailable: async () => true,
 };
@@ -64,7 +65,7 @@ const identity = new IdentityService(
 );
 const authorizer = new EgressAuthorizer(store, {
   standingAllowHosts: ["host.docker.internal"],
-  serverKey: config.authToken,
+  serverKey: config.internalAgentSecret,
   quarantineThreshold: 3,
   recordDecision: (runId, agentId, decision) =>
     service.recordPolicyDecision(runId, agentId, decision),
@@ -107,27 +108,36 @@ async function agentCurl(url) {
 try {
   log("Bringing up the isolated network and authorizing proxy...");
   await network.ensure();
-  await new Promise((resolve) => setTimeout(resolve, 2500));
 
   log(`\n1. Agent tries to reach ${TARGET} with NO grant`);
-  log(`   -> HTTP ${await agentCurl(`http://${TARGET}/`)}   (403 = proxy refused to connect)`);
+  const noGrant = await agentCurl(`http://${TARGET}/`);
+  log(`   -> HTTP ${noGrant}   (expect 403: the proxy refuses)`);
 
   log("\n2. Operator issues a network:egress grant");
   const grant = await identity.createGrant({
     principalId: agent.principalId, grantedBy: "user-a",
     scope: "network:egress", target: TARGET,
   });
-  log(`   -> HTTP ${await agentCurl(`http://${TARGET}/`)}   (200 = allowed through)`);
+  // The claim under test is that the grant admits the connection. A 403 would
+  // disprove it; a 502 only means the proxy allowed the request and the far
+  // side hiccuped, so retry that rather than reporting a containment failure.
+  let withGrant = await agentCurl(`http://${TARGET}/`);
+  for (let attempt = 0; attempt < 3 && withGrant !== "200" && withGrant !== "403"; attempt++) {
+    log(`   -> HTTP ${withGrant}   (allowed by policy, upstream did not answer; retrying)`);
+    withGrant = await agentCurl(`http://${TARGET}/`);
+  }
+  log(`   -> HTTP ${withGrant}   (expect 200: the grant admits it)`);
 
   log("\n3. Operator REVOKES the grant mid-flight");
   await identity.revokeGrant(grant.id);
-  log(`   -> HTTP ${await agentCurl(`http://${TARGET}/`)}   (403 = revocation bit immediately)`);
+  const afterRevoke = await agentCurl(`http://${TARGET}/`);
+  log(`   -> HTTP ${afterRevoke}   (expect 403: revocation bites)`);
 
   log("\n4. Agent keeps probing until the quarantine threshold trips");
   await agentCurl("http://attacker.example/");
   await agentCurl("http://attacker.example/");
   const status = service.getAgent(agent.id).status;
-  log(`   -> agent status: ${status}   (stopped = contained)`);
+  log(`   -> agent status: ${status}   (expect stopped: quarantined)`);
 
   log("\n5. Can one agent borrow another's grants by claiming its principal?");
   const impersonated = await execFileAsync(
@@ -141,7 +151,7 @@ try {
     ],
     { timeout: 60_000 },
   ).then((r) => r.stdout.trim()).catch((e) => `error(${e.code})`);
-  log(`   -> HTTP ${impersonated}   (403 = secret did not verify)`);
+  log(`   -> HTTP ${impersonated}   (expect 403: the secret does not verify)`);
 
   log("\n6. Can the agent bypass the proxy entirely? (direct, no proxy env)");
   const direct = await execFileAsync(
@@ -152,13 +162,24 @@ try {
     ],
     { timeout: 60_000 },
   ).then((r) => r.stdout.trim()).catch((e) => `blocked(exit ${e.code})`);
-  log(`   -> ${direct}   (no route off-box: the network itself denies it)`);
+  log(`   -> ${direct}   (expect blocked: no route off-box)`);
 
   const events = store.snapshot().runEvents;
   log("\n7. Trace receipts");
   for (const event of events.filter((e) => e.type === "egress.blocked" || e.type === "policy.decision")) {
     log(`   [${event.severity.padEnd(7)}] ${event.type.padEnd(16)} ${event.title}`);
   }
+
+  check("no grant means no route", noGrant === "403", `HTTP ${noGrant}`);
+  check("a grant opens exactly that host", withGrant === "200", `HTTP ${withGrant}`);
+  check("revocation is felt on the next connection", afterRevoke === "403", `HTTP ${afterRevoke}`);
+  check("repeated denials quarantine the agent", status === "stopped", status);
+  check("one agent cannot borrow another's principal", impersonated === "403", String(impersonated));
+  check("the network refuses a direct, proxy-less attempt",
+    String(direct).startsWith("blocked"), String(direct));
+  check("every refusal reached the trace",
+    events.some((e) => e.type === "egress.blocked"));
+  finish("Containment invariants");
 } finally {
   await app.close();
   await network.shutdown();

@@ -255,40 +255,40 @@ export default function SecurityFeed({ agent }: { agent: Agent }) {
           {containment === null ? "Checking…" : containment.enforcing ? "Enforcing" : "Not enforcing"}
         </span>
         <span className="status-line">{containmentReason(containment)}</span>
-        <span className="blocked-tally">
+        <span className="blocked-tally mono">
           <strong>{blockedCount}</strong> blocked
         </span>
       </div>
 
-      <form className="attempt" onSubmit={attempt}>
-        <label>
-          Reach an address as this agent
+      <form className="attempt-form" onSubmit={attempt}>
+        <div className="attempt-input-row">
           <input
             value={host}
             onChange={(event) => setHost(event.target.value)}
-            placeholder="attacker.example"
+            placeholder="Host probe (e.g. attacker.example)"
             spellCheck={false}
+            className="attempt-input"
           />
-        </label>
-        <button className="button button-primary" disabled={stage === "checking" || !host.trim()}>
-          {stage === "checking" ? "Checking…" : "Attempt"}
-        </button>
+          <button className="button button-primary" disabled={stage === "checking" || !host.trim()}>
+            {stage === "checking" ? "Testing…" : "Probe"}
+          </button>
+        </div>
       </form>
 
       {(stage === "checking" || result) && (
         <div
           className={
-            "verdict " +
+            "verdict-box " +
             (stage === "checking" ? "verdict-checking" : result?.blocked ? "verdict-blocked" : "verdict-allowed")
           }
           aria-live="polite"
         >
-          <span className="verdict-word">
-            {stage === "checking" ? "Checking" : result?.blocked ? "Blocked" : "Allowed"}
+          <span className="verdict-tag mono">
+            {stage === "checking" ? "CHECKING" : result?.blocked ? "BLOCKED" : "ALLOWED"}
           </span>
           <span className="verdict-detail">
             {stage === "checking"
-              ? `Asking whether this agent may reach ${host.trim()}`
+              ? `Testing egress to ${host.trim()}…`
               : result?.detail}
           </span>
         </div>
@@ -298,8 +298,7 @@ export default function SecurityFeed({ agent }: { agent: Agent }) {
 
       {lines.length === 0 && !error && (
         <p className="containment-empty">
-          Nothing has been blocked yet. Attempt an address above, or issue and revoke a grant in the
-          Passport panel, and every decision lands here.
+          No egress events recorded. Probe a host above or trigger a network call from the chat.
         </p>
       )}
 
@@ -308,14 +307,18 @@ export default function SecurityFeed({ agent }: { agent: Agent }) {
           {lines.map((line) => (
             <li key={line.id} className={"line line-" + line.verdict}>
               <span className="line-mark" aria-hidden="true" />
-              <span className="line-text">
+              <div className="line-text">
                 <strong>{line.headline}</strong>
                 <span className="line-because">{line.because}</span>
-              </span>
-              <span className="line-meta">
-                <span className="chip">{line.category}</span>
-                <span className="line-time">{relativeTime(line.at)}</span>
-              </span>
+              </div>
+              <details className="inspector-details line-details">
+                <summary>Details</summary>
+                <div className="line-meta">
+                  <span className="category-tag mono">{line.category}</span>
+                  <code className="mono">{line.rule}</code>
+                  <span className="line-time mono">{relativeTime(line.at)}</span>
+                </div>
+              </details>
             </li>
           ))}
         </ul>

@@ -10,8 +10,9 @@ import { HttpError } from "./errors.js";
 import type { AgentService } from "./agent-service.js";
 import { handleGeminiResponsesAdapter } from "./gemini-adapter.js";
 import type { IdentityService } from "./identity.js";
-import type { EgressAuthorizer } from "./egress-authorizer.js";
+import { egressProxySecret, type EgressAuthorizer } from "./egress-authorizer.js";
 import type { EgressNetworkManager } from "./egress-network.js";
+import type { AgentTerminator } from "./terminator.js";
 
 const agentIdParams = z.object({ id: z.string().uuid() });
 const runIdParams = z.object({ id: z.string().uuid() });
@@ -54,6 +55,25 @@ const grantBody = z.object({
 });
 const grantQuery = z.object({ principalId: z.string().min(1).max(128).optional() });
 const grantIdParams = z.object({ id: z.string().uuid() });
+/**
+ * Returns the agent principal this request was attested as, when the proof
+ * matches. Anything unattested is treated as coming from a human operator.
+ */
+function attestedAgentPrincipal(
+  request: { headers: Record<string, unknown> },
+  serverKey: string,
+): string | null {
+  const principal = request.headers["x-agent-attested-principal"];
+  const proof = request.headers["x-agent-attested-proof"];
+  if (typeof principal !== "string" || typeof proof !== "string") return null;
+  const expected = egressProxySecret(principal, serverKey);
+  const a = Buffer.from(expected);
+  const b = Buffer.from(proof);
+  if (a.length !== b.length || !timingSafeEqual(a, b)) return null;
+  return principal;
+}
+
+const terminateBody = z.object({ reason: z.string().trim().max(200).optional() });
 const egressProbeBody = z.object({
   host: z
     .string()
@@ -108,6 +128,7 @@ export async function createApp(
   identity?: IdentityService,
   egressAuthorizer?: EgressAuthorizer,
   egressNetwork?: EgressNetworkManager,
+  terminator?: AgentTerminator,
 ): Promise<FastifyInstance> {
   const principalSessions = new Map<string, MockPrincipalSession>();
   const app = Fastify({
@@ -286,6 +307,26 @@ export async function createApp(
     });
   }
 
+  if (terminator) {
+    // Terminating is deliberately a human-only action: an attested agent must
+    // not be able to kill a peer, and the receipt must name a real operator.
+    app.post("/api/agents/:id/terminate", async (request, reply) => {
+      const { id } = agentIdParams.parse(request.params);
+      if (attestedAgentPrincipal(request, config.internalAgentSecret)) {
+        return reply.code(403).send({ error: "Agents may not terminate agents." });
+      }
+      const body = terminateBody.parse(request.body ?? {});
+      const actor = (request.headers["x-principal-id"] as string | undefined) ?? "user-a";
+      const receipt = await terminator.terminate(
+        id,
+        body.reason ?? `Terminated by ${actor}`,
+      );
+      return { receipt };
+    });
+
+    app.get("/api/receipt-key", async () => terminator.publicKeyInfo());
+  }
+
   app.get("/api/agents/:id/events", async (request) => {
     const { id } = agentIdParams.parse(request.params);
     return { events: service.getAgentEvents(id) };
@@ -332,13 +373,17 @@ export async function createApp(
 
     app.post("/api/grants", async (request, reply) => {
       const body = grantBody.parse(request.body);
-      const actor = sessionActor(request.headers["x-mock-principal-session"], principalSessions);
+      // An attested agent identity outranks a human session: the proxy stamps
+      // it and the agent cannot strip it. Only fall back to the operator
+      // session when the request carries no agent attestation at all.
+      const grantedBy = attestedAgentPrincipal(request, config.internalAgentSecret)
+        ?? sessionActor(request.headers["x-mock-principal-session"], principalSessions).principalId;
       const grant = await identity.createGrant({
         principalId: body.principalId,
         scope: body.scope,
         target: body.target,
         ttlMinutes: body.ttlMinutes ?? null,
-        grantedBy: actor.principalId,
+        grantedBy,
       });
       return reply.code(201).send({ grant });
     });

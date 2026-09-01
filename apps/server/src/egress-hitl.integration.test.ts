@@ -105,9 +105,9 @@ class TelemetryRunner implements AgentRunner {
     return false;
   }
 
-  async pause(): Promise<boolean> {
+  async pause(): Promise<"paused" | "idle" | "failed"> {
     this.pauseCalls += 1;
-    return true;
+    return "paused";
   }
 
   async resume(): Promise<boolean> {

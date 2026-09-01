@@ -1,5 +1,6 @@
 import { createServer, request as httpRequest, type Server } from "node:http";
 import { once } from "node:events";
+import { connect as netConnect } from "node:net";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   createEgressProxy,
@@ -105,6 +106,111 @@ describe("isPrivateAddress", () => {
       expect(isPrivateAddress(address), address).toBe(false);
     }
   });
+  it("sees through IPv4-mapped IPv6 to the private range behind it", () => {
+    // A mapped address reaches the same host as the bare IPv4. Missing one of
+    // these was a metadata-server SSRF: ::ffff:169.254.169.254 read as public.
+    for (const address of [
+      "::ffff:172.16.0.1",
+      "::ffff:169.254.169.254",
+      "::ffff:10.0.0.1",
+      "::ffff:192.168.1.1",
+      "::ffff:a9fe:a9fe", // hex form of 169.254.169.254
+      "::169.254.169.254", // deprecated IPv4-compatible form
+      "::127.0.0.1",
+    ]) {
+      expect(isPrivateAddress(address), address).toBe(true);
+    }
+    expect(isPrivateAddress("::ffff:8.8.8.8")).toBe(false);
+  });
+});
+
+function drainRequest(
+  proxyPort: number,
+  principal: string,
+  token: string | null,
+): Promise<{ status: number; body: string }> {
+  return new Promise((resolve, reject) => {
+    const headers: Record<string, string> = { "x-egress-principal": principal };
+    if (token) headers["x-egress-control-token"] = token;
+    const req = httpRequest(
+      { host: "127.0.0.1", port: proxyPort, method: "POST", path: "/__egress_control/drain", headers },
+      (response) => {
+        let body = "";
+        response.on("data", (chunk) => (body += chunk));
+        response.on("end", () => resolve({ status: response.statusCode ?? 0, body }));
+      },
+    );
+    req.on("error", reject);
+    req.end();
+  });
+}
+
+describe("egress proxy drain", () => {
+  it("closes a principal's in-flight connection on demand", async () => {
+    // An upstream that accepts the connection but never answers, standing in
+    // for a slow transfer already past authorization.
+    const stuck = createServer(() => {});
+    const upstreamPort = await listen(stuck);
+    const proxy = createEgressProxy({ authorize: async () => allow, allowPrivateAddresses: true });
+    const proxyPort = await listen(proxy);
+
+    // Fire a proxied request and leave it hanging.
+    const pending = proxyFetch(proxyPort, `http://127.0.0.1:${upstreamPort}/`, "agent-1").catch(
+      (error) => ({ status: -1, body: String(error) }),
+    );
+    // Give the proxy a moment to open and register the upstream connection.
+    await new Promise((resolve) => setTimeout(resolve, 100));
+
+    const closed = proxy.closePrincipalConnections("agent-1");
+    expect(closed).toBeGreaterThanOrEqual(1);
+    // A different principal has nothing to close.
+    expect(proxy.closePrincipalConnections("agent-2")).toBe(0);
+    // The hung request resolves once its upstream is destroyed.
+    await pending;
+  });
+
+  it("cancels authorization that was already in flight when draining", async () => {
+    let releaseAuthorization!: () => void;
+    const authorizationGate = new Promise<void>((resolve) => {
+      releaseAuthorization = resolve;
+    });
+    let authorizationStarted!: () => void;
+    const started = new Promise<void>((resolve) => {
+      authorizationStarted = resolve;
+    });
+    const proxy = createEgressProxy({
+      allowPrivateAddresses: true,
+      authorize: async () => {
+        authorizationStarted();
+        await authorizationGate;
+        return allow;
+      },
+    });
+    const proxyPort = await listen(proxy);
+    const outcome = proxyFetch(proxyPort, "http://127.0.0.1:9/", "agent-1")
+      .then((result) => result.status)
+      .catch(() => -1);
+
+    await started;
+    expect(proxy.closePrincipalConnections("agent-1")).toBeGreaterThanOrEqual(1);
+    releaseAuthorization();
+    await expect(outcome).resolves.not.toBe(200);
+  });
+
+  it("gates the drain control endpoint on the control token", async () => {
+    const proxy = createEgressProxy({ authorize: async () => allow, controlToken: "s3cr3t" });
+    const proxyPort = await listen(proxy);
+
+    const noToken = await drainRequest(proxyPort, "agent-1", null);
+    expect(noToken.status).toBe(404); // invisible without the token
+
+    const wrongToken = await drainRequest(proxyPort, "agent-1", "guess");
+    expect(wrongToken.status).toBe(404);
+
+    const authorized = await drainRequest(proxyPort, "agent-1", "s3cr3t");
+    expect(authorized.status).toBe(200);
+    expect(JSON.parse(authorized.body)).toEqual({ closed: 0 });
+  });
 });
 
 describe("egress proxy", () => {
@@ -143,6 +249,93 @@ describe("egress proxy", () => {
     const result = await proxyFetch(proxyPort, `http://127.0.0.1:${upstreamPort}/`, "agent-1");
     expect(result.status).toBe(403);
     expect(JSON.parse(result.body).ruleId).toBe("NET-EGRESS-PRIVATE-024");
+  });
+
+  it("refuses to tunnel to the control plane", async () => {
+    // A CONNECT tunnel is opaque: the proxy pipes bytes without parsing them,
+    // so nothing can be attested. Allowing one to the control plane would let
+    // an agent's request arrive looking like a human operator's.
+    const proxyPort = await listen(
+      createEgressProxy({
+        allowPrivateAddresses: true,
+        controlPlane: { host: "control.internal", port: 3000 },
+        authorize: async () => allow,
+      }),
+    );
+    const status = await new Promise<number>((resolve, reject) => {
+      const request = httpRequest({
+        host: "127.0.0.1", port: proxyPort, method: "CONNECT", path: "control.internal:3000",
+        headers: {
+          "proxy-authorization": "Basic " + Buffer.from("agent-1:token").toString("base64"),
+        },
+      });
+      request.on("connect", (response) => resolve(response.statusCode ?? 0));
+      request.on("response", (response) => resolve(response.statusCode ?? 0));
+      request.on("error", reject);
+      request.end();
+    });
+    expect(status).toBe(403);
+  });
+
+  it("still tunnels to ordinary hosts", async () => {
+    const proxyPort = await listen(
+      createEgressProxy({
+        allowPrivateAddresses: true,
+        controlPlane: { host: "control.internal", port: 3000 },
+        authorize: async () => allow,
+      }),
+    );
+    // A different port on the same host is not the control plane.
+    const status = await new Promise<number>((resolve, reject) => {
+      const request = httpRequest({
+        host: "127.0.0.1", port: proxyPort, method: "CONNECT", path: "control.internal:9999",
+        headers: {
+          "proxy-authorization": "Basic " + Buffer.from("agent-1:token").toString("base64"),
+        },
+      });
+      request.on("connect", (response) => resolve(response.statusCode ?? 0));
+      request.on("response", (response) => resolve(response.statusCode ?? 0));
+      request.on("error", () => resolve(-1)); // upstream unreachable, but not refused by policy
+      request.end();
+    });
+    expect(status).not.toBe(403);
+  });
+
+  it("stamps attestation and strips any the caller supplied", async () => {
+    const seen: Record<string, string | string[] | undefined> = {};
+    const upstream = createServer((request, response) => {
+      Object.assign(seen, request.headers);
+      response.writeHead(200);
+      response.end("ok");
+    });
+    const upstreamPort = await listen(upstream);
+    const proxyPort = await listen(
+      createEgressProxy({
+        allowPrivateAddresses: true,
+        authorize: async () => allow,
+        attest: () => ({ "x-agent-attested-principal": "agent-real" }),
+      }),
+    );
+    await new Promise<void>((resolve, reject) => {
+      const request = httpRequest(
+        {
+          host: "127.0.0.1", port: proxyPort, method: "GET",
+          path: `http://127.0.0.1:${upstreamPort}/`,
+          headers: {
+            host: `127.0.0.1:${upstreamPort}`,
+            "x-agent-attested-principal": "agent-forged",
+            "proxy-authorization": "Basic " + Buffer.from("agent-1:token").toString("base64"),
+          },
+        },
+        (response) => {
+          response.resume();
+          response.on("end", () => resolve());
+        },
+      );
+      request.on("error", reject);
+      request.end();
+    });
+    expect(seen["x-agent-attested-principal"]).toBe("agent-real");
   });
 
   it("preserves the request path for origin-form requests", async () => {
@@ -276,5 +469,36 @@ describe("egress proxy", () => {
     const blocked = await proxyFetch(proxyPort, "http://attacker.example/", "agent-1");
     expect(blocked.status).toBe(403);
     expect(seen).toEqual(["127.0.0.1", "attacker.example"]);
+  });
+
+  it("tears down an established tunnel when its grant is revoked", async () => {
+    // The finding this closes: a tunnel authorized once kept flowing after the
+    // grant was revoked, because authorization was per-connection only.
+    let allowed = true;
+    const upstreamPort = await listen(createServer(() => {}));
+    const proxy = createEgressProxy({
+      authorize: async () => (allowed ? allow : deny),
+      allowPrivateAddresses: true,
+      reauthorizeIntervalMs: 50,
+    });
+    const proxyPort = await listen(proxy);
+
+    const client = netConnect(proxyPort, "127.0.0.1");
+    await once(client, "connect");
+    client.write(
+      `CONNECT 127.0.0.1:${upstreamPort} HTTP/1.1\r\n` +
+        `Proxy-Authorization: Basic ${Buffer.from("agent-1:token").toString("base64")}\r\n\r\n`,
+    );
+    const [established] = await once(client, "data");
+    expect(String(established)).toContain("200 Connection Established");
+
+    // Still open while the grant stands.
+    await new Promise((resolve) => setTimeout(resolve, 120));
+    expect(client.destroyed).toBe(false);
+
+    // Revoke: the next re-check must close the live tunnel.
+    allowed = false;
+    await once(client, "close");
+    expect(client.destroyed).toBe(true);
   });
 });

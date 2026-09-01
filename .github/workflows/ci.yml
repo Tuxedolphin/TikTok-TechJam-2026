@@ -19,30 +19,46 @@ env:
 
 jobs:
   check:
-    name: Typecheck, build, test
+    name: Typecheck, test, build
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
+
       - uses: actions/setup-node@v4
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: npm
+
       - run: npm ci
-      # `check` is typecheck -> build -> test in that order, because one test
-      # asserts the built UI is served and would fail on a clean checkout if
-      # test ran first.
-      - run: npm run check
+
+      - name: Typecheck both workspaces
+        run: npm run typecheck
+
+      - name: Unit and integration tests
+        run: npm test
+
+      - name: Build server and web
+        run: npm run build
+
+      # The built server is what every demo imports, so publish it once and let
+      # the proof jobs reuse it instead of rebuilding three more times.
+      - name: Upload server build
+        uses: actions/upload-artifact@v4
+        with:
+          name: server-dist
+          path: apps/server/dist
+          retention-days: 1
 
   config:
-    name: Compose, scripts, hygiene
+    name: Compose and scripts
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
 
       # .env.example is the file a judge copies first. If Compose cannot parse
-      # it, the very first documented command fails.
+      # it, the very first command in the README fails.
       - name: Validate docker-compose against .env.example
         run: LAUNCHPAD_ENV_FILE=.env.example docker compose config --quiet
 
@@ -60,18 +76,53 @@ jobs:
       - name: Dependency audit
         run: npm audit --audit-level=high
 
-  demos:
-    name: Demo scripts (real containers)
+  identity-proofs:
+    name: Identity and attenuation proofs
+    needs: check
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
+
       - uses: actions/setup-node@v4
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: npm
+
       - run: npm ci
-      - run: npm run build -w @launchpad/server
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: server-dist
+          path: apps/server/dist
+
+      # These assert their own invariants and exit non-zero when one breaks,
+      # so a regression fails the build rather than scrolling past in the log.
+      - name: Ownership, grants, revocation
+        run: node scripts/demo-passport.mjs
+
+      - name: Confused-deputy refusal and authority attenuation
+        run: node scripts/demo-escalation.mjs
+
+  containment-proofs:
+    name: Containment proofs (real containers)
+    needs: check
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+
+      - run: npm ci
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: server-dist
+          path: apps/server/dist
 
       # Pulled up front so the proxy's startup grace period is not racing a
       # cold image pull on a fresh runner.
@@ -80,14 +131,17 @@ jobs:
           docker pull node:22-alpine
           docker pull curlimages/curl:latest
 
-      # These print observations rather than asserting them, so a green run
-      # means "the path executed end to end", not "containment was proven".
-      # Read the output when changing the egress path.
-      - name: Identity, grants, revocation
-        run: node scripts/demo-passport.mjs
+      - name: Docker environment
+        run: docker version && docker network ls
 
-      - name: Egress containment against real containers
+      - name: Default-deny egress, revocation, quarantine, no-route
         run: node scripts/demo-egress.mjs
+
+      - name: CONNECT tunnel cannot reach the control plane
+        run: node scripts/demo-tunnel-bypass.mjs
+
+      - name: Freeze, revoke, kill, and a verifiable receipt
+        run: node scripts/demo-kill.mjs
 
       - name: Clean up stray containers and networks
         if: always()

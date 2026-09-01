@@ -12,6 +12,7 @@ import { AgentService } from "../apps/server/dist/agent-service.js";
 import { WorkspaceManager } from "../apps/server/dist/workspace.js";
 import { IdentityService } from "../apps/server/dist/identity.js";
 import { createApp } from "../apps/server/dist/app.js";
+import { check, finish } from "./demo-assert.mjs";
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -69,4 +70,17 @@ for (const e of feed) console.log(`   [${e.severity.padEnd(7)}] ${e.type.padEnd(
 const events = store.snapshot().runEvents.filter((e) => e.type === "policy.decision");
 console.log(`\n8. policy.decision trace events: ${events.length}`);
 for (const e of events) console.log(`   [${e.severity.padEnd(7)}] ${e.title}`);
+
+const ruleIds = events.map((e) => JSON.parse(e.detail).ruleId);
+const verdicts = events.map((e) => JSON.parse(e.detail).allowed);
+check("no grant denies the read", ruleIds[0] === "AUTHZ-GRANT-011" && verdicts[0] === false);
+check("a human grant is recorded as allowed", ruleIds[1] === "AUTHORITY-HUMAN-030" && verdicts[1] === true,
+  `got ${ruleIds[1]} allowed=${verdicts[1]}`);
+check("the grant admits the read", ruleIds[2] === "AUTHZ-GRANT-011" && verdicts[2] === true);
+check("cross-user access is denied before grants are consulted",
+  ruleIds[3] === "AUTHZ-OWNER-010" && verdicts[3] === false, `got ${ruleIds[3]}`);
+check("revocation is felt on the next read",
+  ruleIds[4] === "AUTHZ-REVOKED-013" && verdicts[4] === false, `got ${ruleIds[4]}`);
+check("every decision reached the UI feed", feed.length >= events.length);
+finish("Identity invariants");
 await app.close();

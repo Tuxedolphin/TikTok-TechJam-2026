@@ -22,6 +22,7 @@ export interface Agent {
   codexThreadId: string | null;
   activeSessionId: string | null;
   lastError: string | null;
+  authorityBlocked?: boolean;
   createdAt: string;
   updatedAt: string;
 }
@@ -66,7 +67,6 @@ export type RunEventType =
   | "run.failed"
   | "run.blocked"
   | "run.cancelled"
-  | "run.memory_injected"
   | "step.command"
   | "step.tool_call"
   | "step.file_change"
@@ -80,7 +80,8 @@ export type RunEventType =
   | "grant.created"
   | "grant.revoked"
   | "grant.expired"
-  | "egress.blocked";
+  | "egress.blocked"
+  | "agent.terminated";
 
 export interface RunEvent {
   id: string;

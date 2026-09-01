@@ -28,13 +28,14 @@ export const PROXY_CONTAINER = "launchpad-egress-proxy";
  */
 export class EgressNetworkManager {
   private pending: Promise<void> | null = null;
+  private readyForCurrentProcess = false;
 
   constructor(private readonly config: AppConfig) {}
 
-  private async engine(args: string[]): Promise<string> {
+  private async engine(args: string[], secrets?: NodeJS.ProcessEnv): Promise<string> {
     const { stdout } = await execFileAsync(this.config.containerEngine, args, {
       timeout: 30_000,
-      env: containerEngineEnvironment(this.config),
+      env: { ...containerEngineEnvironment(this.config), ...secrets },
     });
     return stdout.trim();
   }
@@ -48,7 +49,7 @@ export class EgressNetworkManager {
     }
   }
 
-  private async containerRunning(name: string): Promise<boolean> {
+  private async containerRunning(name: string): Promise<boolean | null> {
     try {
       const status = await this.engine([
         "inspect",
@@ -58,7 +59,7 @@ export class EgressNetworkManager {
       ]);
       return status === "true";
     } catch {
-      return false;
+      return null;
     }
   }
 
@@ -77,7 +78,7 @@ export class EgressNetworkManager {
   }
 
   private async provision(): Promise<void> {
-    if (await this.containerRunning(PROXY_CONTAINER)) return;
+    if (this.readyForCurrentProcess && (await this.containerRunning(PROXY_CONTAINER)) === true) return;
 
     if (!(await this.networkExists(INTERNAL_NETWORK))) {
       await this.engine(["network", "create", "--internal", INTERNAL_NETWORK]);
@@ -103,8 +104,14 @@ export class EgressNetworkManager {
         `EGRESS_PROXY_PORT=${this.config.egressProxyPort}`,
         "--env",
         `EGRESS_AUTHORIZE_URL=http://host.docker.internal:${this.config.port}/api/egress/authorize`,
+        // Passed by name, not value: `--env NAME=value` would put the agent
+        // secret in the engine's argv, and /proc/<pid>/cmdline is world
+        // readable. That secret derives every agent's proxy password, so a
+        // local reader could impersonate any agent and spend its grants.
         "--env",
-        `EGRESS_AUTHORIZE_TOKEN=${this.config.authToken}`,
+        "EGRESS_AUTHORIZE_TOKEN",
+        "--env",
+        "EGRESS_AGENT_SECRET",
         "--mount",
         `type=bind,src=${this.config.serverDistPath},dst=/app,readonly`,
         "--workdir",
@@ -112,11 +119,48 @@ export class EgressNetworkManager {
         this.config.egressProxyImage,
         "node",
         "/app/egress-proxy-main.js",
-      ]);
+      ], {
+        EGRESS_AUTHORIZE_TOKEN: this.config.authToken,
+        EGRESS_AGENT_SECRET: this.config.internalAgentSecret,
+      });
       // The uplink is attached second so the proxy's default route stays on the
       // internal network while it still has a path to the internet.
       await this.engine(["network", "connect", UPLINK_NETWORK, PROXY_CONTAINER]);
+      await this.waitForProxyListening();
+      this.readyForCurrentProcess = true;
     }
+  }
+
+  /**
+   * `docker run -d` returns when the container is created, not when the process
+   * inside it has bound its port. Returning from ensure() before then hands the
+   * first agent request a connection refusal that looks nothing like a policy
+   * decision -- the caller cannot tell "not started yet" from "denied".
+   */
+  private async waitForProxyListening(timeoutMs = 60_000): Promise<void> {
+    const deadline = Date.now() + timeoutMs;
+    let logs = "";
+    while (Date.now() < deadline) {
+      try {
+        logs = await this.engine(["logs", PROXY_CONTAINER]);
+        if (logs.includes("proxy listening on")) return;
+      } catch {
+        // The container may not be emitting yet; the running check below is
+        // what distinguishes "still starting" from "died on startup".
+      }
+      const running = await this.containerRunning(PROXY_CONTAINER);
+      if (running !== true) {
+        throw new Error(
+          running === false
+            ? `Egress proxy exited before listening: ${logs.trim().slice(-400)}`
+            : "Could not confirm whether the egress proxy is running.",
+        );
+      }
+      await new Promise((resolve) => setTimeout(resolve, 200));
+    }
+    throw new Error(
+      `Egress proxy did not listen within ${timeoutMs}ms: ${logs.trim().slice(-400)}`,
+    );
   }
 
   /** Proxy URL as seen from inside an agent container on the internal network. */
@@ -125,7 +169,7 @@ export class EgressNetworkManager {
     // password is a per-agent secret derived from the server key, so a
     // container cannot borrow another agent's grants by simply claiming its
     // principal -- it would have to forge a secret it never sees.
-    const secret = egressProxySecret(agentPrincipalId, this.config.authToken);
+    const secret = egressProxySecret(agentPrincipalId, this.config.internalAgentSecret);
     return `http://${encodeURIComponent(agentPrincipalId)}:${secret}@${PROXY_CONTAINER}:${this.config.egressProxyPort}`;
   }
 
@@ -141,7 +185,17 @@ export class EgressNetworkManager {
   async probeAsAgent(
     agentPrincipalId: string,
     host: string,
-  ): Promise<{ httpStatus: number | null; blocked: boolean; detail: string }> {
+  ): Promise<{
+    httpStatus: number | null;
+    blocked: boolean;
+    /**
+     * False when the probe itself could not be carried out. A probe that never
+     * ran is not evidence of containment, and callers that sign attestations
+     * must not treat it as such.
+     */
+    conclusive: boolean;
+    detail: string;
+  }> {
     await this.ensure();
     const proxy = this.proxyUrlFor(agentPrincipalId);
     const url = `http://${host}/`;
@@ -152,13 +206,13 @@ export class EgressNetworkManager {
         "--network",
         INTERNAL_NETWORK,
         "--env",
-        `http_proxy=${proxy}`,
+        "http_proxy",
         "--env",
-        `https_proxy=${proxy}`,
+        "https_proxy",
         "--env",
-        `HTTP_PROXY=${proxy}`,
+        "HTTP_PROXY",
         "--env",
-        `HTTPS_PROXY=${proxy}`,
+        "HTTPS_PROXY",
         this.config.egressProbeImage,
         "-s",
         "-o",
@@ -168,32 +222,96 @@ export class EgressNetworkManager {
         "--max-time",
         "12",
         url,
-      ]);
+      ], {
+        http_proxy: proxy,
+        https_proxy: proxy,
+        HTTP_PROXY: proxy,
+        HTTPS_PROXY: proxy,
+      });
       const httpStatus = Number(stdout.trim());
       if (!Number.isInteger(httpStatus) || httpStatus === 0) {
-        return { httpStatus: null, blocked: true, detail: "No response: the connection never left." };
+        return {
+          httpStatus: null,
+          blocked: true,
+          conclusive: true,
+          detail: "No response: the connection never left.",
+        };
       }
       // 403 is the proxy refusing; 407 means no usable identity was presented.
       const blocked = httpStatus === 403 || httpStatus === 407;
       return {
         httpStatus,
         blocked,
+        conclusive: true,
         detail: blocked
           ? `The proxy refused the connection to ${host}.`
           : `The connection to ${host} was authorized and completed.`,
       };
     } catch (error) {
-      // curl exits non-zero when it cannot connect at all, which under this
-      // topology means the network itself refused — still a block.
+      // The probe container failed to run at all. Under this topology that is
+      // usually the network refusing, but it is equally consistent with the
+      // engine being busy or the image missing -- so it is reported as
+      // inconclusive rather than counted as proof of containment.
       return {
         httpStatus: null,
         blocked: true,
+        conclusive: false,
         detail:
-          "No route to " +
+          "Probe could not be completed for " +
           host +
           ": " +
           (error instanceof Error ? error.message.split("\n")[0] : String(error)),
       };
+    }
+  }
+
+  /**
+   * Tears down every connection the proxy is still piping for this principal.
+   * Authorization is per-connection, so a tunnel established before revocation
+   * keeps flowing; termination must drain it or an in-flight transfer can
+   * finish after the agent is gone. Reaches the proxy from inside the internal
+   * network (the only place it is addressable) via a short-lived probe
+   * container. Returns how many connections the proxy reported closing, or null
+   * if the drain could not be carried out -- which the caller must not read as
+   * "nothing was flowing".
+   */
+  async drainPrincipal(agentPrincipalId: string): Promise<number | null> {
+    const running = await this.containerRunning(PROXY_CONTAINER);
+    if (running === false) return 0;
+    if (running === null) return null;
+    const controlUrl = `http://${PROXY_CONTAINER}:${this.config.egressProxyPort}/__egress_control/drain`;
+    try {
+      // Run a shell inside the container so it expands the token from its own
+      // environment (passed by name, never in argv, so /proc/<pid>/cmdline on
+      // the host never sees the secret). The probe image is Alpine-based and
+      // has /bin/sh.
+      const stdout = await this.engine(
+        [
+          "run",
+          "--rm",
+          "--network",
+          INTERNAL_NETWORK,
+          "--env",
+          "EGRESS_CONTROL_TOKEN",
+          "--env",
+          "EGRESS_PRINCIPAL",
+          "--entrypoint",
+          "sh",
+          this.config.egressProbeImage,
+          "-c",
+          `curl -s -X POST --max-time 10 ` +
+            `-H "x-egress-control-token: $EGRESS_CONTROL_TOKEN" ` +
+            `-H "x-egress-principal: $EGRESS_PRINCIPAL" "${controlUrl}"`,
+        ],
+        {
+          EGRESS_CONTROL_TOKEN: this.config.internalAgentSecret,
+          EGRESS_PRINCIPAL: agentPrincipalId,
+        },
+      );
+      const parsed = JSON.parse(stdout.trim()) as { closed?: number };
+      return typeof parsed.closed === "number" ? parsed.closed : null;
+    } catch {
+      return null;
     }
   }
 
@@ -207,5 +325,6 @@ export class EgressNetworkManager {
 
   async shutdown(): Promise<void> {
     await this.removeProxy();
+    this.readyForCurrentProcess = false;
   }
 }

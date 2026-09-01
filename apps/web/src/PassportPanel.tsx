@@ -150,10 +150,10 @@ export default function PassportPanel({ agent }: { agent: Agent }) {
             <span className="passport-identity-label">Owner</span>
             <strong>{owner?.name ?? agent.ownerId}</strong>
           </div>
-          <div className="passport-identity-row">
-            <span className="passport-identity-label">Agent principal</span>
+          <details className="inspector-details passport-identity-details">
+            <summary>Technical identity</summary>
             <code className="mono">{agent.principalId}</code>
-          </div>
+          </details>
         </div>
       </div>
 
@@ -175,8 +175,10 @@ export default function PassportPanel({ agent }: { agent: Agent }) {
                   type="button"
                   className={"acting-as-btn " + (actingAs === principal.id ? "active" : "")}
                   onClick={() => switchActingAs(principal.id)}
+                  aria-pressed={actingAs === principal.id}
                 >
                   {principal.name}
+                  {actingAs === principal.id && <span className="acting-as-current">Current</span>}
                 </button>
               ))}
             </div>
@@ -306,9 +308,12 @@ export default function PassportPanel({ agent }: { agent: Agent }) {
                     <div className="probe-result-top">
                       <strong>{result.decision.allowed ? "ALLOWED" : "DENIED"}</strong>
                       <code className="mono">{resourceId}</code>
-                      <code className="mono probe-rule-id">{result.decision.ruleId}</code>
                     </div>
                     <p className="probe-reason">{result.decision.reason}</p>
+                    <details className="inspector-details probe-rule-details">
+                      <summary>Policy details</summary>
+                      <code className="mono probe-rule-id">{result.decision.ruleId}</code>
+                    </details>
                     {result.decision.allowed && result.resource && (
                       <pre className="probe-content"><code>{result.resource.content}</code></pre>
                     )}
