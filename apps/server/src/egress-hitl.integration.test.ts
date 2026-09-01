@@ -159,7 +159,7 @@ async function startFixture(options: {
     CODEX_HOME: path.join(root, "codex"),
     OPENROUTER_API_KEY: "test-key",
     OPENROUTER_MODEL: "openrouter/test-model",
-    GUARDRAIL_CANARY_TOKEN: "c4nary",
+    GUARDRAIL_CANARY_TOKEN: "c4nary-test-token",
     RUN_BUDGET_MAX_DURATION_MS: "60000",
   });
   const store = new JsonStore(path.join(root, "data", "db.json"));

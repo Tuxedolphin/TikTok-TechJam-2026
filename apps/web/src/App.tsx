@@ -178,11 +178,7 @@ export default function App() {
 
   const activeRunTokens = useMemo(() => {
     if (!activeRun?.usage) return 0;
-    return (
-      (activeRun.usage.inputTokens ?? 0) +
-      (activeRun.usage.cachedInputTokens ?? 0) +
-      (activeRun.usage.outputTokens ?? 0)
-    );
+    return (activeRun.usage.inputTokens ?? 0) + (activeRun.usage.outputTokens ?? 0);
   }, [activeRun]);
 
 
@@ -1059,7 +1055,7 @@ export default function App() {
                               {runs.map((r) => {
                                 const isSelected = activeRun.id === r.id;
                                 const rTokens = r.usage
-                                  ? (r.usage.inputTokens ?? 0) + (r.usage.cachedInputTokens ?? 0) + (r.usage.outputTokens ?? 0)
+                                  ? (r.usage.inputTokens ?? 0) + (r.usage.outputTokens ?? 0)
                                   : 0;
                                 return (
                                   <button
