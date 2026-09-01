@@ -2,7 +2,7 @@ import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
-import { isModelConfigured, loadConfig, writeCodexConfig } from "./config.js";
+import { describeEgressGap, isModelConfigured, loadConfig, writeCodexConfig } from "./config.js";
 
 describe("output token budget configuration", () => {
   it.each([
@@ -117,6 +117,23 @@ describe("production authentication configuration", () => {
       );
     },
   );
+
+  it("points at a remedy that runs on every platform", () => {
+    // Docker Compose forces NODE_ENV=production and HOST=0.0.0.0, so this is
+    // the first thing a Compose user sees. Naming a bash script here strands
+    // anyone on Windows: the only documented way out of the error is a file
+    // their shell cannot execute.
+    const message = (() => {
+      try {
+        loadConfig({ NODE_ENV: "production", HOST: "0.0.0.0", APP_AUTH_TOKEN: "" });
+        return "";
+      } catch (error) {
+        return (error as Error).message;
+      }
+    })();
+    expect(message).toContain("npm run bootstrap");
+    expect(message).not.toContain(".sh");
+  });
 });
 
 describe("egress enforcement configuration", () => {
@@ -135,6 +152,34 @@ describe("egress enforcement configuration", () => {
       EGRESS_ENFORCEMENT: "on",
     });
     expect(config.egressEnforcement).toBe(false);
+  });
+
+  it("describes the gap when enforcement was asked for but cannot be provided", () => {
+    // .env.example ships EGRESS_ENFORCEMENT=on alongside
+    // RUNTIME_PROVIDER=local-process, so the shipped configuration asks for
+    // containment and silently does not get it. Staying quiet leaves the
+    // operator believing they are covered.
+    const gap = describeEgressGap(
+      loadConfig({
+        NODE_ENV: "test",
+        RUNTIME_PROVIDER: "local-process",
+        EGRESS_ENFORCEMENT: "on",
+      }),
+    );
+    expect(gap).toContain("RUNTIME_PROVIDER");
+    expect(gap).toContain("local-process");
+  });
+
+  it("stays silent when the configuration is consistent", () => {
+    const enforcing = describeEgressGap(
+      loadConfig({ NODE_ENV: "test", RUNTIME_PROVIDER: "container", EGRESS_ENFORCEMENT: "on" }),
+    );
+    const declined = describeEgressGap(
+      loadConfig({ NODE_ENV: "test", RUNTIME_PROVIDER: "local-process", EGRESS_ENFORCEMENT: "off" }),
+    );
+    // Nothing was promised in either case, so there is nothing to warn about.
+    expect(enforcing).toBeNull();
+    expect(declined).toBeNull();
   });
 
   it("can be switched off explicitly", () => {

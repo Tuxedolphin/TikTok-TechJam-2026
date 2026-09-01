@@ -1,88 +1,99 @@
 # Three-day hackathon guide
 
-Teams receive a working Agent platform and build exactly one middleware track.
-Rebuilding the UI, control plane, local Runtime, or ECS setup is out of scope.
+Teams receive a working Agent platform and add the middleware it deliberately
+lacks. Rebuilding the UI, control plane, local Runtime, or ECS setup is out of
+scope.
+
+Requirements, deliverables, and the rubric live in
+[CHALLENGE-BRIEF.md](CHALLENGE-BRIEF.md). This guide is the practical companion.
 
 ## Provided baseline
 
 - Browser Agent CRUD and Playground
 - Persistent workspaces and Codex sessions
 - One-line Docker, Colima, or Podman local Runtime
-- OpenRouter model connection
+- BytePlus ModelArk model connection (this project also supports Gemini and
+  OpenRouter — see [Configuration](../README.md#configuration))
 - Optional Volcengine ECS deployment
 
-Local execution is the default judging path. Cloud deployment is optional.
+Local execution is the default judging path. Cloud deployment is optional and
+does not affect the score.
 
-## Choose one track
+## Pick a middleware story, not a track
 
-### Glass Box: trace and audit
+The brief lists recommended directions rather than a menu to choose from
+exactly one of. Teams may choose, combine, simplify, replace, or invent. What is
+judged is the relevance, quality, and integration of whatever the team builds —
+so depth and coherence beat breadth.
 
-Make a Run diagnosable.
+The directions below are the brief's examples, restated as what a convincing
+demo of each would need.
 
-Required demo:
+### Identity and authorization
 
-- Show correlated Run and step events in a timeline or tree.
-- Include status, duration, errors, and available model usage.
-- Redact secrets.
-- Run one successful task and identify the failing step in one failed task.
+Separate the human principal from the Agent acting for that human.
 
-### Bouncer: identity and authorization
-
-Separate the human user from the Agent acting for that user.
-
-Required demo:
-
-- Create User A, User B, and an Agent principal owned by User A.
-- Allow the Agent to read User A's mock resource.
-- Deny access to User B's resource in the backend.
-- Record the human, Agent, action, resource, and decision.
+- Two mock human users and an Agent principal owned by one of them.
+- The Agent reads its owner's mock resource; the backend denies the other's.
+- Scoped, time-bound, revocable delegation rather than a shared credential.
+- A record naming the human, Agent, action, resource, and decision.
 
 A login screen without server-side authorization does not qualify.
 
-### Kill Switch: safety and sandboxing
+### Trace, audit, and observability
 
-Contain one explicit dangerous action.
+Represent a run as a connected sequence rather than unrelated logs.
 
-Required demo:
+- Stable Agent, run, session, trace, and span identifiers.
+- Span categories: orchestration, model call, tool call, policy decision,
+  human approval, sandbox execution.
+- Status, duration, errors, and available token or cost signals.
+- Secrets redacted before storage and display.
+- A reviewer can locate the failing step of a failed run.
 
-- Add a threat-specific policy or a stronger sandbox boundary.
-- Block or terminate a malicious Run.
-- Keep the protected asset unchanged and show cleanup.
-- Run a safe task after containment.
+### Threat modeling and safety
 
-The Starter Kit's default CPU, memory, PID, and capability limits do not count
-as the new control.
+Name the protected asset and the abuse case, then contain it.
+
+- A control that is specific to the threat, not the starter kit's defaults.
+- A malicious run blocked or terminated, with cleanup visible.
+- The protected asset provably unchanged.
+- A safe run still succeeds afterward.
+
+The starter kit's CPU, memory, PID, dropped-capability, and no-new-privileges
+defaults are baseline safeguards and do not by themselves count as a new
+capability.
+
+### Other directions
+
+Layered architecture, multi-agent coordination, lifecycle reconciliation,
+memory governance, human-in-the-loop workflows, budget control, provider
+abstraction, versioning and rollback, or automated remediation. A team-defined
+capability still has to explain its problem, boundary, evidence, failure case,
+and limitations.
 
 ## Three-day plan
 
-| Day | Goal |
-| --- | --- |
-| 1 | Start the POC, select one story, define the middleware contract, and complete the backend path. |
-| 2 | Finish enforcement or instrumentation, add the minimum UI, and implement positive and negative cases. |
-| 3 | Add tests, handle failures, finish the diagram, and rehearse the demo. |
+| Day | Goal | Exit evidence |
+| --- | --- | --- |
+| 1 | Start the baseline, define the problem, specify the contract, complete the first backend path. | One real middleware behavior triggerable from an API or test. |
+| 2 | Finish the core path, persist its evidence, add minimum UI, implement the success and failure cases. | The scenario works end to end from the browser. |
+| 3 | Add tests, handle errors and cleanup, finish the diagram and README, rehearse. | `npm run check` passes and the demo fits three minutes. |
 
-## Deliverables
+## Before submitting
 
-Only three deliverables are required:
+Run the full gate:
 
-1. **Three-minute live demo:** show a real Agent Run and the middleware result.
-2. **One-page architecture diagram:** show the middleware and trust boundary.
-3. **Code repository:** include setup, tests, selected track, and limitations.
+```bash
+npm run check
+```
 
-## Evaluation
+Then walk the acceptance checklist in
+[CHALLENGE-BRIEF.md](CHALLENGE-BRIEF.md#acceptance-checklist). The two items
+teams most often miss are automated verification of the *middleware decision*
+rather than the UI, and documented limitations.
 
-| Category | Weight |
-| --- | ---: |
-| End-to-end middleware behavior | 40% |
-| Technical design and integration | 25% |
-| Verification and robustness | 20% |
-| Demo and reproducibility | 15% |
+## What this project built
 
-## Acceptance checklist
-
-- [ ] The README names one selected track.
-- [ ] A reviewer can run the project from the documented command.
-- [ ] Middleware executes in the backend or Runtime path, not only in the UI.
-- [ ] The demo includes a positive and a failure, denial, or malicious case.
-- [ ] Automated evidence covers the core event or policy decision.
-- [ ] No secret appears in source, logs, traces, screenshots, or the browser.
+See [AGENT-PASSPORT.md](AGENT-PASSPORT.md) for the capabilities, how each was
+verified, and what is explicitly not solved.

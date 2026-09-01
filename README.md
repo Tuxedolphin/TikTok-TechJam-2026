@@ -75,9 +75,23 @@ Being precise about provenance: the approval UI, canary tripwire, budget breaker
 - Node.js 22+
 - npm 10+
 - Docker, Colima, or Podman
-- A Google Gemini API key (from Google AI Studio) or an OpenAI-compatible API key (e.g. OpenRouter)
+- A model API key — any one of:
+  - **BytePlus ModelArk** (`ARK_API_KEY` plus an `ep-` endpoint ID) — the starter kit's own provider, and the path to use if you were issued an Ark key
+  - **Google Gemini** (from Google AI Studio), reached through the internal Responses adapter
+  - Any **OpenAI-compatible** endpoint, such as OpenRouter
 
 Codex CLI is included in the Runtime image and is not required on the host.
+
+### On Windows
+
+`npm run poc` is a bash script and needs **WSL2** — which Docker Desktop for
+Windows already requires, so the environment is usually there. Inside a WSL2
+shell everything below works unchanged.
+
+Natively on Windows, use the [Docker Compose](#docker-compose) path with
+`npm run bootstrap`. That gives you the full platform, but note it runs
+`RUNTIME_PROVIDER=local-process`, and egress enforcement exists only under the
+container runtime — so the containment demo needs WSL2.
 
 ## Local browser SOP
 
@@ -114,7 +128,15 @@ HOST=127.0.0.1 npm run poc
 
 # Option B: Pass via CLI environment variable
 HOST=127.0.0.1 GEMINI_API_KEY=your-gemini-api-key npm run poc
+
+# Option C: BytePlus ModelArk, the starter kit's own provider
+HOST=127.0.0.1 ARK_API_KEY=your-ark-api-key ARK_MODEL=ep-your-endpoint-id npm run poc
 ```
+
+`ARK_API_KEY` must be an Ark *model* API key rather than an account AK/SK, and
+`ARK_MODEL` is the endpoint ID beginning with `ep-`; the wrong credential
+returns 401 from the Ark Responses API. Set `MODEL_PROVIDER` explicitly when
+`.env` holds credentials for more than one provider.
 
 The first run installs Node.js dependencies and builds the Runtime image. The
 script automatically selects Docker, Colima, or Podman.
@@ -171,8 +193,13 @@ For a clean Linux host, follow the
 Create and edit the configuration:
 
 ```bash
-./scripts/bootstrap-local.sh
+npm run bootstrap
 ```
+
+Compose runs the server with `NODE_ENV=production` and `HOST=0.0.0.0`, so it
+refuses to start without a real `APP_AUTH_TOKEN`. This command creates `.env`
+from the example, generates that token, and makes the state directories. It is
+idempotent and runs on every platform, Windows included.
 
 Compose runs the server in production mode, where the process binds `0.0.0.0`
 inside its container. Only the published port decides who can reach it, so
@@ -304,6 +331,23 @@ flowchart LR
 
 Container pause/resume controls remain available to Runtime integrations that can emit a trusted `before` event. Production Codex `item.completed` events are explicitly marked `after` and are never presented as if a late pause prevented the command.
 
+## Acceptance checklist
+
+Where each required item is demonstrated, for a reviewer working through the
+track's core acceptance list.
+
+| Required item | Where it is shown |
+| --- | --- |
+| Clone, start, create/test an Agent from the frontend | [Local browser SOP](#local-browser-sop); `npm run poc`, then the Playground |
+| Meaningful middleware capability, selected and designed by the team | Agent identity, scoped/expiring/revocable grants, and enforced network containment — [docs/AGENT-PASSPORT.md](docs/AGENT-PASSPORT.md) |
+| Executes in a backend/Runtime/infrastructure path, not the UI | Proxy authorizes every connection before the socket opens; the container has no route off-box |
+| Repository sufficient to understand and reproduce | This README, [Architecture](docs/ARCHITECTURE.md), [Local POC](docs/LOCAL_POC.md) |
+| `npm run check` passes | Typecheck, build, and 193 tests; see [Validation](#validation) |
+| No secret in source, history, logs, traces, or demo output | Canary tripwire plus adapter-level redaction; provider keys never reach the browser or the engine's argv |
+| *Optional:* delegated permission scoped, revocable, enforced outside the UI | `npm run demo:identity` — grant, delegate, revoke, and watch the cascade bite |
+| *Optional:* correlated trace across policy and infrastructure events | Trace tab; every allow and deny lands with a rule ID |
+| *Optional:* defined threat contained, asset unchanged, cleanup shown | `npm run demo` — real containers, real proxy, real blocked exfiltration |
+
 ## Reproducing normal and negative evidence
 
 ### 1. Safe-operation telemetry (`ALLOW-STANDARD-000`)
@@ -415,6 +459,11 @@ terraform fmt -check -recursive deploy/volcengine
 docker compose config
 ```
 
+All 193 automated unit and integration tests run via:
+```bash
+npm test
+```
+
 `check` is typecheck, then build, then test — in that order, because one test
 asserts the built UI is served and would fail on a clean checkout otherwise.
 
@@ -431,6 +480,7 @@ not that containment was proven. Read the output when changing the egress path.
 ## Documentation
 
 - **[Agent Passport](docs/AGENT-PASSPORT.md)** — what is enforced, how it was verified, and what is not
+- [Challenge brief](docs/CHALLENGE-BRIEF.md) — Track 1 requirements, deliverables, and rubric
 - [Architecture](docs/ARCHITECTURE.md)
 - [Local POC](docs/LOCAL_POC.md)
 - [Deployment](docs/DEPLOYMENT.md)

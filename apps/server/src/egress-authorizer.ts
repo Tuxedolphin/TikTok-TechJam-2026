@@ -1,3 +1,22 @@
+/**
+ * The decision the egress proxy asks for before it opens an upstream socket.
+ *
+ * This is the enforcement half of containment: the agent container has no route
+ * off-box, so every outbound connection arrives here first and a denial means
+ * the destination is never contacted at all — not that it was contacted and
+ * disapproved of afterward.
+ *
+ * Three things it deliberately does not trust:
+ *  - the principal a container claims, which is HMAC-verified against a server
+ *    secret the container never sees (`NET-EGRESS-IMPERSONATION-023`);
+ *  - a granted hostname, which is re-checked after resolution so a name
+ *    pointing into link-local space cannot reach cloud metadata
+ *    (`NET-EGRESS-PRIVATE-024`);
+ *  - the operator's patience, since an agent that floods the approval queue
+ *    would turn a human gate into a rubber stamp (`HITL-EGRESS-FLOOD-027`).
+ *
+ * If this authorizer cannot be reached, the proxy denies.
+ */
 import { createHmac, timingSafeEqual } from "node:crypto";
 import { evaluateEgress } from "./run-policies.js";
 import { latestRunFor, type JsonStore } from "./store.js";

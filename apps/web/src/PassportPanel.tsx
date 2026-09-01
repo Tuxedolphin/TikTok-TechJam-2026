@@ -181,8 +181,8 @@ export default function PassportPanel({ agent }: { agent: Agent }) {
               ))}
             </div>
             <p className="passport-hint">
-              API calls that grant or revoke access are sent as this principal via{" "}
-              <code>x-principal-id</code>.
+              API calls that grant or revoke access are sent as this principal
+              using a server-issued session token, not a client-asserted id.
             </p>
           </div>
 
