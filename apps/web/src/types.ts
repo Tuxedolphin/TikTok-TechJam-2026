@@ -81,6 +81,8 @@ export type RunEventType =
   | "grant.revoked"
   | "grant.expired"
   | "egress.blocked"
+  | "memory.recalled"
+  | "memory.quarantined"
   | "agent.terminated";
 
 export interface RunEvent {
@@ -190,6 +192,25 @@ export interface Grant {
   revokedAt: string | null;
   revokedBy: string | null;
   createdAt: string;
+}
+
+export type MemorySourceType = "operator" | "agent-output" | "tool-result" | "web-content";
+export type MemoryTrust = "trusted" | "untrusted";
+
+export interface MemoryEntry {
+  id: string;
+  agentId: string;
+  content: string;
+  provenance: {
+    runId: string | null;
+    sourceType: MemorySourceType;
+    sourceDetail: string;
+  };
+  trust: MemoryTrust;
+  createdAt: string;
+  expiresAt: string | null;
+  quarantinedAt: string | null;
+  quarantinedBy: string | null;
 }
 
 export interface MockResource {

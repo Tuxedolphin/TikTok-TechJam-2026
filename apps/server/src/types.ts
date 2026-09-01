@@ -69,6 +69,8 @@ export type RunEventType =
   | "grant.revoked"
   | "grant.expired"
   | "egress.blocked"
+  | "memory.recalled"
+  | "memory.quarantined"
   | "agent.terminated";
 
 export interface RunEvent {
@@ -171,6 +173,37 @@ export interface Grant {
   parentGrantId?: string | null;
 }
 
+/** Where a memory came from. Only an operator write is trusted. */
+export type MemorySourceType = "operator" | "agent-output" | "tool-result" | "web-content";
+export type MemoryTrust = "trusted" | "untrusted";
+
+/**
+ * A belief the agent carries between sessions.
+ *
+ * Memory is the one store that survives a run, which makes it the one store
+ * worth poisoning: content written in one session steers behaviour in the
+ * next. So a memory is never just text -- it carries where it came from, how
+ * long it lives, and whether an operator has pulled it out of circulation.
+ * A memory confers no permissions; grants remain the only source of authority.
+ */
+export interface MemoryEntry {
+  id: string;
+  agentId: string;
+  content: string;
+  provenance: {
+    runId: string | null;
+    sourceType: MemorySourceType;
+    /** Human-readable origin: a URL, a tool name, or "operator". */
+    sourceDetail: string;
+  };
+  /** Derived at write time: only "operator" provenance is trusted. */
+  trust: MemoryTrust;
+  createdAt: string;
+  expiresAt: string | null;
+  quarantinedAt: string | null;
+  quarantinedBy: string | null;
+}
+
 export interface MockResource {
   id: string;
   ownerId: string;         // human principal id
@@ -200,6 +233,7 @@ export interface Database {
   principals: Principal[];
   grants: Grant[];
   resources: MockResource[];
+  memories: MemoryEntry[];
 }
 
 export interface CreateAgentInput {

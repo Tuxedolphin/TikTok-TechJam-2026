@@ -34,6 +34,7 @@ const emptyDatabase = (): Database => ({
   principals: [...SEED_HUMANS],
   grants: [],
   resources: [...SEED_RESOURCES],
+  memories: [],
 });
 
 type AgentV3 = Omit<Agent, "ownerId" | "principalId">;
@@ -43,7 +44,7 @@ type LegacyApprovalRequest = Omit<
   ApprovalRequest,
   "resolvedByPrincipalId" | "resolvedByDisplayName" | "evidence"
 > & { resolvedBy: string | null };
-type Database4Shape = Omit<Database, "version" | "runs" | "approvals" | "grants"> & {
+type Database4Shape = Omit<Database, "version" | "runs" | "approvals" | "grants" | "memories"> & {
   version: 4;
   runs: LegacyAgentRun[];
   approvals: LegacyApprovalRequest[];
@@ -166,6 +167,8 @@ function migrateV4ToV5(v4: Database4Shape): Database {
   return {
     ...v4,
     version: 5,
+    // Additive: a v4 database simply had no memory yet.
+    memories: [],
     runs: v4.runs.map(liftRun),
     grants: v4.grants.map(liftGrant),
     approvals: v4.approvals.map((approval) => liftApproval(approval, v4.agents)),
@@ -178,6 +181,11 @@ type PersistedDatabase = Partial<Omit<Database, "version" | "approvals">> & {
 };
 
 function migrateDatabase(parsed: PersistedDatabase): Database {
+  // A sibling change (#28, approval attribution) also stamps `version: 5`,
+  // adding attribution fields to runs/grants/approvals. Two schemas share one
+  // version number, so this branch must not assume a v5 file was written by
+  // *this* code: every field is taken by shape, and `memories` defaults rather
+  // than being asserted, so a store written by that branch loads intact.
   if (parsed.version === 5) {
     return {
       version: 5,
@@ -196,6 +204,7 @@ function migrateDatabase(parsed: PersistedDatabase): Database {
       principals: Array.isArray(parsed.principals) ? parsed.principals : [],
       grants: Array.isArray(parsed.grants) ? parsed.grants.map(liftGrant) : [],
       resources: Array.isArray(parsed.resources) ? parsed.resources : [],
+      memories: Array.isArray(parsed.memories) ? parsed.memories : [],
     };
   }
   if (parsed.version === 4) {

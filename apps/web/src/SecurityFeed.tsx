@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { api } from "./api";
+import { MemoryPanel } from "./MemoryPanel";
 import type { Agent, RunEvent, SystemInfo } from "./types";
 
 type Containment = { enforcing: boolean; runtimeProvider: SystemInfo["runtimeProvider"] } | null;
@@ -49,6 +50,9 @@ const SECURITY_EVENTS = new Set<RunEvent["type"]>([
   "grant.revoked",
   "run.blocked",
   "step.approval_denied",
+  // Remembered context reaching the model is a security event: it is the one
+  // input to a run that nobody typed and no grant authorised.
+  "memory.recalled",
 ]);
 
 const MODE_KEY = "passport.securityFeed.mode";
@@ -64,6 +68,12 @@ const RULES: Record<string, { plain: string; category: string }> = {
   "AUTHZ-GRANT-011": { plain: "Covered by an active grant", category: "Data" },
   "AUTHZ-EXPIRED-012": { plain: "The grant had expired", category: "Data" },
   "AUTHZ-REVOKED-013": { plain: "The grant was revoked", category: "Data" },
+  "AUTHORITY-HUMAN-030": { plain: "A person granted this authority", category: "Authority" },
+  "AUTHORITY-SELF-ESCALATION-031": { plain: "The agent tried to widen its own access", category: "Authority" },
+  "AUTHORITY-NARROWING-032": { plain: "Passed on less access than it holds", category: "Authority" },
+  "MEM-PROVENANCE-040": { plain: "Recorded where this memory came from", category: "Memory" },
+  "MEM-EXPIRED-041": { plain: "A memory reached its expiry", category: "Memory" },
+  "MEM-QUARANTINE-042": { plain: "A quarantined memory was kept out of context", category: "Memory" },
 };
 
 type Verdict = "blocked" | "allowed" | "granted";
@@ -105,6 +115,29 @@ function toLine(event: RunEvent): Line {
       headline: `Stopped from reaching ${host}`,
       because: "No grant allows this address",
       category: "Network",
+    };
+  }
+  if (event.type === "memory.recalled") {
+    let untrusted = 0;
+    let bytes = 0;
+    try {
+      const payload = JSON.parse(event.detail) as { untrusted?: number; bytesInjected?: number };
+      untrusted = payload.untrusted ?? 0;
+      bytes = payload.bytesInjected ?? 0;
+    } catch {
+      // Fall back to the generic phrasing.
+    }
+    return {
+      ...base,
+      // Not a denial -- it was allowed through, labeled. But untrusted context
+      // in the model's window is the thing an operator wants to notice.
+      verdict: untrusted > 0 ? "blocked" : "allowed",
+      headline:
+        untrusted > 0
+          ? `Carried ${untrusted} belief${untrusted === 1 ? "" : "s"} it picked up itself`
+          : "Carried remembered context into this run",
+      because: `${bytes} bytes of memory added to the prompt`,
+      category: "Memory",
     };
   }
   if (event.type === "grant.created" || event.type === "grant.revoked") {
@@ -346,6 +379,8 @@ export default function SecurityFeed({ agent }: { agent: Agent }) {
           </table>
         </div>
       )}
+
+      <MemoryPanel agentId={agent.id} mode={mode} />
     </section>
   );
 }

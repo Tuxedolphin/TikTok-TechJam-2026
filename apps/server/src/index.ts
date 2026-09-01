@@ -5,6 +5,7 @@ import { describeEgressGap, loadConfig, writeCodexConfig, type AppConfig } from 
 import { EgressAuthorizer } from "./egress-authorizer.js";
 import { EgressNetworkManager } from "./egress-network.js";
 import { IdentityService } from "./identity.js";
+import { MemoryService } from "./memory.js";
 import { AgentTerminator } from "./terminator.js";
 import { createRunner } from "./runner-factory.js";
 import { JsonStore } from "./store.js";
@@ -38,8 +39,21 @@ const runner = createRunner(config);
 const egressNetwork = config.egressEnforcement ? new EgressNetworkManager(config) : undefined;
 // Declared before the service so the start hook can clear egress strikes.
 let egressAuthorizer: EgressAuthorizer | undefined;
-const service = new AgentService(config, store, workspaces, runner, egressNetwork, (agentId) =>
-  egressAuthorizer?.resetStrikes(agentId),
+// The callback closes over `service`, which is defined just below. It only
+// runs once a memory decision is recorded, long after both exist.
+const memory: MemoryService = new MemoryService(
+  store,
+  (runId, agentId, decision): Promise<void> =>
+    service.recordPolicyDecision(runId, agentId, decision),
+);
+const service = new AgentService(
+  config,
+  store,
+  workspaces,
+  runner,
+  egressNetwork,
+  (agentId) => egressAuthorizer?.resetStrikes(agentId),
+  memory,
 );
 await service.initialize();
 
@@ -69,7 +83,7 @@ egressAuthorizer = config.egressEnforcement
 const receiptKeys = await loadOrCreateReceiptKeyPair(config.dataDirectory);
 const terminator = new AgentTerminator(store, service, identity, receiptKeys, egressNetwork);
 const app = await createApp(
-  config, service, identity, egressAuthorizer, egressNetwork, terminator,
+  config, service, identity, egressAuthorizer, egressNetwork, terminator, memory,
 );
 
 // Said at startup rather than only in the UI: an operator running the server

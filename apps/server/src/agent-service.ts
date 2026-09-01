@@ -13,6 +13,7 @@ import type {
   ApprovalStatus,
   CreateAgentInput,
   Grant,
+  MemoryEntry,
   Message,
   PolicyDecision,
   RunEvent,
@@ -24,6 +25,7 @@ import type {
 
 import { WorkspaceManager } from "./workspace.js";
 import type { EgressNetworkManager } from "./egress-network.js";
+import type { MemoryService } from "./memory.js";
 import {
   estimateRunCostUsd,
   evaluateActionRisk,
@@ -109,6 +111,7 @@ export class AgentService {
     private readonly runner: AgentRunner,
     private readonly egress?: EgressNetworkManager,
     private readonly onAgentStarted?: (agentId: string) => void,
+    private readonly memory?: MemoryService,
   ) {}
 
   async initialize(): Promise<void> {
@@ -272,6 +275,56 @@ export class AgentService {
         createdAt: now(),
       });
     });
+  }
+
+  private async recordMemoryRecalled(
+    runId: string,
+    agentId: string,
+    recalled: { entries: MemoryEntry[]; bytesInjected: number },
+  ): Promise<void> {
+    const untrusted = recalled.entries.filter((entry) => entry.trust === "untrusted").length;
+    await this.store.mutate((database) => {
+      this.appendRunEvent(database, {
+        runId,
+        agentId,
+        type: "memory.recalled",
+        // Untrusted context reaching the model is worth seeing at a glance,
+        // even though it was allowed through -- labeled, not silent.
+        severity: untrusted > 0 ? "warning" : "info",
+        title: `Recalled ${recalled.entries.length} memory/memories (${recalled.bytesInjected} bytes)`,
+        detail: JSON.stringify({
+          bytesInjected: recalled.bytesInjected,
+          untrusted,
+          memories: recalled.entries.map((entry) => ({
+            id: entry.id,
+            sourceType: entry.provenance.sourceType,
+            sourceDetail: entry.provenance.sourceDetail,
+            trust: entry.trust,
+          })),
+        }),
+        createdAt: now(),
+      });
+    });
+  }
+
+  /**
+   * Output convention: a line beginning `REMEMBER:` asks for a memory. Whatever
+   * the agent read to produce that line is untrusted, so the memory is too --
+   * and the per-run cap means a hostile page cannot write an unbounded number.
+   */
+  private async captureMemories(runId: string, agentId: string, output: string): Promise<void> {
+    if (!this.memory || !output) return;
+    for (const line of output.split("\n")) {
+      const match = /^\s*REMEMBER:\s*(.+)$/.exec(line);
+      if (!match?.[1]) continue;
+      await this.memory.remember({
+        agentId,
+        content: match[1].trim(),
+        sourceType: "agent-output",
+        sourceDetail: `run ${runId.slice(0, 8)}`,
+        runId,
+      });
+    }
   }
 
   /**
@@ -829,6 +882,12 @@ export class AgentService {
       if (this.terminationBarriers.has(agentId)) {
         throw new HttpError(409, "This Agent is being terminated");
       }
+      // Refuse admission while the agent is being terminated. Without this, a
+      // message could slip in between termination's freeze (which saw no live
+      // execution) and the barrier check just before the runner starts.
+      if (this.terminationBarriers.has(agentId)) {
+        throw new HttpError(409, "This Agent is being terminated");
+      }
       const activeSessionId = storedAgent.activeSessionId ?? null;
       if (!initiatingHuman) {
         const owner = database.principals.find((principal) => principal.id === storedAgent.ownerId);
@@ -1225,11 +1284,24 @@ export class AgentService {
       if (this.terminationBarriers.has(agentAtStart.id) || this.cancellationRequests.has(agentAtStart.id)) {
         throw new RunCancelledError();
       }
+
+      // The single seam where remembered context enters a run. Keeping it to
+      // one place is what lets the timeline say exactly what the model was
+      // told, and what recall cost in tokens.
+      let runnerPrompt = run.prompt;
+      if (this.memory) {
+        const recalled = await this.memory.recall(agentAtStart.id, now());
+        if (recalled.entries.length > 0) {
+          runnerPrompt = `${recalled.promptBlock}\n\n${run.prompt}`;
+          await this.recordMemoryRecalled(run.id, agentAtStart.id, recalled);
+        }
+      }
+
       const result = await this.runner.run({
         agentId: agentAtStart.id,
         sessionId: run.sessionId,
         workspacePath: agentAtStart.workspacePath,
-        prompt: run.prompt,
+        prompt: runnerPrompt,
         threadId,
         onStep,
         egressProxyUrl,
@@ -1240,6 +1312,7 @@ export class AgentService {
       }
 
       rejectOutputIfCanaryPresent(this.config, result.output);
+      await this.captureMemories(run.id, agentAtStart.id, result.output);
       const costUsd = estimateRunCostUsd(result.usage, this.config.modelName);
       const enrichedUsage = result.usage ? { ...result.usage, costUsd } : null;
       rejectRunIfBudgetExceeded(this.config, enrichedUsage, Date.now() - startedAt);

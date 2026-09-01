@@ -10,6 +10,7 @@ import { HttpError } from "./errors.js";
 import type { AgentService } from "./agent-service.js";
 import { handleGeminiResponsesAdapter } from "./gemini-adapter.js";
 import type { IdentityService } from "./identity.js";
+import type { MemoryService } from "./memory.js";
 import { egressProxySecret, type EgressAuthorizer } from "./egress-authorizer.js";
 import type { EgressNetworkManager } from "./egress-network.js";
 import type { AgentTerminator } from "./terminator.js";
@@ -90,6 +91,11 @@ const egressAuthorizeBody = z.object({
   secret: z.string().max(256).optional(),
 });
 const resourceIdParams = z.object({ id: z.string().min(1).max(128) });
+const memoryIdParams = z.object({ id: z.string().min(1).max(128) });
+const memoryBody = z.object({
+  content: z.string().trim().min(1).max(4000),
+  ttlMinutes: z.coerce.number().int().positive().max(10_080).optional(),
+});
 const MOCK_SESSION_TTL_MS = 8 * 60 * 60 * 1000;
 const MAX_MOCK_SESSIONS = 1_000;
 
@@ -129,6 +135,7 @@ export async function createApp(
   egressAuthorizer?: EgressAuthorizer,
   egressNetwork?: EgressNetworkManager,
   terminator?: AgentTerminator,
+  memory?: MemoryService,
 ): Promise<FastifyInstance> {
   const principalSessions = new Map<string, MockPrincipalSession>();
   const app = Fastify({
@@ -325,6 +332,46 @@ export async function createApp(
     });
 
     app.get("/api/receipt-key", async () => terminator.publicKeyInfo());
+  }
+
+  if (memory) {
+    app.get("/api/agents/:id/memories", async (request) => {
+      const { id } = agentIdParams.parse(request.params);
+      service.getAgent(id);
+      return { memories: memory.listMemories(id) };
+    });
+
+    app.post("/api/agents/:id/memories", async (request, reply) => {
+      const { id } = agentIdParams.parse(request.params);
+      service.getAgent(id);
+      const body = memoryBody.parse(request.body);
+      // Same rule as grants: proxy attestation outranks any self-asserted
+      // header. An agent writing its own memory can never call it trusted.
+      const attested = attestedAgentPrincipal(request, config.internalAgentSecret);
+      const entry = await memory.remember({
+        agentId: id,
+        content: body.content,
+        sourceType: attested ? "agent-output" : "operator",
+        sourceDetail: attested ?? "operator",
+        ttlMinutes: body.ttlMinutes ?? null,
+      });
+      if (!entry) {
+        return reply.code(429).send({ error: "Memory write refused; per-run limit reached." });
+      }
+      return reply.code(201).send({ memory: entry });
+    });
+
+    app.post("/api/memories/:id/quarantine", async (request, reply) => {
+      const { id } = memoryIdParams.parse(request.params);
+      // An agent must not be able to bury a memory that incriminates it.
+      if (attestedAgentPrincipal(request, config.internalAgentSecret)) {
+        return reply.code(403).send({ error: "Agents may not quarantine memories." });
+      }
+      const by = (request.headers["x-principal-id"] as string | undefined) ?? "user-a";
+      const entry = await memory.quarantine(id, by);
+      if (!entry) return reply.code(404).send({ error: "Memory not found" });
+      return { memory: entry };
+    });
   }
 
   app.get("/api/agents/:id/events", async (request) => {
