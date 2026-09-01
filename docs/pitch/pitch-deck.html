@@ -509,10 +509,15 @@ pre .c{color:var(--ink-faint)}
 
 <!-- ══ 06 ═══════════════════════════════════════════════════ -->
 <section class="slide"
-  data-notes="<span class='beat'>1:40 — THE MOMENT. Do not talk over it.</span><p>Five stamps, five beats. Let them land. Then:</p><p><b>&ldquo;That is not a mock. That is npm run demo &mdash; real containers, a real proxy, on a real isolated network. No API key, so you can run it yourselves in about a minute.&rdquo;</b></p><span class='beat'>Also your live demo running order</span><p>1&ndash;2 normal case · 3 denial · 4 containment escalation · 5 the bypass attempt.</p><p>Say the caveat once, confidently: revocation kills the <b>next</b> connection; it does not tear down an established stream.</p>">
+  data-notes="<span class='beat'>1:40 — THE MOMENT. Do not talk over it.</span><p>Six stamps, six beats. Let them land. Then:</p><p><b>&ldquo;That is not a mock. That is npm run demo &mdash; it first shows the same container escaping without Agent Passport, then proves the border closes every route. Real containers, a real proxy, on a real isolated network. No API key.&rdquo;</b></p><span class='beat'>Also your live demo running order</span><p>1 baseline escape · 2 denial · 3 grant · 4 revocation · 5 containment escalation · 6 bypass attempt.</p><p>Say the caveat once, confidently: revocation kills the <b>next</b> connection; it does not tear down an established stream.</p>">
   <p class="eyebrow">The kill chain — <span class="hot">real containers, no API key</span></p>
   <h2 style="font-size:42px; margin-bottom:8px">Watch a hijacked agent try every exit.</h2>
   <div class="chain">
+    <div class="ch-row">
+      <span class="ch-try">Without Agent Passport, reach <span class="mono">example.com</span></span>
+      <span class="stamp s-deny">200 ESCAPES</span>
+      <span class="ch-why">A standard container has unrestricted egress</span>
+    </div>
     <div class="ch-row">
       <span class="ch-try">Reach <span class="mono">example.com</span> with no grant</span>
       <span class="stamp s-deny">403 BLOCKED</span>

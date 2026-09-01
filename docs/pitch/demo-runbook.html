@@ -163,7 +163,7 @@ footer{margin-top:64px; padding-top:22px; border-top:1px solid var(--rule);
 <header>
   <p class="kicker">Agent Passport · TikTok TechJam 2026 · Track 1</p>
   <h1>Live Demo Runbook</h1>
-  <p class="sub">Three minutes: one real Agent run, then every attack class you built against &mdash; 32 invariants in 11 seconds &mdash; closing on a containment receipt the judges verify themselves. Every command below is real and was timed on this tree.</p>
+  <p class="sub">Three minutes: one real Agent run, then every attack class you built against &mdash; 33 invariants in 11 seconds &mdash; closing on a containment receipt the judges verify themselves. Every command below is real and was timed on this tree.</p>
 </header>
 
 <!-- ═══════════════════════════════════════════════════════ -->
@@ -227,8 +227,8 @@ npm run poc                             <span class="c"># leave running → loca
 
 <div class="note good">
   <span class="lbl">Measured on this tree, just now</span>
-  <p><span class="mono">escalation 10/10 &middot; egress 7/7 &middot; tunnel-bypass 2/2 &middot; kill 7/7 &middot; passport 6/6</span></p>
-  <p><strong>32 invariants across 5 attack classes in 11 seconds, every one machine-checked.</strong> Say that number out loud &mdash; it is the single most compressed proof of work you have.</p>
+  <p><span class="mono">escalation 10/10 &middot; egress 8/8 &middot; tunnel-bypass 2/2 &middot; kill 7/7 &middot; passport 6/6</span></p>
+  <p><strong>33 invariants across 5 attack classes in 11 seconds, every one machine-checked.</strong> The egress demo opens by showing the unprotected baseline: without Agent Passport, the same container reaches the internet.</p>
 </div>
 
 <div class="ros">
@@ -333,10 +333,10 @@ npm run poc                             <span class="c"># leave running → loca
    ok    escalation       <span class="ok">10/10</span>
    ok    passport         <span class="ok">6/6</span>
    ok    tunnel-bypass    <span class="ok">2/2</span>
-   ok    egress           <span class="ok">7/7</span>
+   ok    egress           <span class="ok">8/8</span>
    ok    kill             <span class="ok">7/7</span>
 
-   <span class="ok">32/32 invariants held across 5 attack classes</span></pre>
+   <span class="ok">33/33 invariants held across 5 attack classes</span></pre>
 
 <div class="note">
   <span class="lbl">Running one at a time</span>
@@ -349,8 +349,8 @@ npm run poc                             <span class="c"># leave running → loca
   <tbody>
     <tr><td class="s">1</td><td><b>escalation</b></td><td class="v v-ok">10/10</td>
         <td>Authority only flows downhill: an agent cannot widen its own grants, impersonate the human, clone a delegated grant back to itself, or trade capability families. Revoking a parent cascades to the child.</td></tr>
-    <tr><td class="s">2</td><td><b>egress</b></td><td class="v v-ok">7/7</td>
-        <td>Default-deny at the border, grant admits, revocation bites on the next connection, repeated probing quarantines, a guessed proxy credential fails, and a direct no-proxy attempt finds no route.</td></tr>
+    <tr><td class="s">2</td><td><b>egress</b></td><td class="v v-ok">8/8</td>
+        <td>First, the unprotected baseline reaches the internet. Then default-deny at the border, grant admits, revocation bites on the next connection, repeated probing quarantines, a guessed proxy credential fails, and a direct no-proxy attempt finds no route.</td></tr>
     <tr><td class="s">3</td><td><b>tunnel-bypass</b></td><td class="v v-ok">2/2</td>
         <td>An opaque CONNECT tunnel to the control plane is refused, and no authority is created through it.</td></tr>
     <tr><td class="s">4</td><td><b>kill</b></td><td class="v v-ok">7/7</td>
@@ -360,7 +360,7 @@ npm run poc                             <span class="c"># leave running → loca
   </tbody>
 </table>
 
-<p style="font-size:19px; font-weight:600">Total: <span class="mono v-ok">32 invariants</span> across <span class="mono">5 attack classes</span> in <span class="mono">~11 seconds</span>.</p>
+<p style="font-size:19px; font-weight:600">Total: <span class="mono v-ok">33 invariants</span> across <span class="mono">5 attack classes</span> in <span class="mono">~11 seconds</span>.</p>
 
 <h3>If a judge wants to verify the receipt by hand</h3>
 <pre>node scripts/verify-receipt.mjs receipt.json \
