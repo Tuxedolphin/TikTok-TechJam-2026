@@ -33,7 +33,7 @@ function canonicalize(value) {
 function hasValidStructure(receipt) {
   if (!receipt || typeof receipt !== "object" || Array.isArray(receipt)) return false;
   if (
-    receipt.version !== 1 ||
+    receipt.version !== 2 ||
     typeof receipt.keyId !== "string" ||
     typeof receipt.agentId !== "string" ||
     typeof receipt.agentPrincipalId !== "string" ||
@@ -44,6 +44,9 @@ function hasValidStructure(receipt) {
     !Array.isArray(receipt.grantsRevoked) ||
     receipt.grantsRevoked.some((id) => typeof id !== "string") ||
     new Set(receipt.grantsRevoked).size !== receipt.grantsRevoked.length ||
+    !Array.isArray(receipt.memoriesQuarantined) ||
+    receipt.memoriesQuarantined.some((id) => typeof id !== "string") ||
+    new Set(receipt.memoriesQuarantined).size !== receipt.memoriesQuarantined.length ||
     !Array.isArray(receipt.steps) ||
     receipt.steps.length !== 4
   ) {
@@ -112,6 +115,7 @@ for (const step of receipt.steps) {
 }
 console.log("");
 console.log(`Grants revoked: ${receipt.grantsRevoked.length}`);
+console.log(`Memories quarantined: ${receipt.memoriesQuarantined.length}`);
 console.log(
   receipt.contained
     ? "\nVALID — signature, step sequence, and containment claim are internally consistent."
