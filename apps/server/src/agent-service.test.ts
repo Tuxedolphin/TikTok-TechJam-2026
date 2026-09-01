@@ -44,7 +44,7 @@ afterEach(async () => {
       rm(directory, { recursive: true, force: true }),
     ),
   );
-});
+}, 20_000);
 
 async function makeService(
   runner: TestRunner = new FakeRunner(),
