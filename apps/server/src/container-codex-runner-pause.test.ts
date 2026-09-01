@@ -88,6 +88,9 @@ describe("Container runtime pause verification", () => {
       };
 
       const run = runner.run(request);
+      // Attach the rejection handler immediately: cancellation can close the
+      // fake runtime before the final assertion is reached on a fast CI host.
+      const cancelledRun = expect(run).rejects.toThrow("cancelled");
       // `run` awaits an orphan-container reconciliation pass before it
       // registers the agent as active, so a pause issued immediately would
       // race that registration rather than exercising the pause path itself.
@@ -98,7 +101,7 @@ describe("Container runtime pause verification", () => {
       expect(await runner.resume(request.agentId)).toBe(true);
       expect(await readFile(state, "utf8")).toBe("false");
       await runner.cancel(request.agentId);
-      await expect(run).rejects.toThrow("cancelled");
+      await cancelledRun;
     },
     15_000,
   );
